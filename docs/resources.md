@@ -1,6 +1,8 @@
 # Codex — External Resource Traceability
 
 > Per the Architecture Reconciliation directive §39. Every external technology/project referenced by the HLRD or TAD, whether or not Codex has actually adopted anything from it. **Nothing below is marked "adopted" unless it was actually inspected** — several entries are honestly marked "not yet inspected" rather than assumed.
+>
+> Governed by [`docs/policy-external-references.md`](policy-external-references.md): every "adopts" column below means *studied and independently reimplemented*, never copied. Any entry with a restrictive license (CodeQL, `SillySerpent/Repograph`) is a gate on future adapter code, not on the research recorded here.
 
 Last reviewed: 2026-08-30.
 
