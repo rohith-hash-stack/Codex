@@ -4,6 +4,9 @@ Codex is an evidence-backed repository intelligence platform that sits between a
 
 ## Status
 
-Architecture baseline frozen: see [docs/HLRD.md](docs/HLRD.md) for the full V1 High-Level Requirements Document (scope, architecture, invariants, and success criteria).
+Architecture baseline established:
 
-Next phase: Technical Architecture → ADRs → Component Design → Implementation.
+- [docs/HLRD.md](docs/HLRD.md) — V1 High-Level Requirements Document (scope, architecture, invariants, and success criteria).
+- [docs/TAD.md](docs/TAD.md) — V1 Technical Architecture Document (components, data model, DTD pipeline, dependency rules, ADR list).
+
+Next phase: ADRs → Component Design → Implementation.
