@@ -4,10 +4,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Final
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from codex.ontology.relationships import RelationshipType
+
+RAW_REFERENCE_SCHEMES: Final = ("artifact://", "s3://", "file://")
+"""Resolvable URI schemes for ``raw_reference`` (TAD §16, §52)."""
+
+
+def validate_raw_reference(value: str | None) -> str | None:
+    """Reject arbitrary provider-invented raw-reference formats (TAD §52)."""
+    if value is not None and not value.startswith(RAW_REFERENCE_SCHEMES):
+        raise ValueError(
+            f"raw_reference must start with one of {RAW_REFERENCE_SCHEMES}, got {value!r}"
+        )
+    return value
 
 
 class EvidenceStatus(StrEnum):
@@ -45,6 +58,8 @@ class Evidence(BaseModel):
     independence_group: str | None = None
     raw_reference: str | None = None
     observed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    _validate_raw_reference = field_validator("raw_reference")(validate_raw_reference)
 
     @property
     def effective_independence_group(self) -> str:
