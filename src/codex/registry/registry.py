@@ -1,4 +1,4 @@
-"""The Capability Registry (TAD §10, §31; Phase D directive D2).
+"""The Capability Registry (TAD §10, §31; Phase D directive D2; ADR-018).
 
 The central deterministic mechanism for registering
 ``ProviderAdapter``s, discovering which ones declare support for a
@@ -22,19 +22,30 @@ Two distinct queries, deliberately kept separate:
 - ``evaluate()`` / ``rank()`` — live, per-repository evaluation,
   producing one of ``ProviderEvaluationStatus``'s five values.
 
-See ``codex.registry.scoring`` for why ``rank()`` requires
-``evidence_quality``/``freshness_score``/``cost_factor`` as explicit
-caller-supplied inputs rather than computing or defaulting them.
+**ADR-018 (resolved 2026-08-30):** ``rank()`` takes no caller-supplied
+scoring values. ``evidence_quality``/``cost_factor`` come from a
+``ProviderScoreProfile`` attached once at ``register()`` time (not
+per query, so ranking for a given capability/repository is identical
+regardless of which caller invokes ``rank()``); ``freshness`` is
+derived from the adapter's own ``freshness`` timestamp via a single
+generic default decay function. See ``codex.registry.scoring`` for
+the full sourcing rationale and ``docs/architecture-conformance-
+audit.md`` §I for the decision record.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from codex.provider.capability import Capability
 from codex.provider.contract import ProviderAdapter, ProviderHealthStatus
 from codex.registry.models import ProviderEvaluation, ProviderEvaluationStatus
-from codex.registry.scoring import ProviderScoreInputs, provider_score
+from codex.registry.scoring import (
+    ProviderScoreInputs,
+    ProviderScoreProfile,
+    default_freshness_score,
+    provider_score,
+)
 from codex.repository.models import RepositoryMetadata
 
 
@@ -43,20 +54,32 @@ class CapabilityRegistry:
 
     def __init__(self) -> None:
         self._providers: dict[str, ProviderAdapter] = {}
+        self._profiles: dict[str, ProviderScoreProfile] = {}
 
-    def register(self, adapter: ProviderAdapter) -> None:
-        """Register a provider.
+    def register(
+        self, adapter: ProviderAdapter, profile: ProviderScoreProfile | None = None
+    ) -> None:
+        """Register a provider, optionally attaching its scoring profile.
 
         Re-registering the same ``provider_name`` replaces the
-        previous registration (last write wins) — a routine
-        registry-management choice, not an architectural one; nothing
-        in HLRD/TAD specifies duplicate-registration behavior.
+        previous adapter (last write wins) — a routine registry-
+        management choice, not an architectural one; nothing in
+        HLRD/TAD specifies duplicate-registration behavior. Omitting
+        ``profile`` on a re-registration leaves any previously-set
+        profile untouched (it's provider-level canonical metadata,
+        not tied to a particular adapter object); passing a new one
+        replaces it. A provider with no profile can still be
+        registered, discovered, and evaluated — a profile is only
+        required at ``rank()`` time.
         """
         self._providers[adapter.provider_name] = adapter
+        if profile is not None:
+            self._profiles[adapter.provider_name] = profile
 
     def unregister(self, provider_name: str) -> None:
-        """Remove a provider. A no-op if ``provider_name`` was never registered."""
+        """Remove a provider and its scoring profile. A no-op if never registered."""
         self._providers.pop(provider_name, None)
+        self._profiles.pop(provider_name, None)
 
     def registered_providers(self) -> list[ProviderAdapter]:
         return list(self._providers.values())
@@ -75,9 +98,9 @@ class CapabilityRegistry:
     ) -> list[ProviderEvaluation]:
         """Live, per-repository evaluation of every provider declaring ``capability``.
 
-        Every result already passed ``capability_match`` (directive
-        point 4) — a provider that doesn't declare the capability
-        never appears here at all, so exclusion needs no separate step.
+        Every result already passed ``capability_match`` (TAD §31) —
+        a provider that doesn't declare the capability never appears
+        here at all, so exclusion needs no separate step.
         """
         return [
             self._evaluate_one(adapter, capability, repository)
@@ -89,21 +112,26 @@ class CapabilityRegistry:
         capability: Capability,
         repository: RepositoryMetadata,
         *,
-        evidence_quality: Mapping[str, float],
-        freshness_score: Mapping[str, float],
-        cost_factor: Mapping[str, float],
+        now: datetime | None = None,
     ) -> list[ProviderEvaluation]:
         """Usable candidates (``AVAILABLE``/``PARTIAL``), scored via TAD §31's
         formula and sorted highest score first, ties broken by
         ``provider_name`` for a fully deterministic order.
 
-        ``evidence_quality``/``freshness_score``/``cost_factor`` are
-        required, per-provider-name inputs with no default — see this
-        module's and ``codex.registry.scoring``'s docstrings for why.
-        Raises ``ValueError`` naming any usable candidate missing from
-        one of the three mappings; a provider excluded from the
-        candidate set (unsupported/ineligible/failed/unavailable)
-        never requires an entry.
+        Takes no caller-supplied scoring values (ADR-018): every
+        input is either derived by the Registry itself
+        (``capability_match``, ``availability``, ``freshness``) or
+        comes from the ``ProviderScoreProfile`` attached at
+        ``register()`` time (``evidence_quality``, ``cost_factor``) —
+        so two different callers ranking the same capability/
+        repository at the same moment always get the same answer.
+        ``now`` is accepted only for deterministic testing of
+        freshness decay; real callers should omit it.
+
+        Raises ``ValueError`` naming any usable candidate that was
+        never given a ``ProviderScoreProfile`` — a provider excluded
+        from the candidate set (unsupported/ineligible/failed/
+        unavailable) never requires one.
         """
         usable = (ProviderEvaluationStatus.AVAILABLE, ProviderEvaluationStatus.PARTIAL)
         candidates = [
@@ -111,29 +139,27 @@ class CapabilityRegistry:
             for evaluation in self.evaluate(capability, repository)
             if evaluation.status in usable
         ]
+        reference_time = now if now is not None else datetime.now(UTC)
 
         scored: list[tuple[float, ProviderEvaluation]] = []
         for evaluation in candidates:
             name = evaluation.provider_name
-            missing = [
-                label
-                for label, mapping in (
-                    ("evidence_quality", evidence_quality),
-                    ("freshness_score", freshness_score),
-                    ("cost_factor", cost_factor),
+            profile = self._profiles.get(name)
+            if profile is None:
+                raise ValueError(
+                    f"rank(): no ProviderScoreProfile registered for provider {name!r}"
                 )
-                if name not in mapping
-            ]
-            if missing:
-                raise ValueError(f"rank(): missing {missing} for provider {name!r}")
 
+            freshness = default_freshness_score(
+                self._providers[name].freshness, now=reference_time
+            )
             score = provider_score(
                 ProviderScoreInputs(
                     capability_match=1.0,
-                    evidence_quality=evidence_quality[name],
+                    evidence_quality=profile.evidence_quality,
                     availability=evaluation.availability,
-                    freshness=freshness_score[name],
-                    cost_factor=cost_factor[name],
+                    freshness=freshness,
+                    cost_factor=profile.cost_factor,
                 )
             )
             scored.append((score, evaluation.model_copy(update={"score": score})))
