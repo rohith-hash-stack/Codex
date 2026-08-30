@@ -7,6 +7,8 @@ Status: Architecture Baseline — FROZEN
 Scope: V1
 Next Phase: Technical Architecture → ADRs → Component Design → Implementation
 
+**Amendment log (Architecture Reconciliation, 2026-08-30):** two clauses below were reconciled against the TAD via `docs/architecture-reconciliation.md` — §16's `TESTS` relationship (superseded by `TESTED_BY`, matching TAD §14) and §42-43's verification-state list (now a presentation-layer mapping of TAD §50's canonical internal taxonomy, not a competing definition). Both are marked inline below. The rest of this document is unchanged and remains frozen.
+
 ---
 
 ## 1. Executive Summary
@@ -473,7 +475,7 @@ REFERENCES
 IMPLEMENTS
 EXTENDS
 OVERRIDES
-TESTS
+TESTED_BY
 CONFIGURED_BY
 EXPOSES
 CONSUMES
@@ -481,6 +483,8 @@ PERSISTS_TO
 CO_CHANGED_WITH
 OBSERVED_CALL
 ```
+
+> **Reconciled 2026-08-30 (C-1, see `docs/architecture-reconciliation.md` §2):** this list originally read `TESTS`. TAD §14 uses the opposite direction, `TESTED_BY` (`production_code --TESTED_BY--> test`); that direction is now canonical. There is no separate `TESTS` relationship — the inverse question ("what does this test test?") is answered by traversing `TESTED_BY` edges by object instead of subject at query time, not by storing a second edge type.
 
 The ontology shall remain extensible.
 
@@ -1150,7 +1154,9 @@ This boundary SHALL NOT be violated in V1.
 
 ## 42. Verification Continuum
 
-Verification SHALL support:
+> **Reconciled 2026-08-30 (C-3, see `docs/architecture-reconciliation.md` §4):** the four labels below are a **presentation-layer mapping**, not the canonical internal verification model. The canonical internal model is TAD §50's six-value taxonomy (`VERIFIED, PARTIALLY_VERIFIED, QUALIFIED, DISPUTED, INCONCLUSIVE, REJECTED`); the Verification Engine, LLM Gateway response contract, telemetry, and answer contracts all use that enum. This section's four labels are how a canonical state is reported at the HLRD/presentation level, per the mapping table in TAD §50.
+
+Verification reporting SHALL support these presentation labels:
 
 ```
 FULLY_VERIFIED
@@ -1159,19 +1165,19 @@ UNVERIFIED
 CONTRADICTED
 ```
 
-**Fully verified** — Evidence supports the assertion.
+**Fully verified** — Evidence supports the assertion. (Maps from canonical `VERIFIED`.)
 
-**Partially verified** — Some assertions are supported while others lack sufficient evidence.
+**Partially verified** — Some assertions are supported while others lack sufficient evidence. (Maps from canonical `PARTIALLY_VERIFIED` or `QUALIFIED`.)
 
-**Unverified** — Adequate evidence could not be found.
+**Unverified** — Adequate evidence could not be found. (Maps from canonical `INCONCLUSIVE`.)
 
-**Contradicted** — Evidence conflicts with the conclusion.
+**Contradicted** — Evidence conflicts with the conclusion. (Maps from canonical `DISPUTED` or `REJECTED`.)
 
 ---
 
 ## 43. Answer Policy
 
-Verification status shall influence the answer.
+Verification status shall influence the answer. The policy below is expressed in this document's presentation labels (see the §42 mapping note); TAD §50 gives the canonical internal semantics each label is derived from.
 
 ```
 FULLY_VERIFIED

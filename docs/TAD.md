@@ -8,6 +8,8 @@ Architecture: Evidence-first, graph-centered, LLM-bounded
 Parent Requirements: Codex HLRD v1.0
 Design Principle: Deterministic repository intelligence first; generative reasoning second.
 
+**Amendment log (Architecture Reconciliation, 2026-08-30):** three clauses below were reconciled via `docs/architecture-reconciliation.md` — §19's `GraphVersion` struct (the literal named-provider fields were illustrative and are superseded by a generic mapping, resolving a self-contradiction with this document's own provider-independence invariant), §50 (now stated explicitly as the canonical internal verification taxonomy, with derived mapping tables), and §5's pipeline diagram (annotated with the same mapping). ADR-012 and ADR-013 (§77) are also marked closed/superseded rather than open. The rest of this document is unchanged and remains the architecture baseline.
+
 ---
 
 ## 1. Executive Summary
@@ -217,6 +219,8 @@ Insufficient evidence results in qualification, inconclusive results or abstenti
 ```
 
 "*" Optional V1 capability.
+
+The three terminal buckets above are a routing view derived from §50's six-value canonical verification enum (mapping table there), not an independent taxonomy.
 
 ---
 
@@ -543,18 +547,20 @@ These states are preserved throughout the system.
 
 ## 19. Version Model
 
+> **Reconciled 2026-08-30 (C-2, see `docs/architecture-reconciliation.md` §3):** the struct below originally named specific providers (`scip_index_version`, `codeql_snapshot_version`, `runtime_version`) directly as schema fields — that self-contradicted this document's own provider-independence invariant (§1 invariant #1, §8, §75) and is superseded. The canonical schema uses a generic provider→version mapping instead.
+
 A graph version is composed of:
 
 ```
 graph_version = {
     repository_revision,
-    scip_index_version,
-    codeql_snapshot_version,
-    runtime_version,
+    provider_versions: { <provider_id>: <version>, ... },
     schema_version,
     policy_version
 }
 ```
+
+`provider_versions` is a generic mapping — adding a new provider never requires a `GraphVersion` schema change. Per-evidence provider identity/version already lives on each `Evidence` record (§15); `GraphVersion` only needs to know *which* provider versions composed a given snapshot.
 
 Not all components need to change together.
 
@@ -1322,14 +1328,37 @@ Maximum V1 re-synthesis:
 
 ## 50. Final Verification States
 
+> **Reconciled 2026-08-30 (C-3, see `docs/architecture-reconciliation.md` §4):** this is now explicitly the **canonical internal verification model** — the only status enum the Verification Engine, LLM Gateway response contract, telemetry, and answer contracts use. It is not one of several competing enumerations; HLRD §42-43's four-value list and this document's own §5 pipeline diagram are both derived views of this enum (mapping tables below), not independent definitions.
+
 ```
-VERIFIED
-PARTIALLY_VERIFIED
-QUALIFIED
-DISPUTED
-INCONCLUSIVE
-REJECTED
+VERIFIED             — all required claims supported by sufficient trusted evidence
+PARTIALLY_VERIFIED   — some claims supported, others lack sufficient evidence
+QUALIFIED            — answer is usable but carries explicit qualifications/limitations
+DISPUTED             — credible evidence exists on both sides of a claim
+INCONCLUSIVE         — evidence is insufficient to determine true or false
+REJECTED             — the answer/claim failed an explicit verification/enforcement rule
 ```
+
+Derived views (implemented as tested pure functions when the Verification Engine is built, never re-derived ad hoc):
+
+**HLRD presentation mapping** (HLRD §42-43):
+
+| Canonical | HLRD label |
+|---|---|
+| `VERIFIED` | `FULLY_VERIFIED` |
+| `PARTIALLY_VERIFIED` | `PARTIALLY_VERIFIED` |
+| `QUALIFIED` | `PARTIALLY_VERIFIED` |
+| `DISPUTED` | `CONTRADICTED` |
+| `INCONCLUSIVE` | `UNVERIFIED` |
+| `REJECTED` | `CONTRADICTED` |
+
+**Pipeline routing bucket** (§5 diagram, below):
+
+| Canonical | Routing bucket |
+|---|---|
+| `VERIFIED` | `VERIFIED` |
+| `PARTIALLY_VERIFIED`, `QUALIFIED`, `DISPUTED`, `INCONCLUSIVE` | `QUALIFIED` |
+| `REJECTED` | `ABSTAIN` |
 
 The answer layer must preserve material uncertainty.
 
@@ -1986,13 +2015,15 @@ ADR-008 LLM Selection
 ADR-009 Embedding Strategy
 ADR-010 Search/Ranking Engine
 ADR-011 Cache Technology
-ADR-012 Graph Versioning Strategy
-ADR-013 Historical Graph Reconstruction
+ADR-012 Graph Versioning Strategy — CLOSED/SUPERSEDED, see below
+ADR-013 Historical Graph Reconstruction — CLOSED/SUPERSEDED, see below
 ADR-014 Runtime Adapter Strategy
 ADR-015 API Protocol
 ADR-016 Authentication/Authorization
 ADR-017 Deployment Architecture
 ```
+
+> **Reconciled 2026-08-30 (see `docs/architecture-reconciliation.md` §6):** ADR-012 and ADR-013, as literally titled, are **not** genuine open decisions — §19-21 and §71 above already specify the versioning and historical-reconstruction *strategy* in full (composite version key, snapshot+diff storage, immutable-once-published, locked-version reads). They are closed/superseded, not open ADRs. The only residual question — which storage engine physically holds the snapshots/diffs/versions — is not a separate decision; it folds into ADR-001 (Graph Storage Technology) / ADR-002 (Evidence Storage Technology).
 
 ---
 
