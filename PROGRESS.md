@@ -15,6 +15,7 @@
 | 2026-08-30 12:49 | TAD v1.0 committed — `docs/TAD.md` (`bce94fa`) |
 | 2026-08-30 12:54 | `PROGRESS.md` added — `6038e2b` |
 | 2026-08-30 12:59 | Project scaffolding + Phase 1 foundation code landed: pyproject/CI, `codex.ontology`, `codex.evidence`, `codex.graph` (in-memory), `codex.repository`, 17 passing tests, clean `ruff`/`mypy` |
+| 2026-08-30 13:18 | Provider format research landed — `docs/research/provider-formats.md` (SCIP `scip.proto` schema, CodeQL SARIF v2.1.0 shape, both HLRD-referenced RepoGraph implementations) |
 
 Both HLRD and TAD are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by their authors. Phase 1 foundation code now exists under `src/codex/`; Phases 2–6 (providers, intelligence, reasoning, validation, hardening) have not started.
 
@@ -31,7 +32,8 @@ Both HLRD and TAD are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by t
    - `repository/` — `RepositoryManager` (register/clone, HEAD revision, changed-file detection between revisions) and its models (TAD §7, §72).
 
    17 tests pass; `ruff` and `mypy` are clean. Storage/provider technology is still whatever the in-memory Phase 1 defaults are — no ADR has selected a real backend yet (deliberate, per TAD §77).
-4. **Not yet started:** any ADR, provider adapters (SCIP/CodeQL/Git-evidence/Sourcegraph), Capability Registry, Entity Resolution, DTD-02..05 (query understanding/planning/retrieval/verification), LLM Gateway, benchmark corpus, or deployment work.
+4. **Provider format research (done, see [docs/research/provider-formats.md](research/provider-formats.md)):** pulled the real SCIP protobuf schema, CodeQL's SARIF v2.1.0 output shape, and both HLRD-referenced RepoGraph reference implementations before writing any adapter code — so adapter contracts match reality instead of guesses. Notable findings: SCIP gives no direct call edges (must be derived from occurrence roles + enclosing ranges); CodeQL's single-entity `problem` findings don't fit the `subject/predicate/object` evidence shape as cleanly as its `path-problem` data-flow queries do (flagged for ADR-005, not resolved); `SillySerpent/Repograph` is architecturally the closest existing analog to Codex (Kuzu-backed graph store, git co-change coupling, static+runtime split, MCP server interface) and adds **Kuzu** as an ADR-001 storage candidate and **MCP** as an ADR-015 API candidate. Sourcegraph's own Code Navigation API docs were **not** reachable from this environment (egress-blocked) — still open before ADR-006.
+5. **Not yet started:** any ADR, provider adapters (SCIP/CodeQL/Git-evidence/Sourcegraph), Capability Registry, Entity Resolution, DTD-02..05 (query understanding/planning/retrieval/verification), LLM Gateway, benchmark corpus, or deployment work.
 
 ---
 
@@ -78,7 +80,7 @@ Both HLRD and TAD are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by t
 
 ## Immediate Next Decision
 
-Decided: build, starting from project scaffolding (done) into Phase 1 foundation code (in progress). Next up is most naturally a first real Provider Adapter — the Git Adapter is the obvious candidate since `RepositoryManager` already wraps GitPython and can feed it directly — followed by wiring an ingestion pipeline that turns a `ChangeSet` into `upsert_entity`/`upsert_relationship` calls against `InMemoryGraphStore`. Not yet started.
+Decided: build, starting from project scaffolding (done) → Phase 1 foundation code (done) → provider format research (done). Next up is a first real Provider Adapter — the Git Adapter is the obvious candidate since `RepositoryManager` already wraps GitPython and can feed it directly — followed by wiring an ingestion pipeline that turns a `ChangeSet` into `upsert_entity`/`upsert_relationship` calls against `InMemoryGraphStore`. Not yet started.
 
 ---
 
@@ -86,3 +88,4 @@ Decided: build, starting from project scaffolding (done) into Phase 1 foundation
 
 - **2026-08-30 12:42–12:54** — Repo initialized; HLRD v1.0 and TAD v1.0 committed as frozen baseline docs; PROGRESS.md created to track open items.
 - **2026-08-30 12:59** — Scaffolded the project (Python, `pyproject.toml`, ruff/mypy/pytest, GitHub Actions CI) and built Phase 1 foundation: `codex.ontology`, `codex.evidence`, `codex.graph` (NetworkX in-memory store), `codex.repository` (Repository Manager). 17 tests passing, lint/type-check clean.
+- **2026-08-30 13:18** — Researched real provider formats before writing adapter code: SCIP `scip.proto` schema, CodeQL SARIF v2.1.0 output shape, and both RepoGraph reference implementations from the HLRD Resource Map. Findings written to `docs/research/provider-formats.md`; surfaces two new ADR-001/ADR-015 candidates (Kuzu, MCP) and one open gap (Sourcegraph API docs unreachable from this environment).
