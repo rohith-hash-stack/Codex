@@ -216,12 +216,9 @@ def test_evidence_carries_the_requested_revision_not_a_stale_one() -> None:
 
 
 # Bonus: health/availability/freshness (TAD §9, not separately numbered above)
-def test_health_and_availability_reported() -> None:
-    adapter = FakeProviderAdapter(
-        health=ProviderHealthStatus.UNREACHABLE, available=False
-    )
-    assert adapter.health_status is ProviderHealthStatus.UNREACHABLE
-    assert adapter.availability is False
+def test_unhealthy_provider_reported() -> None:
+    adapter = FakeProviderAdapter(health=ProviderHealthStatus.UNHEALTHY)
+    assert adapter.health_status is ProviderHealthStatus.UNHEALTHY
     assert adapter.validate().ok is False
 
 
@@ -230,3 +227,41 @@ def test_freshness_updates_after_extraction() -> None:
     assert adapter.freshness is None
     adapter.extract(make_repo(), [Capability.CALL_RELATIONSHIP])
     assert adapter.freshness is not None
+
+
+# D1 clarification (2026-08-30): health_status and availability are independent signals.
+def test_healthy_provider_can_report_zero_availability() -> None:
+    """A HEALTHY provider may still be unavailable for a specific capability
+    in a specific repository/environment (e.g. a missing license) — this
+    must be expressible without touching health_status at all."""
+    adapter = FakeProviderAdapter(
+        health=ProviderHealthStatus.HEALTHY,
+        default_availability=1.0,
+        availability_overrides={Capability.DATA_FLOW: 0.0},
+    )
+    repo = make_repo()
+    assert adapter.health_status is ProviderHealthStatus.HEALTHY
+    assert adapter.availability(Capability.DATA_FLOW, repo) == 0.0
+    assert adapter.availability(Capability.CALL_RELATIONSHIP, repo) == 1.0
+
+
+def test_unhealthy_provider_can_report_nonzero_availability() -> None:
+    """The contract does not derive availability from health_status (or vice
+    versa) — an adapter is free to report either independently."""
+    adapter = FakeProviderAdapter(
+        health=ProviderHealthStatus.UNHEALTHY, default_availability=1.0
+    )
+    assert adapter.availability(Capability.CALL_RELATIONSHIP, make_repo()) == 1.0
+
+
+def test_availability_varies_per_capability_and_is_normalized() -> None:
+    adapter = FakeProviderAdapter(
+        default_availability=0.5,
+        availability_overrides={Capability.CALL_RELATIONSHIP: 1.0, Capability.DATA_FLOW: 0.0},
+    )
+    repo = make_repo()
+    assert adapter.availability(Capability.CALL_RELATIONSHIP, repo) == 1.0
+    assert adapter.availability(Capability.DATA_FLOW, repo) == 0.0
+    assert adapter.availability(Capability.SYMBOL_DEFINITION, repo) == 0.5
+    for capability in Capability:
+        assert 0.0 <= adapter.availability(capability, repo) <= 1.0

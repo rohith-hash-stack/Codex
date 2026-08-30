@@ -39,7 +39,8 @@ class FakeProviderAdapter:
         version: str = "1.0.0",
         capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
         health: ProviderHealthStatus = ProviderHealthStatus.HEALTHY,
-        available: bool = True,
+        default_availability: float = 1.0,
+        availability_overrides: dict[Capability, float] | None = None,
         eligibility: ProviderEligibility | None = None,
         fail_capabilities: frozenset[Capability] = frozenset(),
         partial_capabilities: frozenset[Capability] = frozenset(),
@@ -50,7 +51,8 @@ class FakeProviderAdapter:
         self._version = version
         self._capabilities = capabilities
         self._health = health
-        self._available = available
+        self._default_availability = default_availability
+        self._availability_overrides = availability_overrides or {}
         self._eligibility = eligibility or ProviderEligibility(status=EligibilityStatus.ELIGIBLE)
         self._fail = fail_capabilities
         self._partial = partial_capabilities
@@ -75,17 +77,16 @@ class FakeProviderAdapter:
     def health_status(self) -> ProviderHealthStatus:
         return self._health
 
-    @property
-    def availability(self) -> bool:
-        return self._available
+    def availability(self, capability: Capability, repository: RepositoryMetadata) -> float:
+        return self._availability_overrides.get(capability, self._default_availability)
 
     @property
     def freshness(self) -> datetime | None:
         return self._freshness
 
     def validate(self) -> ValidationResult:
-        if self._health is ProviderHealthStatus.UNREACHABLE:
-            return ValidationResult(ok=False, problems=[f"{self._name} is unreachable"])
+        if self._health is ProviderHealthStatus.UNHEALTHY:
+            return ValidationResult(ok=False, problems=[f"{self._name} is unhealthy"])
         return ValidationResult(ok=True)
 
     def check_eligibility(self, repository: RepositoryMetadata) -> ProviderEligibility:

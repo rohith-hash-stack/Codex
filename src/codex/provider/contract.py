@@ -29,11 +29,18 @@ from codex.repository.models import RepositoryMetadata
 
 
 class ProviderHealthStatus(StrEnum):
-    """Is the adapter's backing tool/service currently reachable (TAD §9)?"""
+    """Operational condition of the provider itself (TAD §9).
+
+    Independent of ``availability``: a HEALTHY provider can still be
+    unavailable for a given capability/repository (e.g. a missing
+    license), and ``availability`` must never be derived from this
+    value or vice versa (D1 clarification, 2026-08-30).
+    """
 
     HEALTHY = "HEALTHY"
     DEGRADED = "DEGRADED"
-    UNREACHABLE = "UNREACHABLE"
+    UNHEALTHY = "UNHEALTHY"
+    UNKNOWN = "UNKNOWN"
 
 
 class ValidationResult(BaseModel):
@@ -136,10 +143,23 @@ class ProviderAdapter(Protocol):
     def supported_capabilities(self) -> frozenset[Capability]: ...
 
     @property
-    def health_status(self) -> ProviderHealthStatus: ...
+    def health_status(self) -> ProviderHealthStatus:
+        """Operational condition of the provider itself, independent of ``availability``."""
+        ...
 
-    @property
-    def availability(self) -> bool: ...
+    def availability(self, capability: Capability, repository: RepositoryMetadata) -> float:
+        """Normalized [0.0, 1.0] readiness for this capability in this repository/environment.
+
+        Adapter-reported fact, not an aggregated selection score — the
+        Capability Registry (D2) is responsible for aggregating this
+        (and ``check_eligibility``/``health_status``) across providers
+        into a SUPPORTED/AVAILABLE/UNAVAILABLE/INELIGIBLE decision
+        (TAD §10, §31). A HEALTHY provider may still report 0.0 here
+        (unsupported capability, missing entitlement for this
+        repository, ...); this value must never be derived from
+        ``health_status`` or vice versa (D1 clarification, 2026-08-30).
+        """
+        ...
 
     @property
     def freshness(self) -> datetime | None:
