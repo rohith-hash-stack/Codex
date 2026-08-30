@@ -8,6 +8,8 @@ Audited: 2026-08-30 (commit `13bbaf6`).
 
 **Update 2026-08-30 (post-D1):** the Phase D directive's D1 (ProviderAdapter Contract) is now **IMPLEMENTED** — `codex.provider.{capability,contract}`, 21 behavioral tests, 100% coverage, clean ruff/mypy. Sections B, F, G, and H are annotated accordingly. D2 (Capability Registry) is next; per the directive, implementation stops here pending review.
 
+**Update 2026-08-30 (post-D2):** D2 (Capability Registry) is now **IMPLEMENTED** — `codex.registry.{models,scoring,registry}`, 27 new behavioral tests, 100% coverage, clean ruff/mypy. Sections B, F, G, and H are annotated accordingly. **New finding, not silently resolved:** TAD §31's `ProviderScore` formula needs five `[0,1]`-normalized inputs, but the (approved, closed) D1 `ProviderAdapter` contract only defines a source for two of them (`capability_match`, derivable; `availability`, already `[0,1]`). `evidence_quality`, a normalized `freshness` score, and `cost_factor` have no defined computation anywhere in HLRD, TAD, the reconciliation docs, or D1 — see the new row below and §I. `CapabilityRegistry.rank()` requires these three as explicit caller-supplied inputs rather than inventing a formula for them. D3 (Git Adapter) is next; per the directive, implementation stops here pending review.
+
 ---
 
 ## 0. A note on scope: DTD-01..05 do not exist as separate documents
@@ -56,7 +58,9 @@ Only major architectural requirements are shown (not every clause). "Module" is 
 | Provider Adapter contract (`extract/validate/normalize`, capabilities) | — | §8-9, §64; directive §11-13 | `codex.provider.contract.ProviderAdapter` (+ `Capability`, `ProviderHealthStatus`, `ValidationResult`, `ProviderEligibility`, `ExtractionResult`, `NormalizedEvidence`, `ProviderExtractionError`) | `tests/test_provider_contract.py` (25 tests) via `tests/fake_provider_adapter.py` | **IMPLEMENTED** | Behaviorally proven, not just declared: identity/version/capability declaration, supported vs. unsupported capability, successful/empty/partial/failed capability outcomes kept distinct, total provider failure raising `ProviderExtractionError` (distinct from a capability failure), provenance, `independence_group` default, source revision, snapshot identity, `raw_reference` validation, eligibility metadata, and revision association across runs. No concrete adapter (Git/SCIP) exists yet — that's D3/D5, correctly out of scope for this component. **`health_status`/`availability` interpretation (approved 2026-08-30, see below).** |
 
 **Canonical interpretation of TAD §9's `health_status`/`availability` (approved 2026-08-30, D1 review):** TAD §9 lists these as two flat, undistinguished attributes. Resolved as: `health_status` (`ProviderHealthStatus`: `HEALTHY`/`DEGRADED`/`UNHEALTHY`/`UNKNOWN`) is the operational condition of the provider itself; `availability(capability, repository) -> float` in `[0.0, 1.0]` is whether the provider is currently usable for a *specific capability* in a *specific repository/environment* — an adapter-reported fact, not an aggregated selection score (that aggregation is D2's job, per TAD §10/§31). The two are structurally independent: nothing in the contract derives one from the other, and `test_healthy_provider_can_report_zero_availability`/`test_unhealthy_provider_can_report_nonzero_availability` prove a HEALTHY provider can report 0.0 availability (e.g. missing license for this repository) and an UNHEALTHY one can still report full availability. This was an ambiguity in a single document (TAD §9), not a cross-document contradiction — it did not require the C-1/C-2/C-3-style reconciliation process, only this recorded interpretation.
-| Capability Registry | — | §10 | — | — | **NOT_IMPLEMENTED** | — |
+| Capability Registry: registration, capability discovery | — | §10 | `codex.registry.registry.CapabilityRegistry.{register,unregister,registered_providers,providers_for}` | `test_capability_registry.py` (11 tests) | **IMPLEMENTED** | Register/replace/unregister, static declared-capability lookup, empty-result behavior for unknown capabilities/no providers — all behaviorally tested |
+| Capability Registry: eligibility/availability/health evaluation | — | §9-10; directive D1 §11, D2 §6 | `CapabilityRegistry.evaluate()`, `ProviderEvaluationStatus` (AVAILABLE/PARTIAL/UNAVAILABLE/INELIGIBLE/FAILED) | `test_capability_registry.py` (7 tests) | **IMPLEMENTED** | Every status path behaviorally distinguished, including the case that specifically decouples `health_status` (UNHEALTHY) from `validate()` (still ok) to prove the registry checks each independently rather than treating one as a proxy for the other |
+| Capability Registry: provider selection/scoring | — | §31; directive D2 §4 | `CapabilityRegistry.rank()`, `codex.registry.scoring.{ProviderScoreInputs,provider_score,PROVIDER_SCORE_WEIGHTS}` | `test_capability_registry.py` (5 tests), `test_provider_scoring.py` (5 tests) | **PARTIALLY_IMPLEMENTED** | Formula/weights implemented exactly per TAD §31 (0.40/0.20/0.15/0.15/0.10), `capability_match=0` exclusion proven, deterministic tie-broken ranking proven. **Not implemented: a defined source for `evidence_quality`, normalized `freshness`, or `cost_factor`** — none exists anywhere in the finalized architecture (see §I). `rank()` requires them as explicit caller inputs; nothing here invents a value. |
 | Relationship Reconciliation / contradiction score | §20 | §38, §73 | `CanonicalRelationship` (shape only) | `test_evidence.py` (key only) | **PARTIALLY_IMPLEMENTED** | Data model exists (`supporting_evidence_ids`, `contradicting_evidence_ids`, `status`); zero logic computes them |
 | External library package-qualified identity | — | §56 | `BaseEntityType.EXTERNAL_LIBRARY` | none | **PARTIALLY_IMPLEMENTED** | Ontology slot exists; nothing populates or validates `pypi:x@y`-style identifiers |
 | DTD-02 Query Understanding (Tier-0 + SLM) | §24-28 | §22-28 | — | — | **NOT_IMPLEMENTED** | — |
@@ -67,7 +71,7 @@ Only major architectural requirements are shown (not every clause). "Module" is 
 | Telemetry Store | §52 | §65 | — | — | **NOT_IMPLEMENTED** | — |
 | Artifact Store | — | §52-53 | — | — | **NOT_IMPLEMENTED** | — |
 
-**Summary (updated post-D1):** 5 of ~24 major requirements IMPLEMENTED, 10 PARTIALLY_IMPLEMENTED, 8 NOT_IMPLEMENTED, 0 CONTRADICTED at the spec level (verification-state contradiction resolved by the reconciliation pass). Nothing is marked implemented merely because a class exists — every "IMPLEMENTED" row has a passing behavioral test.
+**Summary (updated post-D2):** 7 of ~26 major requirements IMPLEMENTED, 11 PARTIALLY_IMPLEMENTED, 8 NOT_IMPLEMENTED, 0 CONTRADICTED at the spec level. Nothing is marked implemented merely because a class exists — every "IMPLEMENTED" row has a passing behavioral test; the one PARTIALLY_IMPLEMENTED row added this pass (provider selection/scoring) is partial for a specific, named reason (§I), not vagueness.
 
 ---
 
@@ -114,8 +118,9 @@ TAD §77 lists 17 candidate ADR titles. Classifying each per the directive's sch
 | ADR-015 | API Protocol | **C** | Genuinely open (TAD §69 explicitly defers it to "a dedicated technical design deliverable"). Research added **MCP** as a candidate alongside REST/GraphQL/gRPC. |
 | ADR-016 | Authentication/Authorization | **C** | Genuinely open — neither HLRD's "Security and Trust" (§50) nor TAD's "Security Boundary" (§61) go beyond stating the LLM-access constraint; no auth model is specified anywhere. |
 | ADR-017 | Deployment Architecture | **C** | Genuinely open (TAD §84: "Deployment technology 🟡 ADR"; §70 gives only a logical sketch). |
+| ADR-018 *(new, D2)* | Provider Scoring Factor Sourcing (`evidence_quality`, normalized `freshness`, `cost_factor`) | **C — genuine new decision, not yet in TAD §77** | Not TAD's own list — surfaced by implementing D2 (§I). TAD §31 requires these three as `ProviderScore` inputs but defines no source for any of them; D1's contract doesn't expose them either. Two candidate resolutions recorded (extend the `ProviderAdapter` contract, or source from Telemetry/Offline Calibration) — neither decided. Does not block D3; `CapabilityRegistry.rank()` works today with explicit caller-supplied values. |
 
-**Net effect:** 14 of 17 remain genuine open decisions (several narrower or lower-priority than their titles suggest), 2 (ADR-012, ADR-013) should be treated as already closed by TAD and folded into ADR-001/002 rather than reopened, and 1 (ADR-010) is half-closed (formula fixed, only infrastructure choice open). No ADR should currently be marked D outright, but ADR-010's sub-question of "which BM25 library" is implementation detail within an otherwise-real ADR.
+**Net effect:** 14 of 17 TAD-listed candidates remain genuine open decisions (several narrower or lower-priority than their titles suggest), 2 (ADR-012, ADR-013) should be treated as already closed by TAD and folded into ADR-001/002 rather than reopened, and 1 (ADR-010) is half-closed (formula fixed, only infrastructure choice open). No ADR should currently be marked D outright, but ADR-010's sub-question of "which BM25 library" is implementation detail within an otherwise-real ADR. D2 surfaced one genuinely new candidate not in TAD's original 17 (ADR-018).
 
 ---
 
@@ -149,8 +154,11 @@ No contradiction above was silently resolved by picking a side without recording
 | `codex.repository.models` | `RepositoryMetadata`, `ChangeSet` | TAD §7, §72 |
 | `codex.provider.capability` | `Capability` (D1) | TAD §9-10 |
 | `codex.provider.contract` | `ProviderAdapter` protocol + supporting types (D1) | TAD §8-9, §64; directive §11-13 |
+| `codex.registry.models` | `ProviderEvaluationStatus`, `ProviderEvaluation` (D2) | TAD §10 |
+| `codex.registry.scoring` | `ProviderScoreInputs`, `provider_score()`, `PROVIDER_SCORE_WEIGHTS` (D2) | TAD §31; directive D2 §4 |
+| `codex.registry.registry` | `CapabilityRegistry` (D2) | TAD §10, §31 |
 
-**Zero code exists** for 13 of TAD's 18 named components (§6): Capability Registry, Entity Resolution Engine, Query Understanding Engine, SLM Gateway, Query Planner, Retrieval Engine, Ranking Engine, MSS Builder, LLM Gateway, Verification Engine, Telemetry Store, Artifact Store, Offline Calibration Pipeline. Provider Adapter Manager now has a contract (`codex.provider`, D1) but no concrete adapter yet — 5 of 18 components have code (4 from Phase 1 + `codex.provider`).
+**Zero code exists** for 12 of TAD's 18 named components (§6): Entity Resolution Engine, Query Understanding Engine, SLM Gateway, Query Planner, Retrieval Engine, Ranking Engine, MSS Builder, LLM Gateway, Verification Engine, Telemetry Store, Artifact Store, Offline Calibration Pipeline. Provider Adapter Manager has a contract (`codex.provider`, D1) but no concrete adapter yet — 6 of 18 components have code (4 from Phase 1 + `codex.provider` + `codex.registry`).
 
 ---
 
@@ -167,7 +175,7 @@ No P0 items remain open. Proceed to P1.
 **P1 — V1 functionality blockers (TAD §78 "Mandatory"):**
 - ~~`ProviderAdapter` contract/protocol (TAD §9)~~ — ✅ **done (D1)**: `codex.provider`, 21 behavioral tests, 100% coverage.
 - Git Adapter proper (evidence-emitting: `CO_CHANGED_WITH`, introductions/deletions — beyond `RepositoryManager`'s revision/diff plumbing, which is a prerequisite, not the adapter) — **D3, next**.
-- Capability Registry (TAD §10) — **D2, next**.
+- ~~Capability Registry (TAD §10)~~ — ✅ **done (D2)**: `codex.registry`, 27 behavioral tests, 100% coverage. Scoring formula fully implemented but structurally dependent on 3 caller-supplied inputs with no defined source — see §I.
 - Ingestion pipeline wiring `RepositoryManager.detect_changed_files()` → provider extraction → graph upsert (TAD §72) — nothing currently connects Phase 1's pieces end-to-end.
 - SCIP Adapter (informed by `docs/research/provider-formats.md`).
 - Entity Resolution + Reconciliation Engine (contradiction-score formula, TAD §38) — meaningful only once ≥2 providers exist.
@@ -193,8 +201,8 @@ Concretizes TAD §80's phases into the actual next steps given what exists today
 
 0. **Resolve P0 items** — ✅ done (`docs/architecture-reconciliation.md`; C-1/C-2/C-3/C-5 all resolved, HLRD/TAD amended). No code was needed.
 1. **`ProviderAdapter` contract (D1)** — ✅ **done**: `codex.provider.{capability,contract}`, 21 behavioral tests, 100% coverage. See `docs/architecture-reconciliation.md`-style traceability above.
-1b. **Capability Registry (D2)** — not started, next per the Phase D directive's order.
-2. **Git Adapter (D3)** — lowest-risk first concrete adapter: no external wire format, extends the already-tested `RepositoryManager`. Not started.
+1b. **Capability Registry (D2)** — ✅ **done**: `codex.registry.{models,scoring,registry}`, 27 behavioral tests, 100% coverage. New finding: 3 of 5 `ProviderScore` factors have no defined source (§I) — does not block D3.
+2. **Git Adapter (D3)** — lowest-risk first concrete adapter: no external wire format, extends the already-tested `RepositoryManager`. Not started, next per the Phase D directive's order.
 3. **Ingestion pipeline (D4)**: `ChangeSet` → `Evidence` → graph upsert, wiring existing Phase 1 pieces into one working, testable vertical slice for the Git Adapter before adding more providers. Not started.
 4. **SCIP Adapter (D5)** — second provider; unlocks real Entity Resolution work (moot with only one provider). Not started.
 5. **Entity Resolution + Reconciliation Engine** (contradiction score, `CanonicalRelationship.status` assignment) — needs ≥2 providers to be meaningful.
@@ -210,3 +218,38 @@ Concretizes TAD §80's phases into the actual next steps given what exists today
 15. **Production hardening** (Phase 6).
 
 Each step should land as its own reviewable commit with tests, per the directive's `audit → reconcile → trace → implement one phase → test → verify → checkpoint` loop — the same pattern already used for Phase 1.
+
+---
+
+## I. New Finding (D2): three of five `ProviderScore` factors have no defined source
+
+Discovered while implementing D2 (`CapabilityRegistry.rank()`). Not silently resolved — flagged here per the Phase D directive's own instruction ("if D2 exposes an underspecified behavior that cannot be resolved from HLRD/TAD/reconciliation/resources, STOP and report it").
+
+TAD §31 defines the `ProviderScore` aggregation:
+
+```
+ProviderScore =
+    0.40 capability_match
+  + 0.20 evidence_quality
+  + 0.15 availability
+  + 0.15 freshness
+  + 0.10 cost_factor
+```
+
+...and states each factor is normalized to `[0.0, 1.0]`, with `capability_match = 0` excluding a provider before scoring. It does **not** define how any individual factor is computed — that was always going to be down to whatever implements the registry. D1 (already approved and closed) resolved two of the five:
+
+| Factor | Source | Status |
+|---|---|---|
+| `capability_match` | `capability in adapter.supported_capabilities` — 1.0 if the provider is a candidate at all (it's never scored otherwise), 0.0 (excluded) otherwise | **Resolved**, derivable from D1 |
+| `availability` | `adapter.availability(capability, repository)` — already `[0.0, 1.0]` per the D1 clarification | **Resolved**, direct D1 property |
+| `evidence_quality` | — | **No source.** No adapter property, no formula in HLRD/TAD, no mention in the reconciliation docs. `Evidence.confidence` is per-*evidence-record* and only exists after extraction — it can't inform a pre-extraction provider-selection score for a query that hasn't retrieved anything yet, at least not without a historical/telemetry aggregation mechanism that doesn't exist yet (Telemetry Store, TAD §65, is itself `NOT_IMPLEMENTED`). |
+| `freshness` (as a score) | — | **Half-resolved.** The *raw signal* exists (`adapter.freshness -> datetime \| None`, D1), but converting a timestamp into a `[0,1]` score needs a staleness/decay policy (how many hours/days maps to what score?) that is defined nowhere. |
+| `cost_factor` | — | **No source.** No adapter property, no formula. TAD/HLRD mention "cost" only as this weighted factor name; an earlier turn's own guidance ("do not allow cost expressed in raw currency to contaminate the score") implies it should already be pre-normalized before use, but never says by whom or how. |
+
+**What D2 does about it:** implements the formula and weights exactly as specified (`codex.registry.scoring`, tested independently of the registry in `test_provider_scoring.py`), and implements everything the registry *can* determine on its own (registration, capability discovery, eligibility/health/availability evaluation and classification). For the three unresolved factors, `CapabilityRegistry.rank()` requires them as **explicit, required, per-provider-name keyword arguments with no default** — calling `rank()` without an entry for every usable candidate raises `ValueError` naming the provider. Nothing in `codex.registry` guesses a number for any of the three.
+
+**Two candidate resolutions, neither decided here:**
+1. Extend the (already-approved) `ProviderAdapter` contract with `evidence_quality`/`cost_factor` properties (mirroring how `health_status`/`availability`/`freshness` already work) — plausible since TAD §9's own attribute list already established the pattern of adapters reporting simple facts about themselves.
+2. Treat these as Telemetry/Offline-Calibration concerns (TAD §59, §65-66) — historical per-provider statistics computed from accumulated production evidence, fed into `rank()` by whatever calls the registry (a future D3+ Planner), rather than adapter-reported.
+
+This does not block D3 (Git Adapter): `providers_for()`/`evaluate()`/registration work fully without it, and `rank()` is usable today by any caller (including future D3+ code) willing to supply the three inputs explicitly, exactly as the D2 tests do.
