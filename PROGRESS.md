@@ -6,15 +6,17 @@
 
 ## Current Status
 
-**Phase:** Architecture baseline — no implementation yet.
+**Phase:** Phase 1 — Foundation (TAD §80), in progress. First working code has landed.
 
 | Date (UTC) | Milestone |
 |---|---|
 | 2026-08-30 12:42 | Repository initialized (was empty, no prior commits) |
 | 2026-08-30 12:47 | HLRD v1.0 committed — `docs/HLRD.md` (`4bd76c4`) |
 | 2026-08-30 12:49 | TAD v1.0 committed — `docs/TAD.md` (`bce94fa`) |
+| 2026-08-30 12:54 | `PROGRESS.md` added — `6038e2b` |
+| 2026-08-30 12:59 | Project scaffolding + Phase 1 foundation code landed: pyproject/CI, `codex.ontology`, `codex.evidence`, `codex.graph` (in-memory), `codex.repository`, 17 passing tests, clean `ruff`/`mypy` |
 
-Both documents are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by their authors. No source code, schemas, or provider adapters exist yet — `src/` has not been created.
+Both HLRD and TAD are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by their authors. Phase 1 foundation code now exists under `src/codex/`; Phases 2–6 (providers, intelligence, reasoning, validation, hardening) have not started.
 
 ---
 
@@ -22,7 +24,14 @@ Both documents are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by thei
 
 1. **HLRD v1.0 (closed)** — problem statement, vision, provider strategy (SCIP + CodeQL + Git + one repo-intelligence provider, runtime optional), canonical graph ontology, entity resolution, evidence provenance/versioning, query understanding → planning → retrieval → ranking → MSS → coverage → context → LLM → verification pipeline, learning/feedback boundaries, 12 architectural invariants (INV-001..012), provisional V1 performance/success targets.
 2. **TAD v1.0 (closed)** — 18 logical components, DTD-01..05 pipeline (canonical graph, query understanding, planner, evidence selection/MSS, verification), provider adapter contract, capability registry, evidence/cohort/status model, graph versioning + concurrency model (immutable versioned reads), ranking formulas, budget-aware planning, failure taxonomy, 15 frozen architectural invariants, dependency rules (including forbidden edges, e.g. Planner → LLM), testing strategy, implementation phases 1–6.
-3. **Not yet started:** any ADR, any code, any storage/provider technology selection, benchmark corpus, or deployment work.
+3. **Phase 1 — Foundation (TAD §80): in progress.** Scaffolded as a Python project (`pyproject.toml`, `ruff`/`mypy`/`pytest`, GitHub Actions CI) with four modules under `src/codex/`:
+   - `ontology/` — `BaseEntityType`, `CommonRole`, `RelationshipType`, `RepositorySymbol`, `SourceLocation`, and `build_canonical_id()` (HLRD §16-18, TAD §12-14).
+   - `evidence/` — `Evidence`, `EvidenceCohort`, `EvidenceStatus`, `CoverageStatus`, `CanonicalRelationship`, and an `InMemoryEvidenceStore` behind an `EvidenceStore` protocol (TAD §15-18).
+   - `graph/` — `GraphVersion`, and `GraphReader`/`GraphStore` protocols with a NetworkX-backed `InMemoryGraphStore` (TAD §12, §19-20, §53, §62).
+   - `repository/` — `RepositoryManager` (register/clone, HEAD revision, changed-file detection between revisions) and its models (TAD §7, §72).
+
+   17 tests pass; `ruff` and `mypy` are clean. Storage/provider technology is still whatever the in-memory Phase 1 defaults are — no ADR has selected a real backend yet (deliberate, per TAD §77).
+4. **Not yet started:** any ADR, provider adapters (SCIP/CodeQL/Git-evidence/Sourcegraph), Capability Registry, Entity Resolution, DTD-02..05 (query understanding/planning/retrieval/verification), LLM Gateway, benchmark corpus, or deployment work.
 
 ---
 
@@ -56,25 +65,24 @@ Both documents are marked **FROZEN / ARCHITECTURE BASELINE ESTABLISHED** by thei
 - Calibration of query-complexity weights, SLM confidence thresholds, ranking weights, completeness thresholds — not started (currently only initial/placeholder values in the TAD).
 - Performance validation against V1 targets (p95 latency < 5s, graph update < 10min/1k files, LLM tokens/query < 4,000, Precision@10 > 0.80, Recall@10 > 0.75, factual accuracy > 0.85, traceability ≥ 90%) — not started.
 
-### Implementation (TAD §80, Phase 1 not started)
+### Implementation (TAD §80)
 
-- Phase 1 — Foundation: Repository Manager, canonical ontology, graph storage abstraction, evidence model, versioning.
-- Phase 2 — Providers: SCIP, CodeQL, Git, Sourcegraph/RepoGraph adapters.
-- Phase 3 — Intelligence: Capability Registry, Entity Resolution, DTD-02/03/04.
-- Phase 4 — Reasoning: LLM Gateway, EvidencePackage, structured claims, DTD-05.
-- Phase 5 — Validation: benchmark repos, ground truth, metrics, calibration, failure testing.
-- Phase 6 — Production hardening: security, observability, scaling, caching, incremental indexing, version management, rollback.
-
-None of Phase 1–6 has begun; there is no repository scaffolding (no language/toolchain chosen, no `src/` tree, no CI).
+- **Phase 1 — Foundation: in progress.** Done: canonical ontology, evidence model, graph storage abstraction (in-memory), `GraphVersion`, Repository Manager (register/clone, HEAD revision, changed-file diff). Remaining: Entity Resolution is not implemented (only the `build_canonical_id()` join key exists — no reconciliation across providers yet, since no providers exist yet), and no incremental-update pipeline wires `RepositoryManager.detect_changed_files()` into a graph rebuild.
+- Phase 2 — Providers: SCIP, CodeQL, Git-evidence, Sourcegraph/RepoGraph adapters. Not started.
+- Phase 3 — Intelligence: Capability Registry, Entity Resolution, DTD-02/03/04 (query understanding, planner, evidence selection/MSS). Not started.
+- Phase 4 — Reasoning: LLM Gateway, EvidencePackage, structured claims, DTD-05 (verification). Not started.
+- Phase 5 — Validation: benchmark repos, ground truth, metrics, calibration, failure testing. Not started.
+- Phase 6 — Production hardening: security, observability, scaling, caching, incremental indexing, version management, rollback. Not started.
 
 ---
 
 ## Immediate Next Decision
 
-Per open discussion: start with **ADRs**, **project scaffolding**, or a **vertical-slice prototype** (e.g. minimal Git adapter → evidence normalization → canonical graph stub) — not yet decided.
+Decided: build, starting from project scaffolding (done) into Phase 1 foundation code (in progress). Next up is most naturally a first real Provider Adapter — the Git Adapter is the obvious candidate since `RepositoryManager` already wraps GitPython and can feed it directly — followed by wiring an ingestion pipeline that turns a `ChangeSet` into `upsert_entity`/`upsert_relationship` calls against `InMemoryGraphStore`. Not yet started.
 
 ---
 
 ## Change Log
 
-- **2026-08-30** — Repo initialized; HLRD v1.0 and TAD v1.0 committed as frozen baseline docs; this PROGRESS.md created to track open items.
+- **2026-08-30 12:42–12:54** — Repo initialized; HLRD v1.0 and TAD v1.0 committed as frozen baseline docs; PROGRESS.md created to track open items.
+- **2026-08-30 12:59** — Scaffolded the project (Python, `pyproject.toml`, ruff/mypy/pytest, GitHub Actions CI) and built Phase 1 foundation: `codex.ontology`, `codex.evidence`, `codex.graph` (NetworkX in-memory store), `codex.repository` (Repository Manager). 17 tests passing, lint/type-check clean.
