@@ -6,6 +6,8 @@ Audited: 2026-08-30 (commit `13bbaf6`).
 
 **Update 2026-08-30 (post-reconciliation):** C-1, C-2, and C-3 below are now **RESOLVED** — see `docs/architecture-reconciliation.md` for the full resolution and `docs/HLRD.md`/`docs/TAD.md` for the amended specification text. ADR-012 and ADR-013 are now formally **CLOSED/SUPERSEDED** in TAD §77 itself, not just recommended for closure here. This update did not change any code — resolutions confirmed existing code was already conformant (C-1, C-2) or don't yet apply to any code (C-3). Sections B, D, E, G, and H below are annotated accordingly rather than rewritten, so the original audit trail stays visible.
 
+**Update 2026-08-30 (post-D1):** the Phase D directive's D1 (ProviderAdapter Contract) is now **IMPLEMENTED** — `codex.provider.{capability,contract}`, 21 behavioral tests, 100% coverage, clean ruff/mypy. Sections B, F, G, and H are annotated accordingly. D2 (Capability Registry) is next; per the directive, implementation stops here pending review.
+
 ---
 
 ## 0. A note on scope: DTD-01..05 do not exist as separate documents
@@ -43,7 +45,7 @@ Only major architectural requirements are shown (not every clause). "Module" is 
 | Evidence independence default | — | §16 | `Evidence.effective_independence_group` | `test_evidence.py` | **IMPLEMENTED** | Defaults to `provider_default:{provider}` when unset |
 | EvidenceCohort (successful/failed/partial capability lists) | — | §17 | `codex.evidence.model.EvidenceCohort` | `test_evidence.py` | **PARTIALLY_IMPLEMENTED** | Data container correct; nothing yet *consumes* it to drive negative-query `INCONCLUSIVE` logic (no Planner exists) |
 | Evidence Status 6-way taxonomy, DISPUTED ≠ UNRESOLVED | — | §18 | `codex.evidence.model.EvidenceStatus` | none dedicated | **PARTIALLY_IMPLEMENTED** | Enum shape correct and distinct; no reconciliation logic yet assigns these, so the *behavioral* distinction is unverified |
-| `raw_reference` resolvable URI (artifact://, s3://, file://) | — | §16, §52 | `Evidence.raw_reference` | none | **NOT_IMPLEMENTED** | Field is an unvalidated `str \| None`; no Artifact Store or resolution service exists |
+| `raw_reference` resolvable URI (artifact://, s3://, file://) | — | §16, §52 | `Evidence.raw_reference` (`validate_raw_reference`), `ExtractionResult.raw_reference` | `test_provider_contract.py::test_raw_reference_must_be_resolvable_uri` | **PARTIALLY_IMPLEMENTED** | Scheme is now validated (rejects arbitrary strings) as of D1. Still no Artifact Store or resolution *service* — the URI is checked, not resolved. |
 | GraphVersion composite key | §19 (via TAD) | §19 | `codex.graph.version.GraphVersion` | `test_graph_store.py` | **PARTIALLY_IMPLEMENTED** | **C-2 now RESOLVED**: generic `provider_versions` dict is canonical (TAD §19 amended to match); code required no change. Still partial only pending full version-locking flow (see below). |
 | Graph version immutable once published | invariant | §20, invariant #4 | `GraphVersion.publish()` | `test_graph_store.py` | **PARTIALLY_IMPLEMENTED** | Model-level copy-on-publish works; nothing enforces immutability at the store level |
 | Graph version locking through Planning→Retrieval→MSS→Verification | — | §20 | — | — | **NOT_IMPLEMENTED** | No Planner/Retrieval/Verification exist yet to lock a version through |
@@ -51,7 +53,7 @@ Only major architectural requirements are shown (not every clause). "Module" is 
 | Historical storage = snapshot + diffs | — | §21 | — | — | **NOT_IMPLEMENTED** | No snapshotting or reconstruction exists |
 | Repository Manager: register/clone/revision/diff | — | §7 | `codex.repository.manager.RepositoryManager` | `test_repository_manager.py` (3 tests, real git repos, no network) | **PARTIALLY_IMPLEMENTED** | All done except "triggering indexing" (explicit TAD §7 responsibility) — no ingestion pipeline exists to trigger |
 | Repository Manager does not interpret queries | — | §7 | (absence of query code in this module) | — | **IMPLEMENTED** | Satisfied by construction |
-| Provider Adapter contract (`extract/validate/normalize`, capabilities) | — | §9 | — | — | **NOT_IMPLEMENTED** | No `ProviderAdapter` protocol exists at all |
+| Provider Adapter contract (`extract/validate/normalize`, capabilities) | — | §8-9, §64; directive §11-13 | `codex.provider.contract.ProviderAdapter` (+ `Capability`, `ProviderHealthStatus`, `ValidationResult`, `ProviderEligibility`, `ExtractionResult`, `NormalizedEvidence`, `ProviderExtractionError`) | `tests/test_provider_contract.py` (21 tests) via `tests/fake_provider_adapter.py` | **IMPLEMENTED** | Behaviorally proven, not just declared: identity/version/capability declaration, supported vs. unsupported capability, successful/empty/partial/failed capability outcomes kept distinct, total provider failure raising `ProviderExtractionError` (distinct from a capability failure), provenance, `independence_group` default, source revision, snapshot identity, `raw_reference` validation, eligibility metadata, and revision association across runs. No concrete adapter (Git/SCIP) exists yet — that's D3/D5, correctly out of scope for this component. |
 | Capability Registry | — | §10 | — | — | **NOT_IMPLEMENTED** | — |
 | Relationship Reconciliation / contradiction score | §20 | §38, §73 | `CanonicalRelationship` (shape only) | `test_evidence.py` (key only) | **PARTIALLY_IMPLEMENTED** | Data model exists (`supporting_evidence_ids`, `contradicting_evidence_ids`, `status`); zero logic computes them |
 | External library package-qualified identity | — | §56 | `BaseEntityType.EXTERNAL_LIBRARY` | none | **PARTIALLY_IMPLEMENTED** | Ontology slot exists; nothing populates or validates `pypi:x@y`-style identifiers |
@@ -63,7 +65,7 @@ Only major architectural requirements are shown (not every clause). "Module" is 
 | Telemetry Store | §52 | §65 | — | — | **NOT_IMPLEMENTED** | — |
 | Artifact Store | — | §52-53 | — | — | **NOT_IMPLEMENTED** | — |
 
-**Summary:** 4 of ~24 major requirements IMPLEMENTED, 10 PARTIALLY_IMPLEMENTED, 9 NOT_IMPLEMENTED, 1 effectively CONTRADICTED at the spec level (verification states). Nothing is marked implemented merely because a class exists — every "IMPLEMENTED" row has a passing behavioral test.
+**Summary (updated post-D1):** 5 of ~24 major requirements IMPLEMENTED, 10 PARTIALLY_IMPLEMENTED, 8 NOT_IMPLEMENTED, 0 CONTRADICTED at the spec level (verification-state contradiction resolved by the reconciliation pass). Nothing is marked implemented merely because a class exists — every "IMPLEMENTED" row has a passing behavioral test.
 
 ---
 
@@ -143,8 +145,10 @@ No contradiction above was silently resolved by picking a side without recording
 | `codex.graph.memory_store` | `InMemoryGraphStore` (NetworkX-backed) | TAD §53 (Canonical Graph Store) — storage tech deferred (ADR-001) |
 | `codex.repository.manager` | `RepositoryManager`: register/clone, HEAD revision, changed-file diff | TAD §7 |
 | `codex.repository.models` | `RepositoryMetadata`, `ChangeSet` | TAD §7, §72 |
+| `codex.provider.capability` | `Capability` (D1) | TAD §9-10 |
+| `codex.provider.contract` | `ProviderAdapter` protocol + supporting types (D1) | TAD §8-9, §64; directive §11-13 |
 
-**Zero code exists** for 12 of TAD's 18 named components (§6): Provider Adapter Manager, Capability Registry, Entity Resolution Engine, Query Understanding Engine, SLM Gateway, Query Planner, Retrieval Engine, Ranking Engine, MSS Builder, LLM Gateway, Verification Engine, Telemetry Store, Artifact Store, Offline Calibration Pipeline. (That's 14, not 12 — TAD lists 18 components total; 4 have code, 14 don't.)
+**Zero code exists** for 13 of TAD's 18 named components (§6): Capability Registry, Entity Resolution Engine, Query Understanding Engine, SLM Gateway, Query Planner, Retrieval Engine, Ranking Engine, MSS Builder, LLM Gateway, Verification Engine, Telemetry Store, Artifact Store, Offline Calibration Pipeline. Provider Adapter Manager now has a contract (`codex.provider`, D1) but no concrete adapter yet — 5 of 18 components have code (4 from Phase 1 + `codex.provider`).
 
 ---
 
@@ -158,10 +162,10 @@ No contradiction above was silently resolved by picking a side without recording
 
 No P0 items remain open. Proceed to P1.
 
-**P1 — V1 functionality blockers (TAD §78 "Mandatory," nothing built yet):**
-- `ProviderAdapter` contract/protocol (TAD §9).
-- Git Adapter proper (evidence-emitting: `CO_CHANGED_WITH`, introductions/deletions — beyond `RepositoryManager`'s revision/diff plumbing, which is a prerequisite, not the adapter).
-- Capability Registry (TAD §10).
+**P1 — V1 functionality blockers (TAD §78 "Mandatory"):**
+- ~~`ProviderAdapter` contract/protocol (TAD §9)~~ — ✅ **done (D1)**: `codex.provider`, 21 behavioral tests, 100% coverage.
+- Git Adapter proper (evidence-emitting: `CO_CHANGED_WITH`, introductions/deletions — beyond `RepositoryManager`'s revision/diff plumbing, which is a prerequisite, not the adapter) — **D3, next**.
+- Capability Registry (TAD §10) — **D2, next**.
 - Ingestion pipeline wiring `RepositoryManager.detect_changed_files()` → provider extraction → graph upsert (TAD §72) — nothing currently connects Phase 1's pieces end-to-end.
 - SCIP Adapter (informed by `docs/research/provider-formats.md`).
 - Entity Resolution + Reconciliation Engine (contradiction-score formula, TAD §38) — meaningful only once ≥2 providers exist.
@@ -172,7 +176,7 @@ No P0 items remain open. Proceed to P1.
 **P2 — important, non-blocking for a minimal vertical slice:**
 - Runtime Adapter (explicitly optional).
 - Store-level enforcement of the graph mutation boundary (today it's a typing convention only).
-- Artifact Store's actual URI-resolution service (`raw_reference` is currently an unvalidated string).
+- Artifact Store's actual URI-resolution service (`raw_reference` scheme is now validated as of D1, but nothing resolves the URI to bytes yet).
 - Terminology cleanup for **C-4** (confidence overload).
 
 **P3 — future optimization, correctly out of scope (TAD §3, §79):**
@@ -186,10 +190,11 @@ No P0 items remain open. Proceed to P1.
 Concretizes TAD §80's phases into the actual next steps given what exists today:
 
 0. **Resolve P0 items** — ✅ done (`docs/architecture-reconciliation.md`; C-1/C-2/C-3/C-5 all resolved, HLRD/TAD amended). No code was needed.
-1. **`ProviderAdapter` contract + Capability Registry skeleton** (TAD §9-10) — nothing else in Phase 2 can start without this.
-2. **Git Adapter** — lowest-risk first adapter: no external wire format, extends the already-tested `RepositoryManager`.
-3. **Ingestion pipeline**: `ChangeSet` → `Evidence` → graph upsert, wiring existing Phase 1 pieces into one working, testable vertical slice for the Git Adapter before adding more providers.
-4. **SCIP Adapter** — second provider; unlocks real Entity Resolution work (moot with only one provider).
+1. **`ProviderAdapter` contract (D1)** — ✅ **done**: `codex.provider.{capability,contract}`, 21 behavioral tests, 100% coverage. See `docs/architecture-reconciliation.md`-style traceability above.
+1b. **Capability Registry (D2)** — not started, next per the Phase D directive's order.
+2. **Git Adapter (D3)** — lowest-risk first concrete adapter: no external wire format, extends the already-tested `RepositoryManager`. Not started.
+3. **Ingestion pipeline (D4)**: `ChangeSet` → `Evidence` → graph upsert, wiring existing Phase 1 pieces into one working, testable vertical slice for the Git Adapter before adding more providers. Not started.
+4. **SCIP Adapter (D5)** — second provider; unlocks real Entity Resolution work (moot with only one provider). Not started.
 5. **Entity Resolution + Reconciliation Engine** (contradiction score, `CanonicalRelationship.status` assignment) — needs ≥2 providers to be meaningful.
 6. **CodeQL Adapter** — third provider; resolves the evidence-shape question from research as part of ADR-005.
 7. **Repository-graph Adapter** (Sourcegraph, or a RepoGraph-style tree-sitter fallback if the Sourcegraph API gap isn't closed by then).
