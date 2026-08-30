@@ -10,11 +10,13 @@ from codex.provider.contract import (
     ProviderHealthStatus,
     ValidationResult,
 )
+from codex.provider.git_adapter import GitAdapter
 
 __all__ = [
     "Capability",
     "EligibilityStatus",
     "ExtractionResult",
+    "GitAdapter",
     "NormalizedEvidence",
     "ProviderAdapter",
     "ProviderEligibility",
