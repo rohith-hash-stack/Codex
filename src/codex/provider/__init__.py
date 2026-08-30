@@ -11,6 +11,7 @@ from codex.provider.contract import (
     ValidationResult,
 )
 from codex.provider.git_adapter import GitAdapter
+from codex.provider.scip_adapter import SCIPAdapter
 
 __all__ = [
     "Capability",
@@ -23,5 +24,6 @@ __all__ = [
     "ProviderExtractionError",
     "ProviderFailureReason",
     "ProviderHealthStatus",
+    "SCIPAdapter",
     "ValidationResult",
 ]
