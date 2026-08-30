@@ -42,6 +42,7 @@ class FakeProviderAdapter:
         default_availability: float = 1.0,
         availability_overrides: dict[Capability, float] | None = None,
         eligibility: ProviderEligibility | None = None,
+        validate_ok: bool | None = None,
         fail_capabilities: frozenset[Capability] = frozenset(),
         partial_capabilities: frozenset[Capability] = frozenset(),
         empty_capabilities: frozenset[Capability] = frozenset(),
@@ -54,6 +55,7 @@ class FakeProviderAdapter:
         self._default_availability = default_availability
         self._availability_overrides = availability_overrides or {}
         self._eligibility = eligibility or ProviderEligibility(status=EligibilityStatus.ELIGIBLE)
+        self._validate_ok = validate_ok
         self._fail = fail_capabilities
         self._partial = partial_capabilities
         self._empty = empty_capabilities
@@ -85,9 +87,11 @@ class FakeProviderAdapter:
         return self._freshness
 
     def validate(self) -> ValidationResult:
-        if self._health is ProviderHealthStatus.UNHEALTHY:
-            return ValidationResult(ok=False, problems=[f"{self._name} is unhealthy"])
-        return ValidationResult(ok=True)
+        if self._validate_ok is not None:
+            ok = self._validate_ok
+        else:
+            ok = self._health is not ProviderHealthStatus.UNHEALTHY
+        return ValidationResult(ok=ok, problems=[] if ok else [f"{self._name} failed validation"])
 
     def check_eligibility(self, repository: RepositoryMetadata) -> ProviderEligibility:
         return self._eligibility
