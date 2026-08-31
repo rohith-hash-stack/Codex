@@ -37,7 +37,12 @@ SCIP does **not** directly give call edges (`A CALLS B`) — that has to be deri
 
 ## CodeQL — SARIF v2.1.0 output
 
-(Structure confirmed via a third-party mirror of GitHub's own CodeQL skill reference, since `codeql.github.com` itself was unreachable — see **Gaps**.)
+**Update 2026-08-30 (D6):** the structure below is now confirmed against the **authoritative OASIS SARIF 2.1.0 JSON schema** (`raw.githubusercontent.com/oasis-tcs/sarif-spec/master/sarif-2.1/schema/sarif-schema-2.1.0.json`, fetched directly) and against **real SARIF files produced by "CodeQL command-line toolchain"** (`github/codeql-action`'s own test fixtures — see `docs/resources.md`'s CodeQL row) — superseding the third-party-mirror caveat below, which no longer applies. Two corrections to the original plan, found during this verification:
+
+1. A result's location can reference `run.artifacts[index]` by index alone with no inline `uri` (confirmed in a real fixture, `fingerprinting.input.sarif`) — a conforming parser must resolve `artifactLocation.index` against `run.artifacts[]`, not assume `uri` is always present.
+2. `threadFlowLocation.kinds` — the field that would carry per-step semantics like "read"/"write"/"source"/"sink" — is **optional, freeform, and not populated in any real fixture inspected**. This directly overturns the original plan below ("each `threadFlowLocation` step becomes a `DEPENDS_ON`/`READS`/`WRITES` edge"): there is no deterministic signal to assign those predicates per step, so D6 does not attempt it — see `docs/resources.md` and `docs/architecture-conformance-audit.md`'s D6 entry for the resolved design (source→sink `REFERENCES` only, derived from the codeFlow's own explicit first/last locations).
+
+(Original structure notes, first researched via a third-party mirror since `codeql.github.com` itself was unreachable — retained for history; the shape held up under verification.)
 
 ```
 sarifLog
@@ -49,17 +54,17 @@ sarifLog
     └── results[]
         ├── ruleId, ruleIndex
         ├── message
-        ├── locations[].physicalLocation.artifactLocation.uri
-        ├── locations[].physicalLocation.region.{startLine,startColumn,endLine,endColumn}
+        ├── locations[].physicalLocation.artifactLocation.{uri | index}   # index resolves against run.artifacts[]
+        ├── locations[].physicalLocation.region.{startLine,startColumn,endLine,endColumn}  # all optional
         ├── partialFingerprints                # dedup key
         └── codeFlows[].threadFlows[].locations[].location   # only for @kind path-problem queries
 ```
 
-**Mapping onto Codex:**
+**Mapping onto Codex (original plan, see the D6 update above for what was actually implemented):**
 
 - Each `result` → one `Evidence` record; `raw_reference` points at the SARIF file + result index (resolvable via the Artifact Store, TAD §52).
-- `result.locations[0]` gives `subject`'s source location directly; for a plain `@kind problem` query there is no natural `object` — CodeQL's structural/security findings are frequently *properties of one entity*, not *relationships between two*, which the TAD's `Evidence{subject, predicate, object}` shape doesn't naturally fit. Plan: represent single-entity findings as a self-relationship or a separate `Annotation` evidence subtype rather than forcing them through `CanonicalRelationship` — worth flagging explicitly in ADR-005 rather than deciding now.
-- `@kind path-problem` queries (data flow) map naturally: each `threadFlowLocation` step becomes a `DEPENDS_ON`/`READS`/`WRITES` edge between the entities at consecutive steps, and the full path is the evidence for a derived `REACHES` query-time relationship (TAD §14).
+- `result.locations[0]` gives `subject`'s source location directly; for a plain `@kind problem` query there is no natural `object` — CodeQL's structural/security findings are frequently *properties of one entity*, not *relationships between two*, which the TAD's `Evidence{subject, predicate, object}` shape doesn't naturally fit. Plan: represent single-entity findings as a self-relationship or a separate `Annotation` evidence subtype rather than forcing them through `CanonicalRelationship` — worth flagging explicitly in ADR-005 rather than deciding now. **Resolved in D6**: plain `problem`-kind results are represented as a role on the file entity, not a fabricated `Evidence` record — see the D6 update above.
+- ~~`@kind path-problem` queries (data flow) map naturally: each `threadFlowLocation` step becomes a `DEPENDS_ON`/`READS`/`WRITES` edge between the entities at consecutive steps~~ — **superseded, see the D6 update above**: `threadFlowLocation.kinds` gives no reliable per-step signal in practice.
 - `rule.defaultConfiguration.level` (`error`/`warning`/`note`) is a severity, not a probability — it should feed `Evidence.confidence` through an explicit policy mapping, not be used directly as `[0,1]` confidence.
 - CodeQL's distinguishing capability per the Capability Registry (TAD §10) is `DATA_FLOW` / security queries, not `CALL_RELATIONSHIP` — SCIP is the cheaper, more complete source for plain call/reference edges; CodeQL should be selected by the planner specifically when a query needs path/data-flow evidence.
 
@@ -97,5 +102,5 @@ Architecturally the closest existing analog to Codex itself:
 
 `docs.github.com`, `codeql.github.com`, and `sourcegraph.com` are blocked by this environment's outbound egress proxy. Specifically not yet verified against a primary source:
 
-- CodeQL SARIF field names above came from a third-party mirror (`github/awesome-copilot` skill reference), not `codeql.github.com` directly — very likely correct (matches the public SARIF 2.1.0 spec shape) but not verbatim-confirmed.
+- ~~CodeQL SARIF field names above came from a third-party mirror... not verbatim-confirmed~~ — **closed 2026-08-30 (D6)**: `raw.githubusercontent.com` (unlike `codeql.github.com`) is reachable from this environment. Fetched the authoritative OASIS SARIF 2.1.0 schema directly and validated against real SARIF files produced by "CodeQL command-line toolchain" — see the D6 update above and `docs/resources.md`'s CodeQL row.
 - Sourcegraph's Code Navigation GraphQL API (query names, auth, precise-vs-search-based navigation semantics) — not fetched at all. The Sourcegraph Adapter (ADR-006) still needs this before implementation; revisit from an environment that can reach `sourcegraph.com`, or ask the user for internal API docs/an existing client library.
