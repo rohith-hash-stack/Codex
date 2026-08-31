@@ -222,17 +222,49 @@ class ParsedSymbol:
     descriptor_path: str
 
 
+def _normalize_package_field(value: str) -> str:
+    """Undo SCIP's own ``"."`` placeholder for an empty `Package` field.
+
+    Confirmed against the reference `scip` Rust crate's
+    `bindings/rust/src/symbol.rs` (`raw.githubusercontent.com/sourcegraph/
+    scip/main/bindings/rust/src/symbol.rs`, fetched directly — read only
+    for its documented format/parse *behavior*, per
+    `docs/policy-external-references.md`; no code copied): `format_symbol`
+    emits literal ``"."`` for any `Package.manager`/`.name`/`.version`
+    that is empty or the `Package` itself is absent (space-separated
+    symbol strings can't represent an empty token directly), and its own
+    `parse_symbol`'s `dot()` helper converts that ``"."`` straight back to
+    ``""`` — round-tripped and proven by the crate's own test suite
+    (`formats_symbol_with_dots`). ``"."`` therefore means "this field is
+    unset," not a literal period, and the empty string is the
+    semantically correct value — never the raw ``"."`` token itself.
+    """
+    return "" if value == "." else value
+
+
 def parse_symbol(symbol: str) -> ParsedSymbol | None:
     """Parse a non-local SCIP symbol string's header. Returns ``None`` for a
     local symbol (``scheme == "local"``) or a string that doesn't match the
-    expected 5-token header shape (never guesses at a malformed symbol)."""
+    expected 5-token header shape (never guesses at a malformed symbol).
+
+    ``manager``/``package_name``/``package_version`` are normalized via
+    `_normalize_package_field` so a real producer's ``"."`` placeholder
+    for an unset field never leaks into Codex's own identity strings as
+    a literal period (Phase D gap-closure directive, Gap A).
+    """
     if symbol.startswith("local "):
         return None
     parts = symbol.split(" ", maxsplit=4)
     if len(parts) != 5:
         return None
     scheme, manager, name, version, descriptor_path = parts
-    return ParsedSymbol(scheme, manager, name, version, descriptor_path)
+    return ParsedSymbol(
+        scheme,
+        _normalize_package_field(manager),
+        _normalize_package_field(name),
+        _normalize_package_field(version),
+        descriptor_path,
+    )
 
 
 def is_local_symbol(symbol: str) -> bool:

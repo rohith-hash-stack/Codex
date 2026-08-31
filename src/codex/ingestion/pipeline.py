@@ -196,7 +196,7 @@ class IngestionPipeline:
             requested = frozenset(capabilities)
         else:
             requested = self._all_declared_capabilities()
-        to_run, skip_reasons = self._select_providers(requested, repository)
+        to_run, skip_reasons, skip_capabilities = self._select_providers(requested, repository)
         adapters_by_name = {a.provider_name: a for a in self._registry.registered_providers()}
 
         outcomes: list[ProviderRunOutcome] = []
@@ -208,6 +208,9 @@ class IngestionPipeline:
                 ProviderRunOutcome(
                     provider_name=name,
                     status=ProviderRunStatus.SKIPPED,
+                    capabilities_requested=frozenset(
+                        c.value for c in skip_capabilities.get(name, frozenset())
+                    ),
                     detail=skip_reasons[name],
                 )
             )
@@ -233,7 +236,7 @@ class IngestionPipeline:
 
     def _select_providers(
         self, requested: frozenset[Capability], repository: RepositoryMetadata
-    ) -> tuple[dict[str, frozenset[Capability]], dict[str, str]]:
+    ) -> tuple[dict[str, frozenset[Capability]], dict[str, str], dict[str, frozenset[Capability]]]:
         """Provider discovery + capability selection + eligibility evaluation.
 
         Delegates every decision to the Capability Registry's
@@ -245,9 +248,20 @@ class IngestionPipeline:
         reason, not a run failure — it was never attempted. A provider
         usable for at least one requested capability is never reported
         as skipped, even if some other requested capability was denied.
+
+        Returns ``(to_run, skip_reasons, skip_capabilities)`` — the third
+        element (gap-closure directive Gap B) is the set of capabilities
+        each skipped provider was actually evaluated (and denied) for, so
+        ``run()`` can populate a SKIPPED outcome's own
+        ``capabilities_requested`` — previously left empty, which made
+        the Coverage Engine unable to distinguish "this provider doesn't
+        declare the capability at all" from "it declared it but was
+        skipped for it," a real, previously-undiscovered gap found while
+        building `codex.coverage`.
         """
         to_run: dict[str, set[Capability]] = {}
         skip_notes: dict[str, list[str]] = {}
+        skip_caps: dict[str, set[Capability]] = {}
         for capability in requested:
             for evaluation in self._registry.evaluate(capability, repository):
                 if evaluation.status in _USABLE:
@@ -256,10 +270,18 @@ class IngestionPipeline:
                     skip_notes.setdefault(evaluation.provider_name, []).append(
                         f"{capability.value}: {evaluation.status.value}"
                     )
+                    skip_caps.setdefault(evaluation.provider_name, set()).add(capability)
         skip_reasons = {
             name: "; ".join(notes) for name, notes in skip_notes.items() if name not in to_run
         }
-        return {name: frozenset(caps) for name, caps in to_run.items()}, skip_reasons
+        skip_capabilities = {
+            name: frozenset(caps) for name, caps in skip_caps.items() if name in skip_reasons
+        }
+        return (
+            {name: frozenset(caps) for name, caps in to_run.items()},
+            skip_reasons,
+            skip_capabilities,
+        )
 
     def _run_one_provider(
         self,
