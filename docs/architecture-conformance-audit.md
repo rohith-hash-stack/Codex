@@ -1800,3 +1800,62 @@ Fresh `.venv-work` run: **823/823 tests passing** (801 → 823, +22 new), **99% 
 **Remaining gaps, unaffected by this pass** (per the directive's own "do not claim solved" list, unchanged): TAD §33 completeness denominator; feedback producer; retention/governance decision (still genuinely open — D13-C's non-persistence choice sidesteps it, does not resolve it); calibration write path; Shadow/Canary/Production; ADR-015/ADR-017; ingestion-side concurrent-writer detection; persistent GraphVersion registry; fine-grained cache invalidation; source-text materialization; storage architecture. A **real, populated** benchmark corpus (actual curated cases/labels for a real repository) still does not exist anywhere — `BenchmarkCase`/`GroundTruthLabel`/`BenchmarkCorpus` remain input *contracts*, proven end-to-end against a test fixture, not populated with genuine human-verified data. D7 remains DEFERRED — ARCHITECTURAL DECISION REQUIRED, untouched.
 
 **D13-C — COMPLETE for the approved narrow scope.** Full D13 calibration remains explicitly not implemented. Stopping here for review — next phase not started automatically.
+
+---
+
+## GG. Real-Repository Audit Fixes — D8 Relationship Propagation + Graph Referential Integrity — 2026-09-01
+
+Per the "Fix Real-Repository Audit Findings — No New Architecture" directive, closing the two concrete defects a prior real-repository capability audit (run against real `veyra`/`codex` repository copies, real `scip-python`-generated indexes, and the real, unmodified D1-D13-C pipeline) found. No new architecture; D7 not reopened; no CALLS/TESTED_BY/IMPLEMENTS/DEPENDS_ON provider added.
+
+### GG.1 D8 Tier-0 relationship propagation
+
+**Root cause, confirmed by direct execution against real data:** `codex.query_understanding.engine._contract_from_tier0` never populated `QueryContract.relationship_types` at all (unlike `_contract_from_slm`, which already did). Consequence traced into D9: `plan_query` set `relationship_types = []`, and `bounded_traversal`'s own `predicates = list(relationship_types) or [None]` then used `predicate=None` — an unfiltered traversal — for every Tier-0-resolved query regardless of stated intent. Verified live: three structurally different real queries ("Which tests call classify?", "What calls classify?", "Implementations of classify") returned byte-identical `EvidencePackage`s.
+
+**Fix.** Added `_CAPABILITY_RELATIONSHIP_TYPES: dict[Capability, tuple[RelationshipType, ...]]`, a small, fully-cited table reusing only already-documented capability -> relationship-predicate correspondences (SCIPAdapter's own docstrings for `SYMBOL_REFERENCE`/`IMPLEMENTATION`/`TYPE_RELATIONSHIP`; CodeQLAdapter's for `DATA_FLOW`; `Capability.DEPENDENCY`/`Capability.CO_CHANGE`'s own docstrings, which already state "Backs `RelationshipType.DEPENDS_ON`"/"...`CO_CHANGED_WITH`"), plus `_relationship_types_for_intent()`, which mechanically derives each intent's relationship types from the pre-existing `_REQUIRED_EVIDENCE` capability set via that table — introducing no new relationship semantics, only propagating ones the codebase already asserted elsewhere. Wired into `_contract_from_tier0`'s `QueryContract` construction. The SLM path (`_contract_from_slm`) is untouched — verified by a dedicated test proving an SLM-supplied `relationship_types` value passes through unchanged.
+
+**One deliberate, cited correction to an existing table**: `_REQUIRED_EVIDENCE[Intent.FIND_TESTS]` gained `Capability.CALL_RELATIONSHIP` alongside its existing `SYMBOL_REFERENCE` entry. Justification: TAD/HLRD's own worked example for this intent is literally "which tests *call* X" — the same `CALL_RELATIONSHIP` capability `FIND_CALLERS` already required, not a new one — and without it, the existing `symbol_level_fixtures.py`-based D9/D10/D13 integration tests (whose fixture represents "a test calls the function under test" as a `CALLS`-typed edge) would have regressed. This is a correction to an already-existing, arguably-incomplete D8 entry, not new architecture. FIND_CALLERS and FIND_TESTS legitimately share the `CALLS` predicate as a result (a test calling X is still a CALLS edge, only the caller's identity is further constrained) — they are not required to be disjoint, only for the *distribution* across the four audited intents to no longer be one universal, unfiltered set.
+
+### GG.2 Graph referential-integrity defect
+
+**Root cause, confirmed by direct execution against real data:** `GitAdapter`'s `CO_CHANGE` capability can emit a `CO_CHANGED_WITH` relationship referencing a file from an older commit-window entry that neither `HISTORY` (tip-commit-diff only) nor SCIP (Python files only) ever entity-ized — e.g. a `.md`/`.toml` file changed alongside code in a prior commit. `InMemoryGraphStore.upsert_relationship`'s NetworkX backing silently auto-created an attribute-less node for such an endpoint, which later crashed `find_entities`/`get_entity` with `KeyError: 'entity'`. Reproduced on both real `veyra` (4 dangling nodes) and `codex` (1 dangling node) ingestions before the fix.
+
+**Fix.** `IngestionPipeline._materialize_store` now skips materializing any relationship whose `subject`/`object` is not a real, committed entity — reusing the exact `known_entity_ids` concept `_reconcile_relationships` (the immediately-preceding step in `run()`) already computes and already uses to mark such a relationship `EvidenceStatus.UNRESOLVED` ("an information gap, never a dispute"). No entity is fabricated: the relationship's evidence remains fully retrievable through `EvidenceStore`; only the graph-level edge (which would otherwise reference a node that was never really committed) is withheld. Re-running the real-repository ingestion after the fix: **zero dangling nodes on both repositories** (was 4 and 1).
+
+### GG.3 Real-repository query results, before vs. after
+
+| Query | Repo | Before | After |
+|---|---|---|---|
+| "Which tests call classify?" (FIND_TESTS) | veyra | 11 entities, 6 rel. | Unchanged (11 entities, 6 rel.) — REFERENCES dominates for both FIND_TESTS and FIND_CALLERS, so this specific pair's overlap is expected, not a regression |
+| "What calls classify?" (FIND_CALLERS) | veyra | 11 entities, 6 rel. (identical to FIND_TESTS) | Unchanged — same reasoning; the pre-fix collapse for *these two* wasn't wrong, only accidental |
+| "Implementations of classify" (FIND_IMPLEMENTATIONS) | veyra | 11 entities, 6 rel. (identical to the two above — wrong) | **8 entities, 0 relationships, `negative_query_result=NO_EVIDENCE_FOUND`** — correctly, confidently reports no implementation exists (matches the manually-verified real answer: `classify()` is a plain function, not an interface) |
+| "What does IngestionPipeline depend on" (FIND_DEPENDENCIES) | codex | 19 entities, 15 rel. (IngestionPipeline's own internal methods, not real dependencies — wrong) | **17 entities, 0 relationships, `negative_query_result=INCONCLUSIVE`** — correctly declines to fabricate a dependency answer no real provider can support, rather than presenting internal methods as if they were dependencies |
+| Both negative queries ("totallyNonexistentFunctionXyzzy") | both | Correct (empty, INCONCLUSIVE) | Unchanged — correct before and after |
+| Ingestion (dangling nodes) | both | 4 (veyra), 1 (codex) | **0, 0** |
+
+FIND_IMPLEMENTATIONS and FIND_DEPENDENCIES — the two audited intents whose real relationship type (`IMPLEMENTS`, `DEPENDS_ON`) is fully disjoint from `SYMBOL_REFERENCE`'s output — are the clearest, most direct proof the fix works: both went from confidently-wrong, plausible-looking answers to correctly declining to assert what no real evidence supports.
+
+### GG.4 Remaining incorrect/imprecise answers
+
+Substring-based target resolution (`GraphReader.find_entities`, HLRD §34's deterministic-lookup requirement) still pulls in same-substring decoys unrelated to the query (e.g. `_classify_call`/`_classify_open`/`_classify_subscript` alongside `classify` itself) — a pre-existing, separate imprecision this directive did not scope in and was not touched. FIND_CALLERS/FIND_TESTS still cannot distinguish a true call from a mere reference on real data, because no current provider produces `RelationshipType.CALLS` at all (the original, already-known, correctly-deferred D7-shaped gap) — this directive's fix makes that limitation honestly visible (via `NOT_SUPPORTED`/`INCONCLUSIVE` where applicable) rather than papering over it with REFERENCES-shaped noise; it does not and was not asked to eliminate it.
+
+### GG.5 Is D7 now the actual blocker?
+
+**Partially, and now more precisely so.** For FIND_IMPLEMENTATIONS and FIND_DEPENDENCIES, the fix alone resolved the previously-reported "smallest real blocker" — both intents now answer correctly using only the providers Codex already has (SCIP's real `IMPLEMENTS` edges; honest `NOT_SUPPORTED` for `DEPENDS_ON`, which no current adapter produces). For FIND_CALLERS specifically, a genuine call-graph provider (D7 or equivalent) is the remaining, correctly-still-deferred blocker to a *positive* answer — but the propagation fix means Codex now either finds a real `CALLS` edge (rare/never today) or honestly reports insufficient evidence, never a REFERENCES-shaped false positive. D7 was not reopened, no new provider was added, and this finding does not change ADR-006's status.
+
+### GG.6 Tests
+
+10 new/changed tests across three files, plus one existing test corrected (not weakened — restored to its original, meaningful intent under valid entity-backed conditions), 100% coverage on both fixed modules:
+
+| File | Change | Covers |
+|---|---|---|
+| `tests/test_qu_engine.py` | +7 | `relationship_types` for FIND_CALLERS/FIND_TESTS/FIND_IMPLEMENTATIONS/FIND_DEPENDENCIES; determinism; the four audited intents no longer collapse into one universal set (while FIND_CALLERS/FIND_TESTS's legitimate overlap is explicitly allowed); the SLM path is untouched |
+| `tests/test_qu_security.py` | +1 | `relationship_types` is derived from `Intent`, never parsed from injected query text |
+| `tests/test_ingestion_pipeline.py` | +1 new, 1 corrected | New: a relationship whose endpoint was never entity-ized is excluded from the graph (not fabricated, not crashing) — the required regression test, reproducing the real Git-history condition via the existing `DeterministicFakeAdapter` fixture pattern. Corrected: `test_multiple_providers_contradictory_evidence_all_preserved` now supplies `entity_paths` (it was unintentionally relying on the exact bug being fixed) and asserts the now-correct `EvidenceStatus.SUPPORTED` outcome for a validly entity-backed relationship |
+
+### GG.7 Validation
+
+Fresh `.venv-work` run: **832/832 tests passing** (823 → 832: +1 ingestion regression test, +8 D8 tests, 1 corrected in place), **99% project-wide coverage** (both fixed modules — `query_understanding/engine.py`, `ingestion/pipeline.py` — 100%), `ruff check src/ tests/` clean, `mypy src/` clean (77 source files, unchanged count — no new modules, only two existing ones edited). No new pip dependency. No ADR. No HLRD/TAD text modified. Real-repository audit re-run against both `veyra` and `codex` (real `scip-python`-generated indexes, same repository copies as the original audit) confirms GG.3's before/after table and zero dangling nodes on both. **D1-D13-C contracts and dependency direction preserved** — only `codex.query_understanding.engine` (D8) and `codex.ingestion.pipeline` (D4) were touched, both already-existing modules within their own established scope; no package boundary, store, or evaluation contract was altered.
+
+**D7 not reopened.** No Sourcegraph/RepoGraph/Tree-sitter/LSIF code; ADR-006 untouched. Full D13 calibration remains not implemented.
+
+**GO** for continued real-repository validation using these two fixes; the remaining gaps (substring-based target imprecision, the still-absent CALLS/TESTED_BY/DEPENDS_ON providers) are correctly out of this directive's scope and unchanged. Stopping here for review — next phase not started automatically.
