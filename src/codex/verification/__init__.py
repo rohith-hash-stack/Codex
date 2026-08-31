@@ -9,6 +9,7 @@ from codex.verification.confidence import (
     compute_confidence,
     compute_factors,
 )
+from codex.verification.contradiction import ContradictionHandlingResult, handle_contradictions
 from codex.verification.engine import (
     ClaimVerification,
     is_significantly_contradicted,
@@ -30,6 +31,7 @@ __all__ = [
     "CONTRADICTION_WEAK_THRESHOLD",
     "V_WEIGHTS",
     "ClaimVerification",
+    "ContradictionHandlingResult",
     "ContradictionLevel",
     "EntailmentMethod",
     "EntailmentResult",
@@ -41,6 +43,7 @@ __all__ = [
     "direct_edge_match",
     "entail_claim",
     "find_path",
+    "handle_contradictions",
     "is_significantly_contradicted",
     "verify_claim",
     "verify_claims",
