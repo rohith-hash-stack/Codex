@@ -12,8 +12,9 @@ from pathlib import Path
 PLANNER_PACKAGE_DIR = Path(__file__).parent.parent / "src" / "codex" / "planner"
 
 FORBIDDEN_MODULES = (
-    # No LLM/SLM/verification component exists yet -- these names are
-    # forward-looking guards, not modules that currently exist.
+    # codex.llm/codex.verification now exist (D10) -- the planner must
+    # never depend on the LLM Gateway or Verification Engine (directive
+    # D10.9 item 12: "Planner does not call the LLM").
     "codex.llm",
     "codex.slm",
     "codex.verification",
