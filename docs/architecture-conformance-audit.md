@@ -1601,3 +1601,115 @@ Fresh `.venv-work` run: **764/764 tests passing** (697 → 720 at D12 → 764 no
 **No genuine HLRD/TAD contradiction found** during implementation, beyond what §BB/§CC already characterized.
 
 **D13-A — COMPLETE for the approved narrow scope.** The full TAD §59 pipeline (Calibration's write path, Feedback collection, retention/governance, Shadow/Canary/Production) remains explicitly not implemented, per §BB's standing STOP and the directive's own closing instruction ("Do not start full D13 calibration"). Stopping here for review.
+
+---
+
+## EE. D13-B — Passive Evaluation Observer — 2026-09-01
+
+Per the "D13-B — Passive Evaluation Observer: Research → Implement → Validate" directive. **The problem, exactly as stated by the directive and confirmed independently by re-reading D9 first:** D13-A could not compute `PRECISION_AT_10`/`RECALL_AT_10`/`MRR` because D11's closed telemetry schema (TAD §65) records only `candidate_count`/`mss_size` bare counts, never the ordered ranked-candidate list itself. D13-B's job is to expose that missing information, passively, without changing D8/D9/D10 semantics.
+
+### EE.1 Research findings
+
+Re-read `docs/HLRD.md`, `docs/TAD.md`, this document's own §BB/§CC/§DD, `docs/architecture-truth-report.md`, `src/codex/evaluation/` (D13-A), `src/codex/planner/{planner,ranking,retrieval,mss,models}.py` (D9), and `src/codex/telemetry/models.py` (D11) directly before writing any code, per the directive's explicit "mandatory first step."
+
+**Where the ranked candidate list actually exists.** Traced the real runtime objects, not assumed: `codex.planner.planner.execute_query` (`planner.py:383-391`) calls `rank_entities(...)` and receives `ranked: list[tuple[RepositorySymbol, float]]` — genuinely the ordered candidates with their real scores. The very next line, `ranked_entities = [entity for entity, _score in ranked]`, discards the score immediately; `ranked`/`ranked_entities` never leave `execute_query`'s local scope. Confirmed, directly, that none of the four objects the directive named are equivalent to this list:
+
+- `RetrievalPlan.target_entity_ids` — traced to `resolve_targets(graph, query_contract.targets)` (`planner.py:126`), the query's own **target** entities (input side), never the output of ranking.
+- `QueryTelemetryEvent.candidate_count`/`mss_size` — bare integers (TAD §65's closed schema, D11); no identity or order information at all.
+- `EvidencePackage.relationships` — the traversal's edge set, not a ranked entity list.
+- `EvidencePackage.entities` — is `ranked_entities`' order **only when `expand_for_source_context` never triggers** (`Capability.SOURCE_LOCATION` not required, or already satisfied); when TAD §40 expansion actually runs, `expand_for_source_context` (`mss.py:70,78`) re-sorts its result by `canonical_id`, destroying rank order, and the score was already gone regardless. Confirmed by reading `mss.py` directly, not assumed.
+
+**Whether existing D9 objects already carry enough information:** no — the score is nowhere outside `execute_query`'s stack frame, and the pre-expansion order is only sometimes preserved. **Preferring observation over changing D9** (the directive's explicit instruction): `bounded_traversal` (`codex.planner.retrieval`) and `rank_entities` (`codex.planner.ranking`) are both already-exported, pure, deterministic functions — no I/O, no randomness, output determined entirely by explicit arguments (confirmed by reading both functions in full). This makes a **legitimate, zero-D9-changes observation strategy possible**: call these same, real, unmodified functions a second time, from a new module outside `codex.planner`, using only `RetrievalPlan` (already public/returned) and the same `GraphReader` a caller already holds. The result is bit-for-bit identical to what `execute_query` computed internally, because it *is* the same computation, not an approximation.
+
+**No TAD/HLRD-prescribed trace schema exists.** Grepped both documents in full for "trace"/"sidecar"/"observer" — the only hits are HLRD's own "Runtime trace" (a Runtime Adapter evidence type, §7/§13, unrelated to evaluation) and "TRACE_EXECUTION" (a query `Intent` value, unrelated). **No genuine HLRD/TAD contradiction with the required observer behavior was found; no STOP condition was triggered.** Per the directive's own fallback rule, the minimum structure sketched in the directive itself (`query_identity`/`repository_id`/`graph_version`/ordered `entity_id`+`score`+`rank`) was implemented as-is, with no additional field.
+
+**Known, documented synchronization risk (not silently accepted).** Reconstructing `rank_entities`'s exact inputs requires copying two small fragments verbatim from `execute_query`'s own body (`planner.py:350-360`'s `PLAN_BLOCKED`/`PLAN_UNSUPPORTED` early-return, and `planner.py:362-382`'s `target_entities`/`query_terms`/`primary_relationship_type` derivation) — 100% duplication of D9's *own* logic (never reinvented), but a real drift risk if `execute_query` ever changes without a matching update here, the same class of risk that once caused a real bug in D5 (two code paths computing FILE identity differently). Mitigated, not hidden: `tests/test_evaluation_integration.py` asserts byte-for-byte equality between the observer's output and `EvidencePackage.entities`' real order on every run, so any future drift breaks CI immediately rather than silently diverging.
+
+### EE.2 Exact D13-B scope and files changed
+
+Nothing in `src/codex/planner/`, `src/codex/query_understanding/`, `src/codex/telemetry/`, or any other D1-D12 package was opened for modification. All changes are inside `codex.evaluation` (D13-A's own package, which the directive explicitly authorizes extending) and its tests:
+
+- **`src/codex/evaluation/observer.py` (new)** — `observe_ranked_candidates(plan: RetrievalPlan, graph: GraphReader) -> EvaluationTrace`, the passive observer (EE.1).
+- **`src/codex/evaluation/models.py` (extended)** — new `RankedCandidate`/`EvaluationTrace` models; `GroundTruthLabel` gains one new optional field, `relevant_entity_ids: frozenset[str] | None`.
+- **`src/codex/evaluation/evaluate.py` (extended)** — `evaluate()` gains an optional `traces: Mapping[str, EvaluationTrace] | None` parameter; `PRECISION_AT_10`/`RECALL_AT_10`/`MRR` moved out of the always-`NOT_EVALUABLE` dict into three new conditional computation functions.
+- **`src/codex/evaluation/__init__.py` (extended)** — exports the new names.
+- **`src/codex/evaluation/dataset.py`** — unchanged.
+
+### EE.3 Observer attachment point
+
+Not a hook inside `execute_query` — a **separate, parallel call** `observe_ranked_candidates(plan, graph)` made by an orchestration-layer caller alongside (never instead of, never before/inside) `execute_query`, using the same `RetrievalPlan`/`GraphReader` values that caller already holds. `execute_query` itself is entirely unmodified and unaware the observer exists — it cannot be influenced by it, and calling the observer before, after, or never has zero effect on `execute_query`'s own result (proven by `test_calling_observer_does_not_change_a_subsequent_execute_query_result`).
+
+### EE.4 EvaluationTrace schema
+
+```
+EvaluationTrace
+    query_identity: str
+    repository_id: str
+    graph_version_id: str
+    ordered_candidates: list[RankedCandidate]
+
+RankedCandidate
+    entity_id: str        # real canonical_id, unmodified
+    score: float           # [0,1], TAD §37's real weighted-sum score
+    rank: int               # 1-based, D9's real tie-broken order
+```
+
+No field beyond this minimum exists. `score`'s `[0,1]` bound is provable, not assumed: TAD §37's weights (`RANKING_WEIGHTS`) sum to exactly 1.0 over four signals each already bounded `[0,1]` (confirmed by reading `ranking.py` directly).
+
+### EE.5 Data provenance for candidate IDs/scores/ranks
+
+Every `entity_id`/`score` pair is the literal output of a real call to `codex.planner.ranking.rank_entities` — the same function, same weights, same tie-breaking (`canonical_id` ascending) `execute_query` itself uses, called with inputs reconstructed only from `plan`/`graph` (EE.1). `rank` is the 1-based position in that real, unmodified return order. Nothing is estimated, interpolated, or independently recomputed with different logic.
+
+### EE.6 D13-A integration behavior
+
+`evaluate()`'s new `traces` parameter is optional and defaults to `None`. Omitting it leaves `PRECISION_AT_10`/`RECALL_AT_10`/`MRR` at `NOT_EVALUABLE`/`MISSING_TELEMETRY_DATA` — **identical to D13-A's pre-D13-B behavior**, proven by `test_retrieval_metric_stays_not_evaluable_with_ground_truth_but_no_traces` (parametrized over all three). Given a `traces` mapping and a `BenchmarkCorpus` whose `GroundTruthLabel.relevant_entity_ids` overlaps the dataset's query ids, all three become computable using the standard, externally-defined IR formulas (not a Codex invention): Precision@10 = mean of (relevant-in-top-10)/10; Recall@10 = mean of (relevant-in-top-10)/|relevant set|, skipping queries with an empty relevant set (undefined denominator); MRR = mean reciprocal rank of the first relevant candidate, `0.0` for a query with no relevant candidate retrieved (the standard convention). A malformed/incomplete trace (a query id absent from `traces`, or a label present but missing `relevant_entity_ids`) is excluded from the average, never fabricated into a score — proven by `test_query_missing_from_traces_mapping_is_excluded_not_fabricated` and `test_label_missing_relevant_entity_ids_is_not_evaluable_for_that_query`.
+
+### EE.7 Which metrics are now computable / remain NOT_EVALUABLE
+
+| Metric | Before D13-B | After D13-B |
+|---|---|---|
+| `PRECISION_AT_10` | Always `NOT_EVALUABLE` (`MISSING_TELEMETRY_DATA`) | Computable given `traces` + `relevant_entity_ids`; else `NOT_EVALUABLE` (`MISSING_TELEMETRY_DATA`/`MISSING_GROUND_TRUTH`/`INSUFFICIENT_SAMPLE`) |
+| `RECALL_AT_10` | Same | Same |
+| `MRR` | Same | Same |
+| `CLAIM_VERIFICATION_ACCURACY` | Computable given ground truth | **Unchanged** |
+| `ABSTENTION_PRECISION` | Computable given ground truth | **Unchanged** |
+| `FACTUAL_ACCURACY` | Always `NOT_EVALUABLE` (`MISSING_TELEMETRY_DATA`) | **Unchanged** — no answer content in telemetry, unrelated to the ranked-candidate gap D13-B closes |
+| `UNSUPPORTED_CLAIM_RATE` | Always `NOT_EVALUABLE` (`UNDEFINED_FORMULA`) | **Unchanged** — no total-claim denominator |
+| `TOKEN_EFFICIENCY` | Always `NOT_EVALUABLE` (`UNDEFINED_FORMULA`) | **Unchanged** — no naive-retrieval baseline |
+| `ASSERTION_TRACEABILITY` | Always `NOT_EVALUABLE` (`UNDEFINED_FORMULA`) | **Unchanged** — no computable-ratio definition |
+
+No previously-`NOT_EVALUABLE` classification changed silently — the three that changed are the exact three the directive named as D13-B's own target, and only become evaluable given real, caller-supplied data (never fabricated by D13-A or D13-B).
+
+### EE.8 Security/boundary results
+
+`tests/test_evaluation_boundaries.py` (11 tests) and `tests/test_evaluation_security.py` (4 tests):
+
+- Nothing in D1-D12 (all 16 packages, `codex.planner` checked directly and specifically) imports `codex.evaluation` — the DAG edge is strictly one-directional, the observer reads from D9, D9 never reads from it.
+- `codex.evaluation`'s own dependency surface is limited to D11 (`codex.telemetry.*`), D10 (`codex.verification.state`), and D9's read-only surface (`codex.planner.{models,ranking,retrieval}`, `codex.graph.store`) — no mutation API (`codex.planner.planner`, `.cache`, `.mss`, `.provider_selection`, `codex.graph.memory_store`, `codex.evidence.store`, `codex.ingestion.pipeline`, `codex.artifact.store`) is ever imported.
+- The observer's own source contains no call to `plan_query`/`execute_query` and never constructs a `RetrievalPlan` (`ast`-level proof).
+- No LLM/SLM/embedding/external-ML dependency exists anywhere in the package.
+- No write-shaped name exists in the public API; an `ast` call-site scan proves `codex.evaluation` never calls `TelemetryStore.record_query_event`/`record_failure_event`.
+- No `eval`/`exec`/`subprocess`/`os.system`/dynamic `__import__` exists anywhere in `codex.evaluation` (`ast`-level proof).
+- A repository whose real file paths are shell/script/template-injection-shaped strings (SQL, `__import__`, `<script>`, `{{7*7}}`, `$(...)`, path traversal) produces a trace whose fields are plain, correctly-typed, schema-exact data — never interpreted, executed, or able to inject an extra field; the trace round-trips through `model_dump`/`model_validate` byte-for-byte.
+
+### EE.9 Tests
+
+37 new tests across five files, 100% coverage on all five `codex.evaluation` modules (including the two extended ones):
+
+| File | Tests | Covers |
+|---|---|---|
+| `tests/test_evaluation_observer.py` | 15 | Captures D9's real entities/order/scores (direct comparison against both `EvidencePackage.entities` and a second independent `rank_entities` call); canonical ids; 1-based sequential deterministic rank; determinism across repeated calls; empty/`PLAN_BLOCKED`/`PLAN_UNSUPPORTED` handling; no duplicate ids (matching `bounded_traversal`'s own dedup); graph-version identity preserved; no mutation of `plan`/`GraphVersion`; calling the observer never changes a subsequent `execute_query` result; signature-level proof of no `evidence_store`/`registry`/`repository` parameter |
+| `tests/test_evaluation_evaluate.py` (+13) | 38 total | Retrieval metrics unchanged when no traces (D13-A parity); `NOT_EVALUABLE`/`MISSING_GROUND_TRUTH` with traces but no corpus; Precision@10/Recall@10/MRR computed correctly (multiple scenarios, including rank>10 exclusion, empty-relevant-set skip, multi-query averaging, MRR=0 when nothing relevant retrieved); malformed/missing trace or label handled as exclusion, not fabrication; value bounds |
+| `tests/test_evaluation_security.py` | 4 | Injection-shaped paths/constraints produce inert, schema-exact traces; no dynamic-execution surface; serialization round-trip |
+| `tests/test_evaluation_integration.py` | 1 | The full required chain: real "Which tests call authenticate?" query -> real D8 `understand_query` -> real D9 `plan_query`/`execute_query` -> D13-B `observe_ranked_candidates` -> D13-A `evaluate()`, asserting the trace matches `EvidencePackage.entities`' real order and that Precision@10/Recall@10/MRR compute correctly against a real (test-supplied) relevance set |
+| `tests/test_evaluation_boundaries.py` (+4) | 11 total | Dependency-direction, planner-specific reverse-edge check, no-write-path, no-decision-loop-call proofs |
+
+### EE.10 Validation
+
+Fresh `.venv-work` run: **801/801 tests passing** (764 → 801, +37 new), **99% project-wide coverage** (all five `codex.evaluation` modules 100%; the only sub-100% modules remain the pre-existing, unrelated `repository/manager.py`/`evidence/store.py`/`graph/memory_store.py`), `ruff check src/ tests/` clean, `mypy src/` clean (76 source files, up from 75). No new pip dependency. No ADR created. No HLRD/TAD text modified. **Zero D1-D12 modules modified** — confirmed via `git status`/`git diff --stat` showing changes confined to `src/codex/evaluation/{models,evaluate,__init__}.py` (extended), `src/codex/evaluation/observer.py` (new), and five `tests/test_evaluation_*.py` files. **D7 not reopened** — no Sourcegraph/RepoGraph/Tree-sitter/LSIF code, no ADR-006 text touched.
+
+**No genuine HLRD/TAD contradiction found.** No architectural decision was required — D9 already exposed enough real, exported, pure computation to observe without any semantic change, so no STOP condition was triggered.
+
+**Remaining gaps, unaffected by this pass** (per the directive's own "do not silently solve them" list): TAD §33 completeness-percentage denominator; a real benchmark corpus (still nothing exists — `traces`/`relevant_entity_ids` are input contracts, not populated data); feedback producer; dataset retention/governance; Shadow/Canary/Production; ADR-015/ADR-017; ingestion-side concurrent-writer detection; persistent GraphVersion registry; fine-grained cache invalidation; source-text materialization; the offline calibration write path itself (no constant is tuned by this or any prior D13 phase). D7 remains DEFERRED — ARCHITECTURAL DECISION REQUIRED, untouched.
+
+**D13-B — COMPLETE for the approved scope.** Full D13 calibration (writes to any calibration-point constant, feedback collection, retention, Shadow/Canary/Production, deployment/API/storage architecture) remains explicitly not implemented. Stopping here for review — next phase not started automatically.
