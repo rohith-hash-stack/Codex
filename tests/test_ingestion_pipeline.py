@@ -332,7 +332,11 @@ def test_multiple_providers_contradictory_evidence_all_preserved() -> None:
     assert "provider_a:rev1:0" in rel.supporting_evidence_ids
     assert "provider_b:rev1:0" in rel.supporting_evidence_ids
     assert len(rel.contradicting_evidence_ids) == 0
-    # No Reconciliation Engine exists yet -- D4 must not invent status/confidence.
+    # This fake adapter reports relationship evidence without also reporting
+    # entities for "a.py"/"b.py" -- Evidence Reconciliation (post-D7 directive
+    # Phase C) correctly treats a relationship whose endpoints aren't known
+    # entities as UNRESOLVED (an information/system gap), never as support or
+    # contradiction, per directive Phase C §19-20.
     assert rel.status is EvidenceStatus.UNRESOLVED
 
 
@@ -386,6 +390,70 @@ def test_entity_resolution_converges_differently_formatted_paths_through_the_pip
     rel = relationships[0]
     assert rel.subject == canonical_a  # not the raw './a.py' id -- no dangling reference
     assert rel.object == canonical_b
+
+
+# ---------------------------------------------------------------------------
+# Evidence Reconciliation integration (post-D7 directive Phase C)
+# ---------------------------------------------------------------------------
+
+
+def test_reconciliation_computes_real_status_when_endpoints_are_known_entities() -> None:
+    """Unlike test_multiple_providers_contradictory_evidence_all_preserved
+    (whose fake adapters never report entities, so its relationship stays
+    UNRESOLVED for a missing-target reason), this adapter reports both
+    entities AND relationship evidence -- Reconciliation must produce a
+    real SUPPORTED/WEAKLY_SUPPORTED status, not the pre-Reconciliation
+    perpetual UNRESOLVED placeholder."""
+    pipeline, registry, _ = make_pipeline()
+    adapter = DeterministicFakeAdapter(
+        name="fake",
+        capabilities=frozenset({Capability.HISTORY, Capability.CO_CHANGE}),
+        entity_paths=("a.py", "b.py"),
+        relationship_pairs=(("a.py", "b.py"),),
+        confidence=0.9,
+    )
+    registry.register(adapter, PROFILE)
+
+    result = pipeline.run(make_repository())
+
+    relationships = result.graph_store.get_relationships()
+    assert len(relationships) == 1
+    rel = relationships[0]
+    assert rel.status is EvidenceStatus.SUPPORTED
+    assert rel.confidence > 0.0
+    assert rel.contradiction_score == 0.0
+
+
+def test_provider_authority_parameter_affects_reconciled_confidence() -> None:
+    """A pipeline configured with a low provider_authority for a source
+    must produce lower confidence than one with full trust -- proving the
+    constructor parameter actually reaches the Reconciler, not just that
+    it's accepted."""
+    registry = CapabilityRegistry()
+    adapter = DeterministicFakeAdapter(
+        name="fake",
+        capabilities=frozenset({Capability.HISTORY, Capability.CO_CHANGE}),
+        entity_paths=("a.py", "b.py"),
+        relationship_pairs=(("a.py", "b.py"),),
+        confidence=0.9,
+    )
+    registry.register(adapter, PROFILE)
+
+    trusted_pipeline = IngestionPipeline(
+        registry, InMemoryEvidenceStore(), provider_authority={"fake": 1.0}
+    )
+    trusted_result = trusted_pipeline.run(make_repository())
+    trusted_confidence = trusted_result.graph_store.get_relationships()[0].confidence
+
+    registry2 = CapabilityRegistry()
+    registry2.register(adapter, PROFILE)
+    distrusted_pipeline = IngestionPipeline(
+        registry2, InMemoryEvidenceStore(), provider_authority={"fake": 0.1}
+    )
+    distrusted_result = distrusted_pipeline.run(make_repository())
+    distrusted_confidence = distrusted_result.graph_store.get_relationships()[0].confidence
+
+    assert distrusted_confidence < trusted_confidence
 
 
 # ---------------------------------------------------------------------------

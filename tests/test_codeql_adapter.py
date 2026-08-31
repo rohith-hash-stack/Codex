@@ -756,7 +756,17 @@ def test_contradictory_evidence_between_git_and_codeql_both_preserved(tmp_path: 
     assert set(result.committed_providers) == {"git", "codeql"}
     # Both providers' evidence reaches the graph -- neither is dropped or
     # adjudicated as "more correct" (directive D6: preserve contradictory
-    # evidence, no reconciliation logic inside the adapter).
+    # evidence, no reconciliation logic inside the adapter). Evidence
+    # Reconciliation (post-D7 directive Phase C) now computes a real
+    # status/confidence from that preserved evidence -- no current
+    # provider pair can assert a genuine contradiction (no negation
+    # mechanism exists, see codex.reconciliation.reconciler), so the
+    # relationship resolves to SUPPORTED/WEAKLY_SUPPORTED, never
+    # perpetually UNRESOLVED as it did before Reconciliation existed.
     relationships = result.graph_store.get_relationships()
     assert len(relationships) >= 1
-    assert any(rel.status is EvidenceStatus.UNRESOLVED for rel in relationships)
+    assert any(
+        rel.status in (EvidenceStatus.SUPPORTED, EvidenceStatus.WEAKLY_SUPPORTED)
+        for rel in relationships
+    )
+    assert all(rel.contradicting_evidence_ids == [] for rel in relationships)
