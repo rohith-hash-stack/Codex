@@ -337,6 +337,58 @@ def test_multiple_providers_contradictory_evidence_all_preserved() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Entity Resolution integration (post-D7 directive Phase B)
+# ---------------------------------------------------------------------------
+
+
+def test_entity_resolution_converges_differently_formatted_paths_through_the_pipeline() -> None:
+    """Provider A reports a canonical-form path; Provider B reports the
+    *same* real file with a leading './' it never normalized itself
+    (exactly the theoretical SARIF-uri-shape risk documented in
+    `codex.resolution.entity_resolver`'s module docstring). The pipeline
+    must still converge them to one FILE entity, and -- critically --
+    Provider B's relationship evidence (built from its own raw,
+    unnormalized id) must end up attached to the *canonical* entity id,
+    not dangling on the raw one Entity Resolution renamed away."""
+    pipeline, registry, _ = make_pipeline()
+    canonical_form = DeterministicFakeAdapter(
+        name="canonical_form",
+        capabilities=frozenset({Capability.HISTORY}),
+        entity_paths=("a.py", "b.py"),
+    )
+    dotted_form = DeterministicFakeAdapter(
+        name="dotted_form",
+        capabilities=frozenset({Capability.CO_CHANGE}),
+        entity_paths=("./a.py",),
+        relationship_pairs=(("./a.py", "b.py"),),
+    )
+    registry.register(canonical_form, PROFILE)
+    registry.register(dotted_form, PROFILE)
+
+    repository = make_repository()
+    result = pipeline.run(repository)
+
+    assert set(result.committed_providers) == {"canonical_form", "dotted_form"}
+    canonical_a = file_id(repository.repository_id, repository.head_revision, "a.py")
+    canonical_b = file_id(repository.repository_id, repository.head_revision, "b.py")
+    raw_dotted_a = build_canonical_id(
+        repository_id=repository.repository_id,
+        repository_revision=repository.head_revision,
+        qualified_name="./a.py",
+        base_type=BaseEntityType.FILE,
+    )
+    assert result.graph_store.get_entity(canonical_a) is not None
+    assert result.graph_store.get_entity(canonical_b) is not None
+    assert result.graph_store.get_entity(raw_dotted_a) is None  # renamed away, not left dangling
+
+    relationships = result.graph_store.get_relationships()
+    assert len(relationships) == 1
+    rel = relationships[0]
+    assert rel.subject == canonical_a  # not the raw './a.py' id -- no dangling reference
+    assert rel.object == canonical_b
+
+
+# ---------------------------------------------------------------------------
 # Idempotency and determinism (directive D4 §10, §16)
 # ---------------------------------------------------------------------------
 
