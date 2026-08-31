@@ -21,6 +21,16 @@ conformance-audit.md` §BB (STOP) and §CC (evidence-recovery pass)).
    deterministic `NOT_EVALUABLE` disposition -- see `NotEvaluableReason`
    and `codex.evaluation.evaluate`'s module docstring for the exact,
    per-metric reasoning (`docs/architecture-conformance-audit.md` §DD).
+
+**D13-B addition (`docs/architecture-conformance-audit.md` §EE):**
+`EvaluationTrace`/`RankedCandidate` and `GroundTruthLabel.
+relevant_entity_ids` make `PRECISION_AT_10`/`RECALL_AT_10`/`MRR`
+conditionally computable -- given both a real, passively-observed
+`EvaluationTrace` (`codex.evaluation.observer`, never fabricated) and a
+ground-truth relevance set (never fabricated by this package). Neither
+is bundled or generated here; both remain caller-supplied real data,
+exactly the same non-fabrication discipline §CC/§DD already established
+for `BenchmarkCorpus`.
 """
 
 from __future__ import annotations
@@ -105,6 +115,12 @@ class GroundTruthLabel(BaseModel):
     should_abstain: bool | None = None
     """Ground truth for `ABSTENTION_PRECISION`: whether the correct
     behavior for this query was to abstain (no sufficient evidence)."""
+    relevant_entity_ids: frozenset[str] | None = None
+    """Ground truth for `PRECISION_AT_10`/`RECALL_AT_10`/`MRR` (D13-B):
+    the canonical entity ids that are actually relevant to this query,
+    per a real benchmark corpus (HLRD §57: "ground truth sufficient to
+    measure...Retrieval"). Never populated by this package -- a corpus
+    supplies it, the same as every other `GroundTruthLabel` field."""
 
 
 class BenchmarkCorpus(BaseModel):
@@ -118,6 +134,43 @@ class BenchmarkCorpus(BaseModel):
 
     corpus_version: str = Field(min_length=1)
     labels: dict[str, GroundTruthLabel] = Field(default_factory=dict)
+
+
+class RankedCandidate(BaseModel):
+    """One entity as it appeared in D9's real ranked retrieval output
+    (`codex.planner.ranking.rank_entities`) -- passively observed
+    (`codex.evaluation.observer`), never recomputed with different
+    logic or reordered. `score` is provably bounded `[0,1]`: TAD §37's
+    weighted sum uses weights summing to exactly 1.0 over four signals
+    each already bounded `[0,1]` (`docs/architecture-conformance-
+    audit.md` §EE.1)."""
+
+    entity_id: str
+    """The candidate's real, unmodified canonical id -- never
+    re-derived, never truncated, never obfuscated."""
+    score: float = Field(ge=0.0, le=1.0)
+    rank: int = Field(ge=1)
+    """1-based position in D9's real ranked order (rank 1 = top),
+    matching the standard IR convention Mean Reciprocal Rank (`1/rank`)
+    itself depends on."""
+
+
+class EvaluationTrace(BaseModel):
+    """A passive, read-only observation of one query's real D9 ranked
+    retrieval output (`codex.evaluation.observer.observe_ranked_
+    candidates`) -- **observational, never authoritative**: it carries
+    no independent claim about what D9 *should* have returned, only a
+    faithful record of what it *did* return for this exact
+    `RetrievalPlan`/`GraphReader` pair. No TAD/HLRD section prescribes
+    this schema (confirmed by direct grep, `docs/architecture-
+    conformance-audit.md` §EE.2) -- this is the minimum structure
+    needed to make `PRECISION_AT_10`/`RECALL_AT_10`/`MRR` computable,
+    with no field added beyond that need."""
+
+    query_identity: str
+    repository_id: str
+    graph_version_id: str
+    ordered_candidates: list[RankedCandidate] = Field(default_factory=list)
 
 
 class MetricResult(BaseModel):
@@ -147,7 +200,9 @@ __all__ = [
     "BenchmarkCorpus",
     "EvaluationMetric",
     "EvaluationReport",
+    "EvaluationTrace",
     "GroundTruthLabel",
     "MetricResult",
     "NotEvaluableReason",
+    "RankedCandidate",
 ]
