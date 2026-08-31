@@ -12,7 +12,7 @@ from typing import Protocol
 
 from codex.evidence.model import CanonicalRelationship
 from codex.graph.version import GraphVersion
-from codex.ontology.entities import RepositorySymbol
+from codex.ontology.entities import BaseEntityType, RepositorySymbol
 from codex.ontology.relationships import RelationshipType
 
 
@@ -39,6 +39,20 @@ class GraphReader(Protocol):
         predicate: RelationshipType | None = None,
         direction: str = "out",
     ) -> list[RepositorySymbol]: ...
+
+    def find_entities(
+        self,
+        *,
+        name: str | None = None,
+        qualified_name: str | None = None,
+        base_type: BaseEntityType | None = None,
+    ) -> list[RepositorySymbol]:
+        """Deterministic, case-sensitive substring lookup by name/qualified_name
+        (D9 directive Part 11/HLRD §33 "candidate generation"; no prior D1-D8
+        component ever needed to turn a free-text string into a graph entity,
+        so no such lookup existed before D9 — see architecture-conformance-
+        audit.md §R.5). No embeddings, no fuzzy matching (HLRD §34)."""
+        ...
 
 
 class GraphStore(GraphReader, Protocol):

@@ -12,7 +12,7 @@ import networkx as nx
 
 from codex.evidence.model import CanonicalRelationship
 from codex.graph.version import GraphVersion
-from codex.ontology.entities import RepositorySymbol
+from codex.ontology.entities import BaseEntityType, RepositorySymbol
 from codex.ontology.relationships import RelationshipType
 
 
@@ -90,4 +90,27 @@ class InMemoryGraphStore:
             entity = self.get_entity(other_id)
             if entity is not None:
                 results.append(entity)
+        return results
+
+    def find_entities(
+        self,
+        *,
+        name: str | None = None,
+        qualified_name: str | None = None,
+        base_type: BaseEntityType | None = None,
+    ) -> list[RepositorySymbol]:
+        results: list[RepositorySymbol] = []
+        for _node, data in self._graph.nodes(data=True):
+            entity: RepositorySymbol = data["entity"]
+            if name is not None and name.lower() not in entity.name.lower():
+                continue
+            if (
+                qualified_name is not None
+                and qualified_name.lower() not in entity.qualified_name.lower()
+            ):
+                continue
+            if base_type is not None and entity.base_type is not base_type:
+                continue
+            results.append(entity)
+        results.sort(key=lambda e: e.canonical_id)
         return results
