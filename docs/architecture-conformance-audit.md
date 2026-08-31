@@ -1713,3 +1713,90 @@ Fresh `.venv-work` run: **801/801 tests passing** (764 → 801, +37 new), **99% 
 **Remaining gaps, unaffected by this pass** (per the directive's own "do not silently solve them" list): TAD §33 completeness-percentage denominator; a real benchmark corpus (still nothing exists — `traces`/`relevant_entity_ids` are input contracts, not populated data); feedback producer; dataset retention/governance; Shadow/Canary/Production; ADR-015/ADR-017; ingestion-side concurrent-writer detection; persistent GraphVersion registry; fine-grained cache invalidation; source-text materialization; the offline calibration write path itself (no constant is tuned by this or any prior D13 phase). D7 remains DEFERRED — ARCHITECTURAL DECISION REQUIRED, untouched.
 
 **D13-B — COMPLETE for the approved scope.** Full D13 calibration (writes to any calibration-point constant, feedback collection, retention, Shadow/Canary/Production, deployment/API/storage architecture) remains explicitly not implemented. Stopping here for review — next phase not started automatically.
+
+---
+
+## FF. D13-C — Benchmark Corpus / Ground Truth — 2026-09-01
+
+Per the "D13-C — Benchmark Corpus / Ground Truth: Research → Audit → Implement" directive. Now that D13-B supplies the ranked-candidate data D13-A previously lacked, D13-C's job is the remaining piece: a benchmark-case ("what to run") layer, reconciled against the already-existing ground-truth ("what to expect") layer D13-A built.
+
+### FF.1 Specification audit
+
+Re-read `docs/HLRD.md`, `docs/TAD.md`, this document's own §BB/§CC/§DD/§EE, `docs/architecture-truth-report.md`, `src/codex/evaluation/`, and D8/D9/D10/D11 directly. Grepped both documents in full for every named term (benchmark, ground truth, evaluation corpus, relevance, expected entities, expected answers, verification ground truth, calibration, coverage/completeness).
+
+**One genuinely new citation, not surfaced in §CC/§DD/§EE:** TAD §81 (Testing Strategy) names a **"Ground Truth"** testing category, verbatim: *"Queries with manually verified expected answers."* This is TAD's own, minimal, prose-only definition of ground truth for testing purposes — confirms two things directly relevant to D13-C's design: (1) ground truth is **per-query** (matching `GroundTruthLabel`'s existing `query_id` keying, unchanged since D13-A); (2) it is **manually verified/human-curated**, not auto-generated or inferred — reinforcing D13-A/B's "never fabricate ground truth" discipline as the document's own stated intent, not merely this project's self-imposed caution.
+
+**Everything else confirmed unchanged from §CC/§DD:** HLRD §56 ("Evaluation SHALL use a versioned benchmark corpus with validated ground truth"), HLRD §57 (Benchmark Requirements — a categorical repository/query list plus a 7-item ground-truth coverage list, no field schema), TAD §66 (Key Metrics, names but does not define retrieval-metric formulas), TAD §67 (mirrors HLRD §56's V1 targets almost exactly, itself flagged "benchmark targets, not hard architectural guarantees" — no new information). **No HLRD/TAD text anywhere defines**: benchmark schema field names/types, query categories as a data schema (only as prose descriptions), relevance semantics beyond "the entities actually relevant to a query" (a plain-English, not formulaic, notion), expected-answer representation beyond "manually verified" (TAD §81), a labeling/sampling strategy, a repository-selection algorithm, dataset-versioning mechanics beyond the word "versioned," or a retention mechanism (HLRD §53's "governed retention" remains mechanics-free, unchanged finding from §CC/§DD). **None of these was invented.** Where a concrete decision was still required to implement anything at all, it was made narrowly and is recorded in FF.2-FF.4 below, always by reusing an already-established Codex mechanism (a canonical id, an existing model field, an existing dependency-light-package discipline) rather than inventing new semantics.
+
+### FF.2 Retrieval vs. verification ground truth: one schema, reaffirmed
+
+Phase 2 of the directive asked whether retrieval ground truth (Precision@10/Recall@10/MRR) and verification/answer ground truth (Claim Verification Accuracy, Abstention Precision, and the three permanently-excluded metrics) need separate schemas. **They do not, and this was already decided, not re-decided:** `GroundTruthLabel` (D13-A) already carries `expected_verification_status`/`should_abstain` (verification) and, since D13-B, `relevant_entity_ids` (retrieval) as three independently-optional fields on **one** model, keyed by `query_id`. Nothing in HLRD/TAD requires — or even mentions — separate corpora for these two evaluation kinds; both are simply "ground truth for a query" (TAD §81). **No new decision was required or made here; this section reaffirms and documents the existing D13-A/B design as the Phase 2 answer**, rather than silently assuming it without stating so.
+
+### FF.3 Repository/query benchmark structure — `BenchmarkCase`
+
+Phase 3 asked how the benchmark identifies repository/revision/graph version/query/expected-* values. New `BenchmarkCase` (deliberately separate from `GroundTruthLabel`, so "what to run" and "what to expect" cannot drift into one conflated concept):
+
+```
+BenchmarkCase
+    query_id: str              # canonical id, see below -- never invented
+    repository_id: str          # matches RepositoryMetadata.repository_id / GraphVersion.repository_id
+    repository_revision: str     # matches GraphVersion.repository_revision
+    query_text: str               # the real natural-language query (TAD §81: "queries")
+```
+
+`query_id` is **not** auto-generated inside this dependency-light model (no `codex.planner` import in `models.py`). The canonical, non-inventive way to populate it: run the real `understand_query(query_text, ...)` (D8) once, then `codex.planner.cache.compute_query_identity(contract)` (D9's own existing, closed, deterministic hash function) — the exact same function `plan_query` itself calls internally to produce `RetrievalPlan.query_identity`. `tests/test_evaluation_benchmark_integration.py` proves this reproducibility directly (`plan.query_identity == case.query_id`), not merely asserts it. **No graph_version_id field exists on `BenchmarkCase`** — deliberately: `GraphVersion.version_id` is already a deterministic function of `repository_id`+`repository_revision`+`provider_versions` (D4), so a case authored against a repository/revision does not need to separately declare which graph version it expects; the graph-version-consistency question is instead handled at *evaluation time* (FF.6), using data already present on the real objects a run produces (`QueryTelemetryEvent.graph_version_id`/`EvaluationTrace.graph_version_id`), not a new field.
+
+`BenchmarkCorpus` gained `cases: dict[str, BenchmarkCase]` alongside its existing `labels: dict[str, GroundTruthLabel]`, sharing one `corpus_version` (HLRD §56's singular "one versioned benchmark corpus" phrasing) without merging the two dicts into one model. A new `model_validator` rejects any case whose dict key disagrees with its own `query_id` field — this is both "malformed benchmark rejection" and "duplicate-case handling" in one check, since two differently-keyed cases can never both legitimately claim the same `query_id` (proven by `tests/test_evaluation_benchmark.py`). **Deliberately not extended to the pre-existing `labels` dict** — D13-A's original tests include one intentional dict-key/`query_id` mismatch used to exercise a different code path (`evaluate()` looks up labels by dict key, never by the label's own internal field), and retrofitting a stricter invariant there was judged out of D13-C's narrow scope and unnecessary to weaken or touch an existing, still-correct D13-A test.
+
+`codex.evaluation.benchmark.verify_case_execution(case, event) -> bool` is a small, pure, read-only helper proving a real `QueryTelemetryEvent` is a real execution of exactly the declared case — comparing `query_id`, `repository_id`, and (reached via `event.retrieval_plan.graph_version.repository_revision`, an already-embedded field, no new one needed) `repository_revision`. Never raises; a caller decides what a mismatch means.
+
+### FF.4 Versioning and immutability
+
+Phase 4 asked whether HLRD/TAD require benchmark datasets to be versioned/immutable/reproducible/tied to revision or graph version/governed separately, and explicitly forbade automatically reusing D12's Artifact Store precedent.
+
+- **Versioned:** yes, explicitly (HLRD §56) — satisfied by `BenchmarkCorpus.corpus_version: str` (required, non-empty), unchanged since D13-A.
+- **Immutable:** **not required by either document for benchmark data specifically.** TAD invariant #4 ("Graph versions are immutable once published") is a `GraphVersion`-specific invariant; neither document extends it to benchmark corpora. No `frozen=True`/immutability enforcement was added to `BenchmarkCase`/`BenchmarkCorpus` — adding one would have been inventing a requirement neither document states, the same discipline as declining to invent a retention TTL.
+- **Reproducible / tied to revision:** satisfied by `BenchmarkCase.repository_id`/`repository_revision` plus the canonical `query_id` derivation (FF.3) — a case, run again against the same repository fixture at the same revision, deterministically reproduces the same `query_id`/plan/trace.
+- **Tied to graph version:** handled at evaluation time (FF.6), not as an authored field (FF.3).
+- **Governed separately / retention:** **HLRD §53's "Learning datasets: versioned + governed retention" still has no defined mechanics anywhere in HLRD/TAD** (unchanged finding from §CC/§DD) — and per the directive's own explicit instruction, D12's Artifact Store immutable/no-retention precedent was **not** automatically reused. Instead, `BenchmarkCorpus`/`BenchmarkCase` are, exactly like `GroundTruthLabel` since D13-A, plain caller-held pydantic values — never stored, never passed through any store, never given any retention/TTL semantics of any kind. **This is not a silent default TTL choice; it is the absence of persistence entirely**, which requires no retention decision because nothing is ever retained. This directly avoids STOP condition 5 ("a persistent storage/retention decision is required before the benchmark layer can safely exist") rather than triggering it — there is no storage layer for a retention decision to govern.
+
+### FF.5 Implementation decision: GO, narrow
+
+The schema/semantics needed for `BenchmarkCase` (FF.3) and the reaffirmed `GroundTruthLabel` (FF.2) are sufficiently specified by direct reuse of already-established Codex mechanisms (canonical ids, existing model fields, existing dependency-light-package discipline) — **no STOP condition was triggered.** Implemented the smallest possible layer: one new model (`BenchmarkCase`), one extended model (`BenchmarkCorpus.cases` + a validator), one small pure helper module (`codex.evaluation.benchmark`), and one small, well-justified strengthening of `evaluate()`'s existing trace-consumption path (FF.6). No calibration, feedback collection, Shadow/Canary/Production, or API/deployment/storage architecture was implemented, per the directive's explicit exclusions.
+
+### FF.6 Evaluation integration: graph-version consistency
+
+`evaluate()`'s signature is **unchanged** from D13-B — `BenchmarkCase` is upstream of evaluation (it identifies what to run), not consumed by `evaluate()` itself. One internal strengthening was added to the existing trace-consumption path (`_eligible_trace_label_pairs`, used by `PRECISION_AT_10`/`RECALL_AT_10`/`MRR`): a trace is now excluded whenever its `graph_version_id` disagrees with the corresponding `QueryTelemetryEvent`'s own `graph_version_id` — TAD invariant #5 ("Active queries use one graph version"), the same discipline D9's own `GraphVersionMismatchError` already enforces at execution time, extended here to evaluation. This satisfies the directive's required "graph-version mismatch handling where applicable" test category using only data already present on the two existing models — no new field, no new parameter.
+
+### FF.7 Mandatory real-code validation
+
+`tests/test_evaluation_benchmark_integration.py` (2 tests) exercises the full required chain — real `symbol_level_fixtures` repository fixture → real `IngestionPipeline` → real graph → real D8 `understand_query` → real D9 `plan_query`/`execute_query` → D13-B `observe_ranked_candidates` → a `BenchmarkCase` whose `query_id` is derived via `compute_query_identity` (proven, not assumed, to equal `plan.query_identity`) → `verify_case_execution` (proven true for the real run, and separately proven false for a deliberately-wrong-revision case using a second real run) → D13-A `evaluate()` → real Precision@10/Recall@10/MRR values. No fake candidate list or fabricated ground truth is constructed anywhere in the file.
+
+### FF.8 Security/boundary results
+
+`tests/test_evaluation_security.py` (+3) and the full existing `tests/test_evaluation_boundaries.py` suite (unchanged, still passing — `codex.evaluation.benchmark` only imports `codex.evaluation.models`/`codex.telemetry.models`, both already inside the package's established minimal-dependency-surface allowlist): injection-shaped `repository_id`/`repository_revision`/`query_text`/`corpus_version` strings remain plain, inert data (`verify_case_execution` never coerces or interprets them, only compares); the key/id-consistency validator is a plain equality check a crafted string cannot defeat; no dynamic-execution surface exists anywhere in the package (unchanged, re-verified).
+
+### FF.9 Metrics: computable / NOT_EVALUABLE, unchanged classification
+
+No metric's disposition changed as a result of D13-C — the retrieval metrics were already made conditionally computable by D13-B; D13-C only adds the case-identification/graph-version-consistency layer around that existing capability. `FACTUAL_ACCURACY`/`UNSUPPORTED_CLAIM_RATE`/`TOKEN_EFFICIENCY`/`ASSERTION_TRACEABILITY` remain permanently `NOT_EVALUABLE` for the same reasons established in §DD (no answer content in telemetry, no claim-count denominator, no naive-retrieval baseline, no computable-ratio definition) — none of these is a benchmark-corpus gap, so D13-C's new ground-truth/case layer does not and cannot touch them.
+
+### FF.10 Tests
+
+22 new tests across four files (three extended, one new module fully covered), 100% coverage on all six `codex.evaluation` modules (including new `benchmark.py`):
+
+| File | Tests | Covers |
+|---|---|---|
+| `tests/test_evaluation_benchmark.py` | 15 | `BenchmarkCase` malformed-field rejection (4); key/`query_id` consistency + duplicate-case detection (3); default-empty/deterministic-construction/insertion-order preservation (3); `verify_case_execution` match/repository-mismatch/revision-mismatch/query-id-mismatch/no-mutation (5) |
+| `tests/test_evaluation_evaluate.py` (+2) | 40 total | Graph-version-mismatch exclusion and its matching control case |
+| `tests/test_evaluation_security.py` (+3) | 10 total | Injection-shaped `BenchmarkCase`/`BenchmarkCorpus` fields stay inert; the consistency validator is not bypassable by a crafted string |
+| `tests/test_evaluation_benchmark_integration.py` | 2 | The full required real-code chain (FF.7) |
+
+### FF.11 Validation
+
+Fresh `.venv-work` run: **823/823 tests passing** (801 → 823, +22 new), **99% project-wide coverage** (all six `codex.evaluation` modules 100%; the only sub-100% modules remain the pre-existing, unrelated `repository/manager.py`/`evidence/store.py`/`graph/memory_store.py`), `ruff check src/ tests/` clean, `mypy src/` clean (77 source files, up from 76). No new pip dependency. No ADR created. No HLRD/TAD text modified. **Zero D1-D12/D13-A/D13-B modules modified** — confirmed via `git status`/`git diff --stat` showing changes confined to `src/codex/evaluation/{models,evaluate,__init__}.py` (extended), `src/codex/evaluation/benchmark.py` (new), and four `tests/test_evaluation_*.py` files. **D7 not reopened.**
+
+**No genuine HLRD/TAD contradiction found.** No architectural decision requiring human input was required beyond what §CC/§DD already flagged and left open (retention mechanics remain undefined and unresolved, deliberately avoided rather than resolved, per FF.4).
+
+**Remaining gaps, unaffected by this pass** (per the directive's own "do not claim solved" list, unchanged): TAD §33 completeness denominator; feedback producer; retention/governance decision (still genuinely open — D13-C's non-persistence choice sidesteps it, does not resolve it); calibration write path; Shadow/Canary/Production; ADR-015/ADR-017; ingestion-side concurrent-writer detection; persistent GraphVersion registry; fine-grained cache invalidation; source-text materialization; storage architecture. A **real, populated** benchmark corpus (actual curated cases/labels for a real repository) still does not exist anywhere — `BenchmarkCase`/`GroundTruthLabel`/`BenchmarkCorpus` remain input *contracts*, proven end-to-end against a test fixture, not populated with genuine human-verified data. D7 remains DEFERRED — ARCHITECTURAL DECISION REQUIRED, untouched.
+
+**D13-C — COMPLETE for the approved narrow scope.** Full D13 calibration remains explicitly not implemented. Stopping here for review — next phase not started automatically.
