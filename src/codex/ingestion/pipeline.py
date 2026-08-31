@@ -125,6 +125,7 @@ from codex.provider.contract import ProviderAdapter, ProviderExtractionError
 from codex.registry.models import ProviderEvaluationStatus
 from codex.registry.registry import CapabilityRegistry
 from codex.repository.models import RepositoryMetadata
+from codex.resolution.entity_resolver import resolve_entities
 
 _USABLE = frozenset({ProviderEvaluationStatus.AVAILABLE, ProviderEvaluationStatus.PARTIAL})
 
@@ -292,8 +293,12 @@ class IngestionPipeline:
                 detail=f"unexpected error during normalize(): {exc}",
             )
 
-        entities_upserted = self._commit_entities(repository.repository_id, normalized.entities)
-        evidence_upserted = self._commit_evidence(repository.repository_id, normalized.evidence)
+        entities_upserted, id_map = self._commit_entities(
+            repository.repository_id, normalized.entities
+        )
+        evidence_upserted = self._commit_evidence(
+            repository.repository_id, normalized.evidence, id_map
+        )
         self._evidence_store.add_cohort(normalized.cohort)
 
         return ProviderRunOutcome(
@@ -322,26 +327,70 @@ class IngestionPipeline:
             )
         return None
 
-    def _commit_entities(self, repository_id: str, entities: list[RepositorySymbol]) -> int:
-        bucket = self._entities.setdefault(repository_id, {})
-        for entity in entities:
-            bucket[entity.canonical_id] = entity
-        return len(entities)
+    def _commit_entities(
+        self, repository_id: str, entities: list[RepositorySymbol]
+    ) -> tuple[int, dict[str, str]]:
+        """Graph update: upsert new entities via Entity Resolution (post-D7
+        directive Phase B), not a raw dict overwrite.
 
-    def _commit_evidence(self, repository_id: str, evidence_list: list[Evidence]) -> int:
+        Re-resolving the *entire* accumulated set (previously committed
+        entities plus this batch) on every call, rather than merging the
+        new batch in isolation, is what makes this correct regardless of
+        call order: a FILE entity Git commits with one raw path string and
+        SCIP later commits with a differently-formatted (but equivalent)
+        one converge onto one canonical entity either way, and no
+        provider's `roles`/`provider_ids` contribution is ever silently
+        discarded on a `canonical_id` collision — both real defects in
+        the naive overwrite this replaces (see
+        ``docs/architecture-conformance-audit.md`` §M). ``resolve_entities``
+        is O(N) and re-run per commit is O(N) again, so this is O(N) per
+        call (not O(N^2)) — an accepted, documented V1-scale cost per the
+        directive's own "do not prematurely optimize without measurements"
+        instruction; a real backend would resolve incrementally instead.
+
+        Returns the upserted count plus a raw-id -> resolved-id map
+        (identity entries included) covering every entity currently known
+        for this repository, so ``_commit_evidence`` can keep
+        ``Evidence.subject``/``.object`` pointed at whatever canonical id
+        an entity actually resolved to — a normalized-path merge (see
+        `codex.resolution.entity_resolver`) can rename a raw provider id,
+        and evidence referencing the old id would otherwise dangle.
+        """
+        existing = list(self._entities.setdefault(repository_id, {}).values())
+        result = resolve_entities(existing + entities)
+        self._entities[repository_id] = {e.canonical_id: e for e in result.entities}
+        id_map = {
+            raw_id: merge.canonical_id
+            for merge in result.merges
+            for raw_id in merge.source_canonical_ids
+        }
+        return len(entities), id_map
+
+    def _commit_evidence(
+        self, repository_id: str, evidence_list: list[Evidence], id_map: dict[str, str]
+    ) -> int:
         """Graph update: store every evidence record, and fold it into a
         ``CanonicalRelationship`` keyed by ``(subject, predicate, object)`` —
         never overwriting or excluding another provider's evidence on the
         same key (directive D4 §11; see module docstring's "Reconciliation
-        is out of scope")."""
+        is out of scope"). ``subject``/``object`` are remapped through
+        ``id_map`` (Entity Resolution's raw -> resolved id map) before
+        keying, so a relationship stays attached to whichever canonical
+        entity its endpoints actually resolved to; the stored ``Evidence``
+        record itself is never mutated (its own ``subject``/``object``
+        fields keep the provider's original ids — only the relationship
+        *key* used for reconciliation uses the resolved ids), preserving
+        raw provenance intact (directive Phase B §10)."""
         relationships = self._relationships.setdefault(repository_id, {})
         for evidence in evidence_list:
             self._evidence_store.add_evidence(evidence)
-            key = (evidence.subject, evidence.predicate.value, evidence.object)
+            subject = id_map.get(evidence.subject, evidence.subject)
+            obj = id_map.get(evidence.object, evidence.object)
+            key = (subject, evidence.predicate.value, obj)
             relationship = relationships.get(key)
             if relationship is None:
                 relationship = CanonicalRelationship(
-                    subject=evidence.subject, predicate=evidence.predicate, object=evidence.object
+                    subject=subject, predicate=evidence.predicate, object=obj
                 )
             if evidence.evidence_id not in relationship.supporting_evidence_ids:
                 relationship = relationship.model_copy(

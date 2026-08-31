@@ -85,13 +85,21 @@ class EvidenceCohort(BaseModel):
 
 
 class CanonicalRelationship(BaseModel):
-    """A reconciled graph edge with its supporting/contradicting evidence (TAD §73)."""
+    """A reconciled graph edge with its supporting/contradicting evidence (TAD §73).
+
+    ``contradiction_score`` is TAD §38's own formula output (added for
+    Reconciliation, post-D7 directive Phase C) — ``0.0`` by default so
+    existing callers that never run reconciliation (e.g. D4's raw
+    evidence accumulation) are unaffected; it is only meaningful once
+    ``status`` has actually been computed by ``codex.reconciliation``.
+    """
 
     subject: str
     predicate: RelationshipType
     object: str
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
     status: EvidenceStatus = EvidenceStatus.UNRESOLVED
+    contradiction_score: float = Field(ge=0.0, le=1.0, default=0.0)
     supporting_evidence_ids: list[str] = Field(default_factory=list)
     contradicting_evidence_ids: list[str] = Field(default_factory=list)
 
