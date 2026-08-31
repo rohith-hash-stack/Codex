@@ -1,7 +1,8 @@
-"""D13-A/D13-B: the narrow Dataset/Evaluation/Observer slice of Offline
-Calibration Pipeline (TAD component #18, TAD §59) -- approved after
-`docs/architecture-conformance-audit.md` §BB (STOP), §CC
-(evidence-recovery pass), and §EE (D13-B: Passive Evaluation Observer).
+"""D13-A/D13-B/D13-C: the narrow Dataset/Evaluation/Observer/Benchmark
+slice of Offline Calibration Pipeline (TAD component #18, TAD §59) --
+approved after `docs/architecture-conformance-audit.md` §BB (STOP),
+§CC (evidence-recovery pass), §EE (D13-B: Passive Evaluation Observer),
+and §FF (D13-C: Benchmark Corpus / Ground Truth).
 
 **What this package is:** a read-only reporting layer. `select_dataset`
 (TAD §59's Dataset stage) reads existing, unmodified D11
@@ -35,11 +36,17 @@ decisions -- see `docs/architecture-conformance-audit.md` §DD/§EE):
 - Does not reopen D7 or modify D1-D12 behavior/contracts (including
   `codex.planner` itself, which this package only reads from through
   its already-exported pure functions), and does not modify HLRD/TAD.
+- Not a persistence/storage layer. `BenchmarkCase`/`BenchmarkCorpus`
+  (D13-C) are plain caller-held values, never stored, never given
+  retention/TTL semantics -- no benchmark storage/retention decision
+  was made or was needed.
 """
 
+from codex.evaluation.benchmark import verify_case_execution
 from codex.evaluation.dataset import select_dataset
 from codex.evaluation.evaluate import evaluate
 from codex.evaluation.models import (
+    BenchmarkCase,
     BenchmarkCorpus,
     EvaluationMetric,
     EvaluationReport,
@@ -52,6 +59,7 @@ from codex.evaluation.models import (
 from codex.evaluation.observer import observe_ranked_candidates
 
 __all__ = [
+    "BenchmarkCase",
     "BenchmarkCorpus",
     "EvaluationMetric",
     "EvaluationReport",
@@ -63,4 +71,5 @@ __all__ = [
     "evaluate",
     "observe_ranked_candidates",
     "select_dataset",
+    "verify_case_execution",
 ]

@@ -74,9 +74,12 @@ All three types 2/3 metrics fall back to `NOT_EVALUABLE`
 (`MISSING_TELEMETRY_DATA` when no `traces` mapping is supplied at all
 -- the D13-B observational data itself is absent; `MISSING_GROUND_TRUTH`
 when no corpus, or no overlapping/populated label, exists;
-`INSUFFICIENT_SAMPLE` when the dataset itself is empty or nothing
-eligible remains after filtering) whenever the real data isn't there
--- **never a fabricated score.**
+`INSUFFICIENT_SAMPLE` when the dataset itself is empty, nothing
+eligible remains after filtering, or (directive D13-C) a trace's
+`graph_version_id` disagrees with its event's own -- the same "never
+silently trust a different graph snapshot" discipline TAD invariant #5
+and D9's `GraphVersionMismatchError` already enforce) whenever the real
+data isn't there -- **never a fabricated score.**
 
 Nothing here writes to `codex.telemetry`, `codex.artifact`,
 `codex.planner`, or any D1-D12 store or constant -- read-only, proven
@@ -196,6 +199,14 @@ def _eligible_trace_label_pairs(
     for event in dataset:
         trace = traces.get(event.query_id)
         if trace is None:
+            continue
+        if trace.graph_version_id != event.graph_version_id:
+            # TAD invariant #5 ("Active queries use one graph
+            # version"), the same discipline D9's own
+            # `GraphVersionMismatchError` already enforces at
+            # execution time: a trace observed against a different
+            # graph snapshot than the one telemetry recorded for this
+            # query is never silently trusted.
             continue
         label = ground_truth.labels.get(event.query_id)
         if label is None or label.relevant_entity_ids is None:

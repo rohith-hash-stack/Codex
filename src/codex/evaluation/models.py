@@ -31,6 +31,13 @@ ground-truth relevance set (never fabricated by this package). Neither
 is bundled or generated here; both remain caller-supplied real data,
 exactly the same non-fabrication discipline §CC/§DD already established
 for `BenchmarkCorpus`.
+
+**D13-C addition (`docs/architecture-conformance-audit.md` §FF):**
+`BenchmarkCase` gives `BenchmarkCorpus` a "what to run" layer (TAD
+§81's "Ground Truth" testing category: "queries with manually verified
+expected answers") alongside its existing "what to expect" layer
+(`labels`) -- still never persisted, generated, or fabricated by this
+package; still an input contract only.
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from codex.verification.state import VerificationStatus
 
@@ -123,6 +130,40 @@ class GroundTruthLabel(BaseModel):
     supplies it, the same as every other `GroundTruthLabel` field."""
 
 
+class BenchmarkCase(BaseModel):
+    """One reproducible "what to run" definition (directive D13-C),
+    deliberately separate from `GroundTruthLabel` ("what to expect"):
+    TAD §81's own "Ground Truth" testing category ("queries with
+    manually verified expected answers") and HLRD §57's benchmark
+    requirements describe *queries* and their expected answers as two
+    related but distinct concerns, and conflating "how to reproduce a
+    run" with "the expected result" would risk them drifting out of
+    sync independently. Minimal by design: exactly the fields needed
+    to deterministically reproduce a real Codex execution (real D8
+    `understand_query` -> real D9 `plan_query`/`execute_query`), using
+    only canonical identifiers already established elsewhere in this
+    project (`docs/architecture-conformance-audit.md` §FF.3) -- no new
+    identifier scheme, no repository-category/query-category schema
+    HLRD §57 only describes in prose.
+
+    `query_id` is not auto-generated here (this module stays dependency-
+    light, no `codex.planner` import) -- the canonical way to populate
+    it deterministically is `codex.planner.cache.compute_query_identity`
+    applied to the real `QueryContract` a benchmark author's own
+    `understand_query(query_text, ...)` call produces, proven
+    end-to-end by `tests/test_evaluation_benchmark_integration.py`."""
+
+    query_id: str = Field(min_length=1)
+    repository_id: str = Field(min_length=1)
+    repository_revision: str = Field(min_length=1)
+    query_text: str = Field(min_length=1)
+    """The real natural-language query text (TAD §81: "queries"), run
+    through the real, unmodified D8 `understand_query` -- never a
+    pre-built `QueryContract` skipping D8, since "real Codex execution"
+    (the directive's own diagram) starts from a query, not its parsed
+    form."""
+
+
 class BenchmarkCorpus(BaseModel):
     """A versioned benchmark corpus (HLRD §56: "Evaluation SHALL use a
     versioned benchmark corpus with validated ground truth") -- an
@@ -130,10 +171,45 @@ class BenchmarkCorpus(BaseModel):
     `corpus_version` is required and non-empty so every `EvaluationReport`
     can record exactly which corpus produced it (HLRD §56's own
     "versioned" requirement), the same provenance-via-containing-record
-    pattern already established for Telemetry/Artifact Store (D11/D12)."""
+    pattern already established for Telemetry/Artifact Store (D11/D12).
+
+    `cases`/`labels` share the same `corpus_version` and the same
+    `query_id` key space, matching HLRD §56's singular "one versioned
+    benchmark corpus" phrasing rather than inventing two competing
+    schemas -- but remain two separate dicts (never merged into one
+    model) so "what to run" and "what to expect" stay independently
+    optional and independently reusable, per `BenchmarkCase`'s own
+    docstring.
+
+    Deliberately **not** persisted, stored, or given any retention/TTL
+    semantics anywhere in this package (`docs/architecture-conformance-
+    audit.md` §FF.4): HLRD §53's "governed retention" for Learning
+    datasets has no defined mechanics anywhere in HLRD/TAD, and D12's
+    Artifact Store immutable/no-retention precedent is not
+    automatically reused here per the directive's own explicit
+    instruction -- a plain, caller-held value object requires no
+    retention decision at all, since nothing is ever stored."""
 
     corpus_version: str = Field(min_length=1)
     labels: dict[str, GroundTruthLabel] = Field(default_factory=dict)
+    cases: dict[str, BenchmarkCase] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _cases_key_matches_query_id(self) -> BenchmarkCorpus:
+        """Rejects a malformed/duplicate case outright rather than
+        silently accepting inconsistent data (directive: "malformed
+        benchmark rejection", "duplicate-case handling") -- two
+        differently-keyed cases can never both claim the same
+        `query_id`, since each key must equal its own case's id."""
+        mismatched = [
+            key for key, case in self.cases.items() if case.query_id != key
+        ]
+        if mismatched:
+            raise ValueError(
+                f"BenchmarkCase.query_id must match its own dict key; "
+                f"mismatched keys: {mismatched}"
+            )
+        return self
 
 
 class RankedCandidate(BaseModel):
@@ -197,6 +273,7 @@ class EvaluationReport(BaseModel):
 
 
 __all__ = [
+    "BenchmarkCase",
     "BenchmarkCorpus",
     "EvaluationMetric",
     "EvaluationReport",

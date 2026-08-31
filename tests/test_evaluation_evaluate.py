@@ -569,3 +569,40 @@ def test_retrieval_metric_values_never_exceed_the_0_to_1_bound() -> None:
         result = result_for(report, metric)
         assert result.value is not None
         assert 0.0 <= result.value <= 1.0
+
+
+# --- D13-C: graph-version mismatch handling ----------------------------------
+
+
+def test_retrieval_metric_excludes_a_trace_with_a_mismatched_graph_version() -> None:
+    """A trace observed against a different graph snapshot than the
+    one telemetry recorded for this query is never silently trusted
+    (TAD invariant #5, the same discipline D9's own
+    `GraphVersionMismatchError` enforces at execution time)."""
+    dataset = [make_query_event(query_id="q1")]  # graph_version_id="repo1:rev1:scip=1.0.0"
+    mismatched_trace = make_trace("q1", ["e1"]).model_copy(
+        update={"graph_version_id": "repo1:rev2:scip=2.0.0"}
+    )
+    corpus = BenchmarkCorpus(
+        corpus_version="bench-v1",
+        labels={"q1": GroundTruthLabel(query_id="q1", relevant_entity_ids=frozenset({"e1"}))},
+    )
+    report = evaluate(dataset, corpus, traces={"q1": mismatched_trace}, now=NOW)
+    for metric in RETRIEVAL_METRICS:
+        result = result_for(report, metric)
+        assert result.evaluable is False
+        assert result.reason is NotEvaluableReason.INSUFFICIENT_SAMPLE
+
+
+def test_retrieval_metric_computes_normally_when_graph_versions_match() -> None:
+    """Control case for the mismatch test above -- proves the check is
+    a real filter, not a coincidental always-fail."""
+    dataset = [make_query_event(query_id="q1")]
+    matching_trace = make_trace("q1", ["e1"])  # same default graph_version_id as the event
+    corpus = BenchmarkCorpus(
+        corpus_version="bench-v1",
+        labels={"q1": GroundTruthLabel(query_id="q1", relevant_entity_ids=frozenset({"e1"}))},
+    )
+    report = evaluate(dataset, corpus, traces={"q1": matching_trace}, now=NOW)
+    result = result_for(report, EvaluationMetric.RECALL_AT_10)
+    assert result.evaluable is True

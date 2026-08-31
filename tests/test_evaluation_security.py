@@ -1,12 +1,15 @@
-"""Security tests for `codex.evaluation` (directive D13-B): repository/
-query text can never inject or modify `EvaluationTrace` fields, and the
-observer contains no dangerous dynamic-execution surface at all.
+"""Security tests for `codex.evaluation` (directives D13-B, D13-C):
+repository/query text can never inject or modify `EvaluationTrace`/
+`BenchmarkCase`/`BenchmarkCorpus` fields, and the package contains no
+dangerous dynamic-execution surface at all.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+
+import pytest
 
 from codex.evaluation.observer import observe_ranked_candidates
 from codex.ontology.relationships import RelationshipType
@@ -143,3 +146,80 @@ def test_evaluation_trace_round_trips_through_serialization_unchanged() -> None:
 
     round_tripped = EvaluationTrace.model_validate(trace.model_dump())
     assert round_tripped == trace
+
+
+# --- D13-C: BenchmarkCase / label injection ----------------------------------
+
+
+def test_malicious_benchmark_case_fields_remain_inert_and_never_execute() -> None:
+    """A `BenchmarkCase` authored with injection-shaped `query_text`/
+    `repository_id`/`repository_revision` is plain, inert string data
+    -- `verify_case_execution` is a pure field comparison, never a
+    format string, never evaluated."""
+    from codex.evaluation.benchmark import verify_case_execution
+    from codex.evaluation.models import BenchmarkCase
+
+    for malicious in MALICIOUS_STRINGS:
+        case = BenchmarkCase(
+            query_id="q1",
+            repository_id=malicious,
+            repository_revision=malicious,
+            query_text=malicious,
+        )
+        assert case.repository_id == malicious
+        assert case.query_text == malicious
+        # A mismatched real event never accidentally "matches" a
+        # malicious string through some interpreted/coerced comparison.
+        event_query_event = _make_event_for_security_test()
+        assert verify_case_execution(case, event_query_event) is False
+
+
+def _make_event_for_security_test():  # type: ignore[no-untyped-def]
+    from datetime import UTC, datetime
+
+    from codex.telemetry.models import QueryTelemetryEvent
+    from telemetry_fixtures import make_contract, make_graph_version, make_plan
+
+    gv = make_graph_version()
+    return QueryTelemetryEvent.build(
+        query_id="q1",
+        graph_version=gv,
+        query_contract=make_contract(),
+        retrieval_plan=make_plan(gv),
+        candidate_count=1,
+        mss_size=1,
+        llm_calls=1,
+        now=datetime(2026, 8, 31, tzinfo=UTC),
+    )
+
+
+def test_malicious_benchmark_corpus_version_string_is_inert() -> None:
+    from codex.evaluation.models import BenchmarkCorpus
+
+    for malicious in MALICIOUS_STRINGS:
+        corpus = BenchmarkCorpus(corpus_version=malicious)
+        assert corpus.corpus_version == malicious
+        assert corpus.model_dump()["corpus_version"] == malicious
+
+
+def test_malicious_case_key_mismatch_is_still_caught_by_validation() -> None:
+    """Injection-shaped strings do not bypass the key/id-consistency
+    validator -- it is a plain equality check, not pattern matching
+    that a crafted string could defeat."""
+    from pydantic import ValidationError
+
+    from codex.evaluation.models import BenchmarkCase, BenchmarkCorpus
+
+    malicious = MALICIOUS_STRINGS[0]
+    with pytest.raises(ValidationError):
+        BenchmarkCorpus(
+            corpus_version="v1",
+            cases={
+                malicious: BenchmarkCase(
+                    query_id="q1",  # deliberately does not match the malicious key
+                    repository_id="r",
+                    repository_revision="v",
+                    query_text="q",
+                )
+            },
+        )
