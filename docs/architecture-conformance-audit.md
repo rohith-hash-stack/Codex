@@ -1161,3 +1161,60 @@ None of these block starting D11's scoping or design — they are exactly the cl
 ### X.9 Verdict
 
 **GO WITH CONDITIONS.** No genuine HLRD/TAD contradiction was found (X.6). No blocking architectural decision prevents scoping or beginning D11 (X.4). D7 correctly stays deferred and does not gate D11 (X.3). TAD §33's gap is non-blocking for a fourth consecutive audit (X.1). TAD §55/§64's gap is precisely characterized and shown to be satisfiable within D11's own scope, with one genuinely out-of-scope sub-case (ingestion-side writer conflict) correctly excluded (X.2). D11's boundary — Telemetry Store, TAD component #16, a strict DAG successor of the entire existing pipeline with zero back-edges (X.7) — is reconstructed directly from TAD §6/§59/§65/§75 and HLRD §44-46/§52-53 text, not invented. Four items (X.8) require an explicit human decision before implementation proceeds; none are blocking in the sense of preventing D11 from being scoped, only in the sense of needing a decision this audit is not authorized to make. **D11 was not implemented.** No production code, test code, or HLRD/TAD text was written or modified in this phase. Stopping here for review.
+
+---
+
+## Y. D11 Implementation — Telemetry Store — 2026-08-31
+
+Per the "D11 decisions approved" directive, closing X.8's four required decisions and implementing D11 accordingly:
+
+1. **Scope: Telemetry Store only.** Artifact Store (TAD component #17) not implemented.
+2. **`GraphVersionMismatchError` remains D9's detection mechanism.** D11 only maps an already-raised exception into a recordable event, at the (not-yet-existing) orchestration boundary — never re-derives or re-checks a version match itself.
+3. **TAD §65 is canonical.** No HLRD-only field (ranking signals, selected subgraph/coverage, "answer outcome" as a field distinct from `VerificationStatus`) was added.
+4. **Record/store infrastructure only.** No feedback-collection endpoint, no calibration logic.
+
+Re-read TAD §56-65 and HLRD's telemetry sections (§44-46, §52-53) directly before writing any code (unchanged since every prior re-read this session, confirmed via `git log`), plus this document's own §X in full. **No cross-document contradiction found** — re-confirms X.6's field-by-field comparison with no new discrepancy surfaced during implementation.
+
+### Y.1 Design — Protocol/data model first, `codex.telemetry`
+
+Four new modules, `src/codex/telemetry/{models,store,mapping,__init__}.py`, following the exact `EvidenceStore`/`GraphStore` in-memory-behind-a-Protocol precedent (X.4's own justification for why no ADR blocks this):
+
+- **`models.py`**: `FailureCode` (TAD §64's eleven codes, verbatim, no more/fewer), `FeedbackKind` (TAD §60's six examples, verbatim — not HLRD §46's slightly different superset, per decision 3's discipline extended to the feedback taxonomy too), `FeedbackRecord` (the record *shape* only, decision 4), `QueryTelemetryEvent` (TAD §65's field list exactly — `query_id`, `repository_id`, `graph_version` id, `query_contract`, `selected_providers`, `retrieval_plan`, `candidate_count`/`mss_size`, `llm_calls`/`llm_tokens`, `latency_ms`, `verification_result`, `unsupported_claim_count`/`contradiction_count`, `cache_hit`, `provider_failure_count`, `user_feedback`), `FailureTelemetryEvent` (TAD §64's generic per-failure record). Both event types have a `.build()` factory computing a **deterministic `event_id`** — a SHA-256 hash of the event's own defining fields (matching `build_canonical_id`'s precedent), never a random UUID: two events built from identical inputs, including an identical explicit `now`, are byte-for-byte identical.
+- **`store.py`**: `TelemetryStore` Protocol (`record_query_event`/`record_failure_event`/`query_events`/`failure_events`) + `InMemoryTelemetryStore`. **Append-only by construction** — no update/delete/clear method exists anywhere on the class (proven by `test_no_update_or_delete_method_exists`, which enumerates the class's entire public surface); `query_events`/`failure_events` return a fresh filtered list each call, so mutating a returned list never affects the store (matching `InMemoryEvidenceStore`'s existing `get_evidence_for` behavior exactly).
+- **`mapping.py`**: `failure_event_from_graph_version_mismatch(exc, *, plan, query_id, now=None) -> FailureTelemetryEvent` — the one explicitly-approved mapping (decision 2). Takes an *already-raised* `GraphVersionMismatchError` and the `RetrievalPlan` D9 already computed; reads already-known fields (`plan.graph_version.repository_id`/`.version_id`, `str(exc)`) into a `FailureTelemetryEvent(code=CONCURRENT_UPDATE_DETECTED, ...)`. Performs **no comparison of its own** — it never touches `graph.version`/`plan.graph_version` to decide whether they differ; that decision was already made by `execute_query` (`planner.py:343-348`, unmodified) before this function is ever called. This satisfies "Telemetry must not own detection/recovery" by construction, not by convention.
+
+**Field-list honesty, documented rather than silently smoothed over** (`models.py`'s own docstring): TAD §65 names "candidate counts" and "MSS size" as two separate capture targets, but D9's `execute_query()` (unmodified, not reopened) exposes only the final `EvidencePackage` — no separate pre-MSS candidate set is a public artifact anywhere in D9. `candidate_count`/`mss_size` are therefore computed from the same source in this V1 implementation; both TAD-named fields are kept (not silently merged into one), with the reason recorded in the docstring rather than hidden. `llm_tokens`/`latency_ms` are `int | None`/`float | None` because no wall-clock timing or token-count instrumentation exists anywhere in D1-D10 (re-confirmed by grep this pass) — a caller with a real measurement supplies it; nothing here fabricates a value.
+
+**Provider/version telemetry** (a required test category, per the directive): satisfied without inventing a new field — `QueryTelemetryEvent.retrieval_plan` embeds the full `RetrievalPlan`, which itself embeds the full `GraphVersion`, whose `provider_versions: dict[str, str]` (already existing since Phase 1) is therefore reachable at `event.retrieval_plan.graph_version.provider_versions` — proven by `test_build_carries_selected_providers_and_full_retrieval_plan`.
+
+### Y.2 Dependency-direction and non-interference, enforced by tests
+
+`tests/test_telemetry_boundaries.py` (5 tests) programmatically confirms, via `ast`-based import parsing (the same mechanism `test_planner_boundaries.py`/`test_qu_boundaries.py` already established):
+
+- **Nothing upstream depends on telemetry.** All fourteen existing top-level `codex` packages (`ontology` through `verification`) are scanned; none imports `codex.telemetry` (`test_no_upstream_package_imports_telemetry`).
+- **Telemetry legitimately depends on the pipeline** (TAD §75's explicit authorization) — confirmed as a real, exercised asymmetry (`codex.telemetry` genuinely imports from `codex.planner`/`codex.query_understanding`/`codex.verification`), not a coincidence of an unused package (`test_telemetry_may_depend_on_the_rest_of_the_pipeline`).
+- **No mutation-surface import** — `codex.telemetry` never imports `codex.graph.memory_store`/`codex.evidence.store`/`codex.ingestion.pipeline` (`test_telemetry_never_imports_a_graph_or_evidence_mutation_api`); `InMemoryTelemetryStore` has no `upsert_entity`/`upsert_relationship`/`add_evidence`/`publish`-shaped method (`test_telemetry_store_has_no_write_path_back_into_the_graph`).
+
+`tests/test_telemetry_integration.py::test_recording_telemetry_does_not_change_the_already_computed_final_answer` proves the same property behaviorally, not just structurally: a `FinalAnswer` computed from a real D10 run is compared before and after recording a `QueryTelemetryEvent` about it — byte-for-byte identical, confirming telemetry cannot retroactively (or prospectively) alter ranking, verification, answers, graph state, or provider selection.
+
+### Y.3 Tests
+
+34 new tests across four test files, 100% coverage on all four new `codex.telemetry` modules:
+
+| File | Count | Covers |
+|---|---|---|
+| `tests/test_telemetry_models.py` | 13 | Normal event construction, deterministic `event_id` (identical inputs → identical id; different `query_id`/`now` → different id), provenance-field population from `GraphVersion`, conservative defaults, all-11-TAD-§64-codes representable, TAD-§60-only feedback vocabulary |
+| `tests/test_telemetry_store.py` | 11 | Normal recording/retrieval, empty-store behavior, filtering by `repository_id`/`query_id`/`code`, query/failure logs independent, append-only (multi-event ordering preserved, mutating a returned list doesn't affect the store, no update/delete method exists) |
+| `tests/test_telemetry_integration.py` | 5 | A **real** D8→D9→D10 pipeline result recorded as `QueryTelemetryEvent` (not synthetic fixtures); a real `PARTIAL`-cohort ingestion outcome recorded generically as `FailureTelemetryEvent`; the real `GraphVersionMismatchError` (D9, unmodified, actually raised via a real concurrent-update scenario — the same setup `test_planner_graph_version.py`'s own pre-existing test uses) mapped to a `CONCURRENT_UPDATE_DETECTED` event; confirmation the exception still propagates after mapping is available (D9's refusal-to-proceed behavior unchanged); confirmation recording telemetry never alters an already-computed `FinalAnswer` |
+| `tests/test_telemetry_boundaries.py` | 5 | Dependency-direction proof (Y.2) |
+| `tests/telemetry_fixtures.py` | — | Shared, non-test-prefixed fixture builders (`make_graph_version`/`make_contract`/`make_plan`), matching the `planner_fixtures.py`/`llm_fixtures.py`/`symbol_level_fixtures.py` precedent rather than importing between `test_*.py` files |
+
+Every directive-required test category is covered: normal event recording, deterministic event structure, repository/query/graph-version provenance, provider/version telemetry, partial/failure events, `GraphVersionMismatchError` telemetry mapping, append-only behavior, no correctness dependency on telemetry.
+
+### Y.4 Validation
+
+Fresh `.venv-work` run: **697/697 tests passing** (663 pre-existing + 34 new: 13 model + 11 store + 5 integration + 5 boundary), **99% project-wide coverage** (`telemetry/models.py`, `telemetry/store.py`, `telemetry/mapping.py`, `telemetry/__init__.py` all 100%; the only sub-100% module remains `repository/manager.py`, pre-existing, unrelated), `ruff check src/ tests/` clean, `mypy src/` clean (69 source files, up from 65). No new pip dependency. No ADR created (X.4 already established none are prerequisites; none were touched). No HLRD/TAD text modified. No D1-D10 module modified — confirmed by `git status`/`git diff --stat` showing only new files under `src/codex/telemetry/` and `tests/`.
+
+**No genuine HLRD/TAD contradiction found** during implementation, beyond what X.6 already characterized.
+
+**D11 — COMPLETE for the approved scope (Telemetry Store only).** Artifact Store, Offline Calibration Pipeline, D7, and production feedback collection were explicitly not implemented, per the directive's own closing instruction. **D12 not started.** Stopping here for review.
