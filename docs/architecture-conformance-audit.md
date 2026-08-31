@@ -1032,3 +1032,132 @@ Fresh `.venv-work` run: **663/663 tests passing** (651 pre-existing + 12 new: 3 
 **No genuine HLRD/TAD contradiction found.** Both HLRD.md and TAD.md, plus `docs/architecture-truth-report.md`, were re-read in full before any change per the directive's explicit instruction.
 
 **W — COMPLETE.** D11 not started. Stopping here for review.
+
+---
+
+## X. D11 Pre-Implementation Audit — 2026-08-31
+
+Per the explicit "Start D11 Pre-Implementation Audit, but DO NOT implement D11 yet" directive. **Audit-only: no production code, no test code, and no HLRD/TAD text was written or modified in this phase.** Read directly for this audit (not assumed from prior conversation summaries or from this document's own earlier sections): `docs/HLRD.md` in full (all 64 sections, unchanged since the SourceLocation-closure commit — confirmed via `git log`), `docs/TAD.md` in full (all 84 sections, same confirmation), `docs/architecture-conformance-audit.md` §A-W in full (this document, 1034 lines), `docs/architecture-truth-report.md` in full (356 lines), `PROGRESS.md` in full (147 lines). No standalone ADR files exist anywhere in the repository (confirmed: `find . -iname "*adr*"` returns nothing) — "all ADRs" means this document's own §D (ADR Audit) and §I (ADR-018 resolution), both re-read, plus `PROGRESS.md`'s own ADR table (§"Open Items", consistent with §D, no drift found between the two).
+
+### X.1 TAD §33 completeness denominator
+
+**Exactly what is undefined:** TAD §33 states `LOW ≥50%, MEDIUM ≥75%, HIGH ≥90%, EXHAUSTIVE 100%+complete repository coverage`, immediately followed by "these are initial benchmark-calibrated thresholds" — re-read directly, unchanged since every prior audit pass (P.2, R.2, S, truth-report §10). TAD never states the **denominator**: not "% of entities discovered vs. some expected total," not "% of required capabilities that succeeded," not "% of expected evidence records retrieved," not any other quantity. No other HLRD/TAD section supplies it either (HLRD §37-39 discusses coverage/completeness conceptually — "how much of the evidence required by the query has actually been obtained" — but gives no formula, only the qualitative concept `codex.coverage`'s `EXHAUSTIVE` check already fully satisfies without needing a percentage).
+
+**Which future component requires it:** Not D11. `codex.coverage.engine.CompletenessLevel` already propagates LOW/MEDIUM/HIGH/EXHAUSTIVE as a requested-level enum through D8→D9→D10 without ever needing to *evaluate* an achieved percentage — confirmed unchanged by this pass (`codex.coverage.engine.py` module docstring re-read, `is_exhaustive_coverage()` is still the only quantitative check). Telemetry (D11's own candidate scope, X.5) only needs to **record** which `CompletenessLevel` was requested and whatever `codex.coverage` already classified (`CapabilityCoverage`/`NegativeQueryCoverage`, both already fully implemented) — it does not need to compute a percentage either. The actual consumer is **TAD §80 Phase 5 (Validation: benchmark repositories, ground truth, metrics, calibration)** — the percentage's denominator can only be meaningfully defined once real ground-truth data exists to decide what it should measure, which is explicitly a later phase than D11.
+
+**Not invented.** No metric was proposed or implemented. **Non-blocking for D11**, re-confirmed a fourth time (P.2, R.2, S, truth-report §10, now this pass) with an identical conclusion each time — this stability across four independent audits is itself evidence the gap is well-understood and correctly parked, not overlooked.
+
+### X.2 TAD §55/§64 CONCURRENT_UPDATE_DETECTED
+
+**The missing capability, precisely identified this pass (a sharper finding than any prior audit recorded):** TAD groups two distinct failure modes under one name, and Codex's own code already treats them as two distinct things without saying so out loud:
+
+1. **Retrieval-side version-mismatch detection — already fully built, D9.** `codex.planner.planner.execute_query` (`planner.py:343-348`) raises `GraphVersionMismatchError` — whose message literally reads `"CONCURRENT_UPDATE_DETECTED: plan locked graph_version ..."` — the moment a caller executes a `RetrievalPlan` against a `GraphReader` whose `version.version_id` no longer matches the plan's locked version. Tested (`tests/test_planner_graph_version.py:125`). This needs no new detection logic and no ADR.
+2. **Ingestion-side concurrent-*writer* conflict detection — genuinely not built, and correctly not built yet.** `codex.ingestion.pipeline.py`'s own module docstring (lines 102-109, re-read this pass) explicitly states: *"Real concurrent-writer detection (TAD §64's `GRAPH_VERSION_CONFLICT`/`CONCURRENT_UPDATE_DETECTED`) is not implemented: this pipeline is synchronous/single-threaded... real concurrent-writer detection needs a persistent storage layer with its own transaction semantics (ADR-002 territory), out of D4's scope."* This is a genuinely different capability (detecting two `IngestionPipeline.run()` calls racing to publish) than #1 (detecting a stale reader), correctly deferred to real storage technology (ADR-002), not a D11 concern.
+
+**A third, previously-uncatalogued finding surfaced by this pass:** `codex.planner.models.PlanTelemetry` (`models.py:59-66`) already has a `concurrent_update_detected: bool = False` field — but grep confirms **no code path anywhere ever sets it to `True`**. `execute_query`'s mismatch handling takes an entirely different control-flow path (raising `GraphVersionMismatchError`, `planner.py:344`) that never touches a `RetrievalPlan`/`PlanTelemetry` instance at all — the exception is raised and propagates up, bypassing the very field that was seemingly built to carry this signal. This field is currently **dead** (always `False`, structurally unreachable as `True`), not a defect in D9 (D9's own actual mechanism, the exception, is correct and tested) but a genuine schema/design loose end that D11 will need to reconcile — flagged here, not resolved, since deciding *how* (catch the exception at a call site above `execute_query` and populate a Telemetry record from it? repurpose/remove the dead field? have `execute_query` itself change its signature to return a flagged result instead of raising, which would reopen D9's already-approved contract?) is exactly the kind of implementation-shape decision this audit must not make unilaterally.
+
+**Determination: D11 depends on capability #1 only, which is already satisfied.** D11's Telemetry Store needs to be able to **record** a `CONCURRENT_UPDATE_DETECTED` event; the detection itself (`GraphVersionMismatchError`) already exists and needs no new code. D11 does **not** depend on capability #2 (ingestion-side writer conflict) — that remains correctly deferred to ADR-002/productionization, and D11 must not attempt to build it. The dead `PlanTelemetry.concurrent_update_detected` field is a **required human decision** before D11 implementation touches this specific event (see X.6/X.8), not a blocker for D11's existence.
+
+### X.3 D7 decision
+
+**Kept deferred.** Re-checked the exact condition the directive sets ("unless a deterministic, independently implementable source-graph option is now justified"): the provider-capability matrix is unchanged since the D7 STOP and its two re-audits (§K, §O Phase 3, truth-report §9, re-confirmed a fourth time this pass by re-reading each concrete adapter's `supported_capabilities` — `GitAdapter={HISTORY,CO_CHANGE}`, `SCIPAdapter={SYMBOL_DEFINITION,SYMBOL_REFERENCE,IMPLEMENTATION,TYPE_RELATIONSHIP}`, `CodeQLAdapter={DATA_FLOW}`, zero overlap, zero new capability). No new candidate provider was researched or proposed in this pass (none was in scope — the directive's own instruction is "do not implement D7"). **D7 remains DEFERRED — ARCHITECTURAL DECISION REQUIRED, ADR-006 still open.** Nothing about D11 (Telemetry) creates pressure to reopen it — Telemetry observes whichever providers happen to be registered; it has no opinion on which providers exist.
+
+### X.4 TAD §84 open ADRs — prerequisite classification
+
+Re-read `docs/TAD.md` §84's status table and §77's 17 candidates, and this document's own §D, directly. Classified against the reconstructed D11 scope (X.5):
+
+| ADR | Relation to D11 | Classification |
+|---|---|---|
+| ADR-001 (Graph Storage) | None — D11 doesn't touch the graph store | Later productionization |
+| ADR-002 (Evidence Storage) | Named directly by the ingestion-pipeline docstring (X.2) as the prerequisite for **ingestion-side** concurrent-writer detection, which is explicitly **not** part of D11's scope | Later productionization, not a D11 prerequisite |
+| ADR-003 (Artifact Storage) | Related only if Artifact Store (TAD component #17) is bundled into D11 — see X.5's explicit scoping question; Telemetry Store itself needs no artifact storage | Not a D11 prerequisite for the Telemetry-only scope; would become one only if Artifact Store is bundled in, and even then only for the *technology* choice, not the interface/schema |
+| ADR-004/005 (SCIP/CodeQL) | Already resolved, unrelated to D11 | N/A |
+| ADR-006 (Sourcegraph/RepoGraph) | Unrelated — D11 doesn't depend on provider count (X.3) | Not a D11 prerequisite |
+| ADR-007/008 (SLM/LLM selection) | Unrelated — D11 observes LLM call counts/tokens as already-typed data (`LLMGenerationResult`), never needs to know *which* model | Not a D11 prerequisite |
+| ADR-009 (Embedding strategy) | Unrelated | Not a D11 prerequisite |
+| ADR-010 (Search/Ranking engine) | Unrelated (infra-only remainder, formula already closed) | Not a D11 prerequisite |
+| ADR-011 (Cache Technology) | Adjacent but distinct: TAD §54-55's Query-Level Cache (`codex.planner.cache`, already implemented, in-memory) is a different logical store than Telemetry Store (TAD §53 lists them as separate boxes); D11 may *observe* cache hits (TAD §65's own field list names "cache hits") but does not need cache *storage technology* decided to do so | Not a D11 prerequisite |
+| ADR-012/013 | Closed/superseded, unrelated | N/A |
+| ADR-014 (Runtime Adapter) | Unrelated | Not a D11 prerequisite |
+| ADR-015 (API Protocol) | Relevant only to *soliciting* user feedback over a real API (HLRD §46/TAD §60) — no API/UI layer exists anywhere in Codex yet (correctly deferred, TAD §69/HLRD §54); D11 can define the feedback *record shape* and accept it as a typed input without needing a live API to collect it from | Not a D11 prerequisite; blocks only the (out-of-scope) live feedback-collection surface |
+| ADR-016 (Auth) | Unrelated to a first in-memory Telemetry Store; becomes relevant only once Telemetry is exposed over a real API/multi-tenant deployment | Later productionization |
+| ADR-017 (Deployment) | Unrelated | Later productionization |
+
+**No explicit "Telemetry Storage Technology" ADR is named anywhere in TAD §77's 17 candidates** — a genuine omission in TAD's own ADR list (TAD §53's Storage Architecture diagram lists "Telemetry Store" as one of five logical storage boxes, but the corresponding ADR was never enumerated alongside ADR-001/002/003/011 for the other four). This is not a contradiction (nothing asserts the opposite), just an incompleteness in TAD's own bookkeeping — flagged here for the record, not silently patched into TAD's text (per the explicit "no document rewriting" rule) and not blocking, since **every store Codex has built so far (`InMemoryGraphStore`, `InMemoryEvidenceStore`, `PlanCache`) was built as an in-memory reference implementation behind a Protocol well before its own storage-technology ADR was resolved** — this is V1's established, repeated pattern, not a new one D11 would be inventing.
+
+**Conclusion: zero of the 17 ADR candidates are blocking prerequisites for D11 as scoped in X.5.** All remain correctly deferred to later productionization (TAD §80 Phase 6), exactly as TAD §84 itself frames them ("🟡 ADR... where we want to be before writing the actual implementation" of *technology* — not of the interface).
+
+### X.5 D11 boundary reconstruction
+
+**Component identified:** TAD §6's component list (re-read directly, all 18 named) has exactly three components with no code anywhere in `src/codex/`: **#16 Telemetry Store**, **#17 Artifact Store**, **#18 Offline Calibration Pipeline**. TAD §59's own pipeline diagram (*"Production Telemetry → Training Dataset → Offline Evaluation → Calibration → Shadow → Canary → Production"*) makes #18 explicitly downstream of #16 — Offline Calibration needs telemetry data to exist first, and Codex has never run against a real repository/real query traffic, so no such data exists yet regardless. **#18 is therefore out of D11's reach by construction**, not by choice.
+
+That leaves #16 (Telemetry Store) and #17 (Artifact Store) as the two candidates. They are related (TAD §53 lists both as "Storage Architecture" siblings, both currently `NOT_IMPLEMENTED`) but serve different purposes: #16 is a cross-cutting *observability sink* (TAD §75: *"Telemetry → all runtime components"* — the one component TAD explicitly authorizes to depend on everything else); #17 is a narrow *artifact-reference resolution service* (TAD §52: resolving `Evidence.raw_reference`/`ExtractionResult.raw_reference` URIs, whose scheme validation is already done, D1, but whose actual resolution service does not exist). **This audit reconstructs D11's primary scope as #16 (Telemetry Store)**, per TAD §75's dependency rule making it the more architecturally central "next" component, and flags #17 as a **closely related, smaller, separable component** — whether to fold it into D11 or treat it as a distinct D12 is an open scoping question for the human reviewer (X.8), not decided here.
+
+**Inputs (TAD §65/HLRD §52, cross-checked, X.6):** already-typed data every existing D1-D10 module already produces — `query_id`/`query_identity` (`codex.planner.cache.compute_query_identity`, exists), `repository_id`+`graph_version` (`GraphVersion`, exists), `QueryContract` (D8, exists), `RetrievalPlan` including its own `PlanTelemetry` (D9, exists — see X.2's dead-field finding), candidate/entity/relationship counts (`EvidencePackage`, exists), LLM call count/tokens (`LLMGenerationResult`, exists — token counts specifically are not yet a populated field anywhere, see X.6), `ClaimVerification`/`ResynthesisResult`/`FinalAnswer` (D10, exists), `ProviderRunOutcome` (D4, exists, already carries failure/skip/partial detail), user feedback (HLRD §46/TAD §60 — no producer exists anywhere yet, since no API/UI layer exists; D11 can define the typed shape without a live source).
+
+**Outputs:** a `TelemetryRecord` (or a small family of typed records, one per lifecycle stage) persisted into a new `TelemetryStore` Protocol + in-memory implementation, following the exact `EvidenceStore`/`GraphStore`/`PlanCache` pattern already established three times over. Read-only for every consumer — nothing in D1-D10 reads from it (TAD §59: production doesn't perform unrestricted online learning; feedback/telemetry data only flows into the *offline*, not-yet-built Calibration Pipeline, #18).
+
+**Dependencies:** reads (never mutates) the already-public types of `codex.ontology`, `codex.graph`, `codex.query_understanding`, `codex.planner`, `codex.llm`, `codex.verification`, `codex.provider`/`codex.ingestion` (for `ProviderRunOutcome`) — the one component TAD §75 explicitly authorizes to depend on the entire rest of the system. No existing module would import the new `codex.telemetry` package (verified as a design constraint, not yet as code — see X.7).
+
+**Invariants (derived from HLRD/TAD text, not invented):**
+- Never mutates the canonical graph/evidence store (TAD §62, invariants #6-8, extended by the same reasoning already applied to Verification/LLM).
+- Must not become *"an uncontrolled shadow copy of repository source code"* (HLRD §53, verbatim) — captures the structured/summary fields TAD §65/HLRD §52 actually name, never raw file content or full `EvidencePackage` payloads.
+- Feedback is *"a learning signal, not automatically ground truth"* (HLRD §46, verbatim) — stored as reported, never validated or promoted to fact by Telemetry itself.
+- *"Feedback does not directly modify the canonical graph"* (TAD §60) / *"Learned intelligence SHALL NOT directly modify canonical repository truth"* (HLRD INV-008) — Telemetry has no write path back into `codex.graph`/`codex.evidence`, structurally, the same enforcement pattern D10.9's boundary tests already established for the LLM.
+- Retention is configurable (HLRD §53) — the *policy* is a later concern; a first in-memory implementation with no retention enforcement is not a violation of this invariant, matching how `InMemoryGraphStore`/`InMemoryEvidenceStore` also don't yet enforce HLRD §53's graph-version retention policy either.
+
+**Explicit non-goals for D11:**
+- Offline Calibration Pipeline (#18) — downstream, needs real data D11 will only just start producing.
+- Real storage technology selection (no ADR exists or is needed to be resolved first, X.4) — an in-memory reference implementation only, exactly like every prior store.
+- A live API/UI surface to actually collect user feedback — HLRD §54/TAD §69 explicitly defer external API protocol to a later technical-design deliverable; D11 can accept a typed feedback record as a parameter without inventing a collection endpoint.
+- Using telemetry data to alter runtime behavior (ranking weights, routing thresholds, provider selection, etc.) at query time — explicitly forbidden by TAD §59 ("production runtime does not perform unrestricted online learning"); any such use is Offline Calibration's job, and only after Shadow/Canary validation per TAD §59's own lifecycle diagram.
+- Ingestion-side concurrent-writer detection (X.2 capability #2) — correctly deferred to ADR-002.
+- Reopening or modifying `RetrievalPlan.telemetry`/`PlanTelemetry`'s existing schema, `execute_query`'s exception-raising contract, or any other already-approved D9/D10 decision (X.2's dead-field finding is reported as a decision *point*, not pre-resolved here).
+
+### X.6 Cross-document audit affecting D11
+
+Compared HLRD §52's telemetry field list against TAD §65's directly, field by field (both re-read in full this pass):
+
+| HLRD §52 field | TAD §65 field | Assessment |
+|---|---|---|
+| Query ID | `query_id` | Match |
+| Repository / Revision | `repository_id` / `graph_version` | Match (TAD's `graph_version` subsumes revision via its composite key, TAD §19 — not a conflict, a more precise successor field) |
+| Query intent / Complexity | `query_contract` | Match (TAD's field is the whole typed object, HLRD names two of its members individually — narrower-vs-broader framing, same pattern as every prior D8/D9 "Granularity note" in this document, not a contradiction) |
+| Query plan | `retrieval_plan` | Match (same concept, TAD's name matches the actual `RetrievalPlan` type) |
+| Providers used | `selected_providers` | Match |
+| Provider failures | `provider_failures` | Match |
+| Retrieval operations | *(not separately named)* | HLRD-only; `candidate counts`/`retrieval_plan` partially cover it — genuinely narrower in TAD, not contradicted |
+| Candidate counts | `candidate counts` | Match |
+| Ranking signals | *(not named)* | **HLRD-only field TAD's §65 list omits**, even though TAD §36-37 fully specifies named ranking signals and `codex.planner.ranking` already computes them — a real, if minor, granularity gap worth flagging for X.8, not a contradiction (TAD's list is a narrower V1 baseline, not an exclusion) |
+| Selected subgraph / Coverage | *(not named)* | Same pattern — `codex.coverage`'s types already exist and could populate this, TAD's §65 list just doesn't name it explicitly |
+| Model calls / Token usage | `LLM calls` / `LLM tokens` | Match |
+| Latency | `latency` | Match |
+| Verification status | `verification result` | Match |
+| Answer outcome | *(not named)* | HLRD-only; D10.8's `AnswerDecision` is a distinct field from `VerificationStatus` that TAD §65 doesn't separately name — same minor granularity gap |
+| User feedback | `user feedback` | Match |
+| *(not in HLRD)* | `MSS size` | TAD-only, more V1-specific than HLRD's higher-level list — not a conflict |
+| *(not in HLRD)* | `unsupported claims` / `contradictions` | TAD-only, reflects D10's richer verification taxonomy — not a conflict |
+| *(not in HLRD)* | `cache hits` | TAD-only, reflects the now-implemented D9 cache — not a conflict |
+
+**Conclusion: no genuine HLRD↔TAD contradiction regarding Telemetry's field list.** Every difference is the same "TAD narrows HLRD's broader/aspirational list to a concrete V1 set" pattern this document has already documented three times (D8's intent-vocabulary Granularity note, D9's ranking-signals Granularity note, and now this one) — never a case where the two documents assert incompatible things. The handful of HLRD-only fields (ranking signals, selected subgraph/coverage, answer outcome) are readily available from already-implemented types with zero invention required, but per this project's own established discipline (P.1 explicitly excluded `reasoning_requirement` from `QueryContract` for exactly this reason — "would invent a field TAD's own struct omits") **whether to include them is a documented-interpretation decision for D11's actual implementation, not resolved here.**
+
+Checked D1-D10 implementation against both documents for anything already telemetry-shaped that could conflict: `PlanTelemetry` (D9) and `PlanCache`'s `cache_hit` field are the only telemetry-*shaped* data structures that exist, and neither is a persistence layer — both are ephemeral, per-call, in-memory fields on already-returned objects (`RetrievalPlan.telemetry`), fully consistent with feeding into, not competing with, a future `TelemetryStore`. No conflicting or duplicate telemetry concept found anywhere in the codebase.
+
+### X.7 Dependency-direction confirmation
+
+Re-derived the same import-graph extraction method as the truth report's §7 (`grep -rhoE "^from codex\.[a-z_]+" src/codex/<pkg>/*.py`, all 13 existing top-level packages) — unchanged since that audit (no source file has been added to or removed from any package's import list by the hardening pass, confirmed by re-running the exact same command this pass and diffing against the truth report's recorded graph: identical). The existing chain remains a strict DAG with `verification` as its current terminal node (query_understanding → planner → llm → verification, TAD §1's authoritative pipeline order, HLRD §4's principle diagram).
+
+A new `codex.telemetry` package, as scoped in X.5, would sit as a **strict successor** of every existing node — importing from `ontology`, `graph`, `query_understanding`, `planner`, `llm`, `verification`, `provider`/`ingestion` (for `ProviderRunOutcome`) to type its capture functions, while **zero existing package would import `codex.telemetry` back** (nothing in the D1-D10 chain has any reason to read telemetry data — TAD §59's "no unrestricted online learning" invariant forbids exactly that feedback loop at runtime). This preserves the DAG property by construction — telemetry can only be *appended* to the dependency graph, never *inserted into* the existing Query Understanding → Planner/Retrieval → EvidencePackage → LLM → Verification → Final Answer chain, because nothing in that chain would ever need to call into it to produce its own output. **Confirmed: D11 can be added without bypassing or reordering any existing stage.**
+
+### X.8 Required human decisions (none pre-resolved by this audit)
+
+1. **Scope: Telemetry Store alone, or Telemetry Store + Artifact Store together as D11?** (X.5) Both are small, related, currently-unimplemented storage siblings; TAD's own component numbering (#16 vs #17) and differing purposes support treating them separately, but nothing forbids bundling them either.
+2. **How to bridge `GraphVersionMismatchError` into a `CONCURRENT_UPDATE_DETECTED` telemetry record, and what to do with the currently-dead `PlanTelemetry.concurrent_update_detected` field** (X.2) — catch-at-call-site, repurpose the field, or another shape; this touches D9's existing (approved, tested) contract at the margin and should not be decided silently.
+3. **Whether to include the HLRD-only telemetry fields TAD §65 doesn't name** (ranking signals, selected subgraph/coverage, answer outcome — X.6) in D11's actual record schema, consistent with this project's "don't invent a field neither document's authoritative struct lists" discipline, or treat TAD §65's list as the closed baseline.
+4. **Whether/when to also implement real feedback *collection*** (requires the still-deferred API/UI layer, ADR-015) versus only defining the feedback record *shape* now and leaving collection for later (X.5's non-goals).
+
+None of these block starting D11's scoping or design — they are exactly the class of "flag with maximum visibility, do not silently resolve" decision points this project has handled the same way at every prior D-phase boundary (ADR-018, the D9 latency-budget analogy, D10 Decisions 1-4).
+
+### X.9 Verdict
+
+**GO WITH CONDITIONS.** No genuine HLRD/TAD contradiction was found (X.6). No blocking architectural decision prevents scoping or beginning D11 (X.4). D7 correctly stays deferred and does not gate D11 (X.3). TAD §33's gap is non-blocking for a fourth consecutive audit (X.1). TAD §55/§64's gap is precisely characterized and shown to be satisfiable within D11's own scope, with one genuinely out-of-scope sub-case (ingestion-side writer conflict) correctly excluded (X.2). D11's boundary — Telemetry Store, TAD component #16, a strict DAG successor of the entire existing pipeline with zero back-edges (X.7) — is reconstructed directly from TAD §6/§59/§65/§75 and HLRD §44-46/§52-53 text, not invented. Four items (X.8) require an explicit human decision before implementation proceeds; none are blocking in the sense of preventing D11 from being scoped, only in the sense of needing a decision this audit is not authorized to make. **D11 was not implemented.** No production code, test code, or HLRD/TAD text was written or modified in this phase. Stopping here for review.
