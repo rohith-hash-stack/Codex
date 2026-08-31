@@ -15,10 +15,11 @@ the Verification Engine (D10.4) verifies only `claims[]`.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
-from codex.ontology.relationships import RelationshipType
+from codex.ontology.relationships import DERIVED_RELATIONSHIP_TYPES, RelationshipType
 
 
 class ClaimType(StrEnum):
@@ -42,18 +43,38 @@ class ClaimType(StrEnum):
 class Claim(BaseModel):
     """TAD §44's per-claim struct: strict subject-predicate-object.
 
-    `predicate` is deliberately typed as the canonical `RelationshipType`
-    (TAD §14, already closed) rather than an open string -- an LLM claim
-    about a predicate the ontology does not recognize is a genuine
-    schema-validation failure (directive D10.2: "Malformed structured
-    output... never pass malformed claims to verification"), not a
-    silently-accepted free-text predicate.
+    `predicate` accepts either a persisted `RelationshipType` (TAD §14)
+    or one of the three query-time-computed `DERIVED_RELATIONSHIP_TYPES`
+    (TAD §14: `REACHES`/`TRANSITIVE_CALLS`/`INDIRECTLY_DEPENDS_ON`) --
+    both halves of the *same* closed ontology TAD §14 defines. Rejecting
+    the derived half would make it impossible to represent TAD §45's
+    own worked example ("DERIVED: A REACHES C"). A predicate outside
+    both sets is a genuine schema-validation failure (directive D10.2:
+    "Malformed structured output... never pass malformed claims to
+    verification"), not a silently-accepted free-text predicate.
     """
 
     subject: str
-    predicate: RelationshipType
+    predicate: RelationshipType | str
     object: str
     claim_type: ClaimType
+
+    @field_validator("predicate", mode="before")
+    @classmethod
+    def _validate_predicate(cls, value: Any) -> RelationshipType | str:
+        if isinstance(value, RelationshipType):
+            return value
+        if isinstance(value, str):
+            try:
+                return RelationshipType(value)
+            except ValueError:
+                pass
+            if value in DERIVED_RELATIONSHIP_TYPES:
+                return value
+        raise ValueError(
+            f"predicate {value!r} is neither a RelationshipType nor one of "
+            f"DERIVED_RELATIONSHIP_TYPES {sorted(DERIVED_RELATIONSHIP_TYPES)}"
+        )
 
 
 class StructuredAnswer(BaseModel):

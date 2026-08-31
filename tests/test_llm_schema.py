@@ -22,6 +22,19 @@ def test_claim_predicate_must_be_a_canonical_relationship_type() -> None:
         Claim(subject="A", predicate="INVENTS", object="B", claim_type=ClaimType.FACT)
 
 
+def test_claim_predicate_accepts_persisted_relationship_type() -> None:
+    claim = Claim(subject="A", predicate="CALLS", object="B", claim_type=ClaimType.FACT)
+    assert claim.predicate is RelationshipType.CALLS
+
+
+def test_claim_predicate_accepts_derived_relationship_type() -> None:
+    """TAD §45's own worked example: "DERIVED: A REACHES C" -- REACHES
+    is in DERIVED_RELATIONSHIP_TYPES (TAD §14, computed at query time),
+    not a RelationshipType enum member, and must still be representable."""
+    claim = Claim(subject="A", predicate="REACHES", object="C", claim_type=ClaimType.DERIVED)
+    assert claim.predicate == "REACHES"
+
+
 def test_claim_type_must_be_one_of_the_four_canonical_values() -> None:
     with pytest.raises(ValidationError):
         Claim(subject="A", predicate=RelationshipType.CALLS, object="B", claim_type="MAYBE")
