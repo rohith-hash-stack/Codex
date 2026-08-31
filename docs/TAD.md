@@ -10,6 +10,8 @@ Design Principle: Deterministic repository intelligence first; generative reason
 
 **Amendment log (Architecture Reconciliation, 2026-08-30):** three clauses below were reconciled via `docs/architecture-reconciliation.md` — §19's `GraphVersion` struct (the literal named-provider fields were illustrative and are superseded by a generic mapping, resolving a self-contradiction with this document's own provider-independence invariant), §50 (now stated explicitly as the canonical internal verification taxonomy, with derived mapping tables), and §5's pipeline diagram (annotated with the same mapping). ADR-012 and ADR-013 (§77) are also marked closed/superseded rather than open. The rest of this document is unchanged and remains the architecture baseline.
 
+**Amendment log (SourceLocation Closure, 2026-08-31):** §12's `source_location` field, previously unspecified, now has an explicit 0-based half-open coordinate convention (clarification, not a contradiction — see the inline note at §12). No other clause changed.
+
 ---
 
 ## 1. Executive Summary
@@ -403,6 +405,8 @@ RepositorySymbol {
     lifecycle_status
 }
 ```
+
+> **Clarified 2026-08-31 (`SourceLocation` contract closure; flagged as an ambiguity, not a contradiction, by the D7 research pass — see `docs/architecture-conformance-audit.md` §J/§L):** `source_location`'s line/column convention was never stated anywhere in this document, so nothing here was contradicted, only left unspecified. It is now fixed as: **0-based, half-open** (`start_line`/`start_column` inclusive, `end_line`/`end_column` exclusive) — matching SCIP's own producer semantics (the only provider that currently populates this field) and the LSP/tree-sitter convention. `start_column`/`end_column` are optional together (a location may be line-only) but never independently optional. There is no in-type sentinel for "whole file" or "unknown" — an entity with no location sets `source_location = None` on itself instead. `file_path` is repository-root-relative and `/`-separated, matching `build_canonical_id`'s `qualified_name` convention for `FILE` entities. Any provider whose native format uses a different convention (e.g. SARIF's 1-based, end-line-inclusive/end-column-exclusive `region`, per the OASIS SARIF 2.1.0 schema) must convert at its own adapter boundary before this field is populated — this type itself never varies by provider. Full rationale and provider-by-provider verification: `src/codex/ontology/entities.py`'s `SourceLocation` docstring.
 
 ---
 
