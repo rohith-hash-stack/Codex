@@ -24,6 +24,12 @@ from codex.verification.entailment import (
     entail_claim,
     find_path,
 )
+from codex.verification.resynthesis import (
+    MAX_ATTEMPTS,
+    ResynthesisOutcome,
+    ResynthesisResult,
+    run_verification_loop,
+)
 from codex.verification.state import (
     VERIFIED_CONFIDENCE_THRESHOLD,
     VerificationStatus,
@@ -37,6 +43,7 @@ __all__ = [
     "CONTRADICTION_CAP",
     "CONTRADICTION_SIGNIFICANT_THRESHOLD",
     "CONTRADICTION_WEAK_THRESHOLD",
+    "MAX_ATTEMPTS",
     "VERIFIED_CONFIDENCE_THRESHOLD",
     "V_WEIGHTS",
     "ClaimVerification",
@@ -45,6 +52,8 @@ __all__ = [
     "EntailmentMethod",
     "EntailmentResult",
     "EntailmentStatus",
+    "ResynthesisOutcome",
+    "ResynthesisResult",
     "VerificationFactors",
     "VerificationStatus",
     "classify_answer",
@@ -57,6 +66,7 @@ __all__ = [
     "find_path",
     "handle_contradictions",
     "is_significantly_contradicted",
+    "run_verification_loop",
     "to_hlrd_label",
     "to_routing_bucket",
     "verify_claim",
