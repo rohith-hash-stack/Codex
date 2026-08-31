@@ -329,3 +329,90 @@ Per the D7 directive's Phase A: re-verified the D5 report's claims directly agai
 
 **Summary:** 8 of 10 items **CLOSED** on direct re-verification (not merely re-asserted from the prior D5 report). 1 item (external metadata/version placeholder) and 1 item (cross-provider resolution) are **DEFERRED** — genuinely not yet applicable/verifiable, not silently skipped. 1 item (range boundary convention) is a pre-existing **AMBIGUITY** in the shared ontology, not a D5-introduced defect, flagged for future documentation rather than a STOP. **No DEFECT was found.** No D5 code was changed as part of this audit.
 
+---
+
+## K. D7 (Repository-Graph Adapter) Research, Overlap Analysis, and STOP Determination — 2026-08-31
+
+Per the D7 directive's Phase B onward. This section documents the research, capability extraction, and provider-overlap analysis performed **before** any D7 code was written, and the STOP determination that resulted from it. No D7 implementation exists — this is a research-and-analysis-only pass, consistent with the directive's Rule 0.1 ("architecture before code") and its explicit instruction not to reverse the `SPECIFICATION → AUDIT → RESEARCH → LICENSE CHECK → CAPABILITY ANALYSIS → PROVIDER OVERLAP → INDEPENDENCE ANALYSIS → DESIGN → IMPLEMENTATION` order.
+
+### K.1 Candidate identification
+
+HLRD §8 requires V1 to include "at least one qualified repository intelligence/search provider," satisfiable by "Sourcegraph, a qualified open-source repository graph implementation, or another provider satisfying Codex capability requirements." HLRD §9-10 and `docs/resources.md` (as of the D5/D6 research passes) name exactly three candidates — no others are introduced here, per the directive's instruction to use the candidates the repository documents already identify rather than search anew:
+
+1. **Sourcegraph** (`sourcegraph.com`) — HLRD §9's own named adapter.
+2. **`chokevin/repograph`** — HLRD §10, explicitly listed as a "reference implementation... not a mandatory production dependency."
+3. **`SillySerpent/Repograph`** — HLRD §10, same explicit framing.
+
+TAD's own component tree (`codex.provider` package sketch) names only `SourcegraphAdapter` — not a separate `RepoGraphAdapter` — and TAD's ADR list carries a single, combined **ADR-006 "Sourcegraph/RepoGraph Integration Strategy"**, not two. This confirms the architecture already treats "which repository-graph source, if any" as one open decision spanning all three candidates, not three independent ones.
+
+### K.2 Research performed this pass (2026-08-31)
+
+All three candidates were re-researched directly (not re-trusted from the D5/D6-era `docs/research/provider-formats.md` notes), per the directive's licensing-gate requirement:
+
+- **`chokevin/repograph`**: full `README.md` fetched directly from `raw.githubusercontent.com/chokevin/repograph/main/README.md` (reachable, HTTP 200). License confirmed **MIT** from the README's own "License" section (no separate `LICENSE` file found at that path — a 404 was returned for `/LICENSE`, so the README section is the license record).
+- **`SillySerpent/Repograph`**: full `README.md` and `LICENSE` fetched directly from `raw.githubusercontent.com/SillySerpent/Repograph/master/`. License confirmed **AGPL-3.0-only** verbatim (`SPDX-License-Identifier: AGPL-3.0-only`) — matches the prior finding, now confirmed against the primary source rather than carried forward.
+- **Sourcegraph**: `sourcegraph.com` re-tested directly (`curl -s -o /dev/null -w "%{http_code}" https://sourcegraph.com`) — returned `000` (connection failure), confirming the environment's egress proxy still blocks it as of this pass. The `sourcegraph/sourcegraph-public-snapshot` repo itself is reachable via `raw.githubusercontent.com` (HTTP 200) but is the open-sourced application codebase, not the hosted product's API/licensing terms.
+
+### K.3 Candidate comparison
+
+| Dimension | Sourcegraph | `chokevin/repograph` | `SillySerpent/Repograph` |
+|---|---|---|---|
+| Project purpose | Hosted code-search/navigation platform, SCIP-backed | Fast local CLI graph builder for LLM-agent context | Local repository-intelligence tool (static + optional runtime overlay) |
+| Graph model | Precise, SCIP-backed code navigation + full-text search | 7 node types / 7 edge types (repo/dir/file/class/function/method/variable; contains/imports/calls/references/inherits/defines/method_of) | Files/folders/symbols/imports/calls/callback registrations/inheritance/variable flow/type-reference hints, plus dead-code/impact/community/co-change analysis on top |
+| Languages | Many (via SCIP indexers) | Go, JS/TS, Python (plugin architecture) | Python, JavaScript, TypeScript (+ Flask/FastAPI/React/Next.js framework adapters) |
+| Update mechanism | Continuous, server-managed | On-demand CLI rebuild (`repograph sync`), <2s target | `repograph sync --full`, static-first with optional runtime/coverage overlay merge |
+| Output/interface | GraphQL API (live, hosted) | CLI text or `--format json`; Go library | CLI, Python API, MCP server — all over an internal Kuzu store, **no portable artifact file** |
+| Consumable as a static artifact? | No — live API only | Yes in principle (`--format json`), but an informal, undocumented schema | No |
+| License | Unclear — hosted product terms unreachable; OSS snapshot repo is Apache-2.0 but that isn't the product's terms | **MIT** (no obstacle) | **AGPL-3.0-only** (confirmed) |
+| Would require Codex to depend on a running external process/service? | Yes (its GraphQL API, or self-hosting the full server) | Only if Codex invoked the CLI itself (avoidable in principle by requiring a pre-generated JSON artifact, mirroring the SCIP/SARIF pattern) | Yes for any live capability; a static "artifact" would mean reimplementing its whole pipeline, not reading one file |
+| Overlap with Git/SCIP/CodeQL already in Codex | Its own "precise navigation/symbol info/cross-reference" are explicitly SCIP-backed per its own docs — largely duplicates D5; "code search"/"repository navigation" are retrieval-time concepts, not ingestion-time deterministic evidence | `contains`/`imports`/`references`/`defines`/`method_of` all duplicate SCIP (D5) or Git (D3); its one non-duplicate edge type is `calls` | `imports`/`calls`/`inherits`/`type-reference hints` duplicate SCIP; `co-change coupling` duplicates Git's `CO_CHANGE` (D3) exactly; its "test-reachability" and various demand-side analyzers are cross-cutting *analysis*, not raw provider evidence |
+
+### K.4 Capability matrix (HLRD/TAD-style, directive §5)
+
+| Evidence/Capability | Git | SCIP | CodeQL | D7 candidates |
+|---|---|---|---|---|
+| FILE identity | ✓ | ✓ | ✓ | ✓ (all three, but converges with existing `build_canonical_id`-based FILE identity already established by Git/SCIP — no new identity value) |
+| Symbol definition | | ✓ | | ✓ (duplicate of SCIP) |
+| Symbol reference | | ✓ | | ✓ (duplicate of SCIP) |
+| CALLS | | | | **Only candidate-new capability** — proposed by both RepoGraph projects, unproven deterministic (see K.5) |
+| CALLERS / CALLEES | | | | Same as CALLS — derived from the same unproven edge |
+| EXTENDS | | | | `SillySerpent`'s "inheritance links" — same determinism concern as CALLS (syntactic, not type-checked, per its own docs) |
+| IMPLEMENTS | | ✓ | | ✓ (duplicate of SCIP) |
+| DEPENDS_ON | | | | Neither project deterministically establishes a package-level dependency claim beyond what `imports` already gives (duplicate) |
+| IMPORTS | | ✓ | | ✓ (duplicate of SCIP) |
+| DATA_FLOW | | | ✓ | Not offered by either RepoGraph project |
+| HISTORY | ✓ | | | Not offered |
+| CO_CHANGE | ✓ | | | `SillySerpent` offers "git co-change coupling" — **exact duplicate** of Git's existing `CO_CHANGE` (D3) |
+| TESTED_BY | | | | `SillySerpent`'s "test-reachability maps" are analysis output (built from coverage/runtime data), not a primary deterministic provider fact in the sense D1-D6 established |
+| Configuration relationships | | | | `SillySerpent`'s "config registries/config boundary reads" — cross-cutting analysis, not a canonical-graph relationship type in the current ontology |
+
+### K.5 Provider overlap classification (directive §6)
+
+| Proposed D7 capability | Classification | Reasoning |
+|---|---|---|
+| FILE identity | **DUPLICATE** | Already established by Git (D3) and SCIP (D5) via the same `build_canonical_id`; a D7 adapter would need to converge with, not duplicate, this identity — trivial to satisfy, adds no new evidence. |
+| Symbol definition/reference, IMPORTS, IMPLEMENTS | **DUPLICATE** | SCIP (D5) already deterministically establishes all of these, with broader language coverage (any SCIP indexer) than either RepoGraph project's fixed plugin list. |
+| CO_CHANGE | **DUPLICATE** | Git's `GitAdapter.CO_CHANGE` (D3) already deterministically establishes this from real commit history; `SillySerpent`'s version adds nothing Git doesn't already give directly from the repository itself. |
+| CALLS / CALLERS / CALLEES | **UNSAFE** (as currently evidenced) | This is the one capability neither Git, SCIP, nor CodeQL currently gives Codex. But per HLRD/TAD's Class A/B/C evidence discipline (directive §11) and the exact same determinism standard D5's own research already applied to SCIP (where a bare reference occurrence was confirmed indistinguishable from a real call without full semantic analysis): both RepoGraph projects build this edge from a tree-sitter/syntactic pipeline with **no documented type-checking or cross-file semantic resolution** (`chokevin/repograph`'s own README: a `Scanner → Workers → Edge Resolution` pipeline advertised at "<2 seconds" for an entire repository — a time budget inconsistent with real semantic analysis across multiple languages; `SillySerpent/Repograph`'s README documents no call-resolution algorithm at all). Treating either project's `calls` edge as Class B (deterministically derived) rather than Class C (semantic inference) is not evidenced by anything either project publishes. Per directive §10/§11, this MUST NOT be implemented as currently evidenced. |
+| EXTENDS (inheritance) | **UNSAFE** | Same reasoning as CALLS — `SillySerpent`'s "inheritance links" have no documented resolution algorithm distinguishing a real subclass relationship from, e.g., a same-named type in an unrelated module. |
+| DEPENDS_ON, TESTED_BY, configuration relationships | **DERIVED at best, likely UNSAFE** | These are described in `SillySerpent`'s README as outputs of higher-level *analyzers* (impact analysis, config-boundary detection, test-reachability) built on top of its own graph — i.e., derived from lower-level evidence through inference, not asserted directly by any deterministic parser output. Per directive §6, DERIVED capabilities require explicit architectural approval before implementation; none of these were approved, and their derivation algorithms aren't published in enough detail to evaluate determinism regardless. |
+
+**Result: no candidate D7 capability survives classification as UNIQUE or CORROBORATING with demonstrated determinism.** Every capability that would be *new* (not already DUPLICATE of Git/SCIP/CodeQL) falls into UNSAFE or unapproved-DERIVED.
+
+### K.6 Independence analysis (directive §7)
+
+Not reached in substance: since no D7 capability cleared the overlap gate (K.5), there is no D7 evidence to assign an `independence_group` to. Per the canonical rule (an omitted `independence_group` defaults to `NON_INDEPENDENT`), this is a non-issue rather than a gap — nothing is being silently double-counted because nothing is being produced.
+
+### K.7 Licensing gate outcome (directive §4)
+
+| Candidate | License | Safe to study | Safe to reuse code/tests | Safe as a runtime dependency | Research-only? |
+|---|---|---|---|---|---|
+| Sourcegraph | Unknown (hosted product terms unreachable; OSS snapshot is Apache-2.0 but governs different scope) | Yes, at a README level | N/A — no code proposed for reuse | **Unresolved** — licensing terms for API/self-host use not obtainable from this environment | Yes, pending terms |
+| `chokevin/repograph` | MIT | Yes | Legally yes, but HLRD §10 explicitly frames it as reference-only, and D7's own determinism finding (K.5) makes it moot regardless | Not proposed | Yes |
+| `SillySerpent/Repograph` | AGPL-3.0-only | Yes | **No** — copyleft; wrapping/vendoring would obligate Codex to AGPL-3.0 | **No** — same reason, and it exposes no artifact to consume without invoking the live (AGPL) engine anyway | Yes |
+
+### K.8 STOP determination
+
+This STOP is filed under directive §22, conditions **3** ("a D7 relationship that cannot be deterministically established"), **4** ("a licensing issue that prevents safe independent implementation" — for `SillySerpent/Repograph` and, pending resolution, Sourcegraph), and **12** ("an architectural decision that cannot be resolved from existing HLRD/TAD/ADRs" — ADR-006 is explicitly still open in `docs/architecture-conformance-audit.md`'s own §D and was never silently assumed closed).
+
+**No D7 code, tests, or documentation beyond this research/analysis was written.** D1-D6 were not touched. See the Final Report for the exact issue, options, and recommendation.
