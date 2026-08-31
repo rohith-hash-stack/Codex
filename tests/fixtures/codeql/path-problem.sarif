@@ -1,0 +1,49 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/sarif-2.1/schema/sarif-schema-2.1.0.json",
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "CodeQL command-line toolchain",
+          "semanticVersion": "2.15.0",
+          "rules": [
+            {
+              "id": "js/sql-injection",
+              "shortDescription": {"text": "SQL injection"},
+              "defaultConfiguration": {"level": "error"}
+            }
+          ]
+        }
+      },
+      "results": [
+        {
+          "ruleId": "js/sql-injection",
+          "message": {"text": "This SQL query depends on a user-provided value."},
+          "level": "error",
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {"uri": "src/db.js"},
+                "region": {"startLine": 42}
+              }
+            }
+          ],
+          "codeFlows": [
+            {
+              "threadFlows": [
+                {
+                  "locations": [
+                    {"location": {"physicalLocation": {"artifactLocation": {"uri": "src/handler.js"}, "region": {"startLine": 10}}}},
+                    {"location": {"physicalLocation": {"artifactLocation": {"uri": "src/utils.js"}, "region": {"startLine": 25}}}},
+                    {"location": {"physicalLocation": {"artifactLocation": {"uri": "src/db.js"}, "region": {"startLine": 42}}}}
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {"driver": {"name": "CodeQL command-line toolchain", "version": "2.15.0"}},
+      "results": [
+        {
+          "ruleId": "js/unused-local-variable",
+          "message": {"text": "Unused variable x."},
+          "locations": [
+            {"physicalLocation": {"artifactLocation": {"uri": "src/good.js"}, "region": {"startLine": 3}}}
+          ]
+        }
+      ]
+    },
+    {
+      "tool": {"driver": {"name": "CodeQL command-line toolchain", "version": "2.15.0"}},
+      "results": "not-an-array"
+    }
+  ]
+}
