@@ -24,11 +24,20 @@ from codex.verification.entailment import (
     entail_claim,
     find_path,
 )
+from codex.verification.state import (
+    VERIFIED_CONFIDENCE_THRESHOLD,
+    VerificationStatus,
+    classify_answer,
+    classify_claim,
+    to_hlrd_label,
+    to_routing_bucket,
+)
 
 __all__ = [
     "CONTRADICTION_CAP",
     "CONTRADICTION_SIGNIFICANT_THRESHOLD",
     "CONTRADICTION_WEAK_THRESHOLD",
+    "VERIFIED_CONFIDENCE_THRESHOLD",
     "V_WEIGHTS",
     "ClaimVerification",
     "ContradictionHandlingResult",
@@ -37,6 +46,9 @@ __all__ = [
     "EntailmentResult",
     "EntailmentStatus",
     "VerificationFactors",
+    "VerificationStatus",
+    "classify_answer",
+    "classify_claim",
     "classify_contradiction",
     "compute_confidence",
     "compute_factors",
@@ -45,6 +57,8 @@ __all__ = [
     "find_path",
     "handle_contradictions",
     "is_significantly_contradicted",
+    "to_hlrd_label",
+    "to_routing_bucket",
     "verify_claim",
     "verify_claims",
 ]
