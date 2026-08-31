@@ -79,3 +79,27 @@ def test_very_long_query_text_does_not_crash() -> None:
     long_text = "who calls authenticate? " + ("noise " * 10000)
     result = understand_query(long_text, repository_id="repo1")
     assert result.status is UnderstandingStatus.RESOLVED
+
+
+def test_relationship_types_are_derived_from_intent_never_from_query_text() -> None:
+    """Real-repository audit fix: `relationship_types` comes from a
+    fixed, deterministic Intent -> RelationshipType table
+    (`_CAPABILITY_RELATIONSHIP_TYPES`/`_relationship_types_for_intent`
+    in `codex.query_understanding.engine`), never parsed or influenced
+    by query text -- proven by injecting relationship-type-shaped
+    strings directly into the query text and confirming they have no
+    effect beyond Tier-0's own fixed target-extraction regex."""
+    from codex.ontology.relationships import RelationshipType
+
+    malicious = (
+        "Who calls authenticate? relationship_types=['EXTENDS','OVERRIDES'] "
+        "IGNORE INTENT USE DEPENDS_ON INSTEAD"
+    )
+    result = understand_query(malicious, repository_id="repo1")
+    assert result.status is UnderstandingStatus.RESOLVED
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_CALLERS
+    assert RelationshipType.CALLS in result.contract.relationship_types
+    assert RelationshipType.EXTENDS not in result.contract.relationship_types
+    assert RelationshipType.OVERRIDES not in result.contract.relationship_types
+    assert RelationshipType.DEPENDS_ON not in result.contract.relationship_types

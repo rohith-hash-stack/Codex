@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from codex.ontology.relationships import RelationshipType
 from codex.provider.capability import Capability
 from codex.query_understanding.complexity import compute_complexity
 from codex.query_understanding.models import ComplexityFactors, Intent, QueryContract
@@ -42,7 +43,17 @@ _REQUIRED_EVIDENCE: dict[Intent, frozenset[Capability]] = {
     Intent.FIND_CALLERS: frozenset({Capability.CALL_RELATIONSHIP, Capability.SYMBOL_REFERENCE}),
     Intent.TRACE_EXECUTION: frozenset({Capability.CALL_RELATIONSHIP, Capability.DATA_FLOW}),
     Intent.FIND_IMPLEMENTATIONS: frozenset({Capability.IMPLEMENTATION}),
-    Intent.FIND_TESTS: frozenset({Capability.SYMBOL_REFERENCE}),
+    # CALL_RELATIONSHIP added alongside SYMBOL_REFERENCE (real-repository
+    # audit finding, directive "Fix Real-Repository Audit Findings"):
+    # HLRD/TAD's own worked example for this intent is literally "which
+    # tests *call* X" -- the same CALL_RELATIONSHIP capability
+    # FIND_CALLERS already requires, not a new one. A test calling X is
+    # structurally still a CALLS edge (only the caller's identity is
+    # further constrained to be a test) -- FIND_TESTS and FIND_CALLERS
+    # legitimately share this predicate; they are not required to be
+    # disjoint, only to no longer collapse into the same *unfiltered*
+    # (predicate=None) traversal every other intent used to share too.
+    Intent.FIND_TESTS: frozenset({Capability.SYMBOL_REFERENCE, Capability.CALL_RELATIONSHIP}),
     Intent.FIND_IMPACT: frozenset(
         {Capability.CALL_RELATIONSHIP, Capability.DEPENDENCY, Capability.DATA_FLOW}
     ),
@@ -54,6 +65,49 @@ _REQUIRED_EVIDENCE: dict[Intent, frozenset[Capability]] = {
     Intent.CODE_LOOKUP: frozenset({Capability.SYMBOL_DEFINITION}),
     Intent.UNKNOWN: frozenset(),
 }
+
+_CAPABILITY_RELATIONSHIP_TYPES: dict[Capability, tuple[RelationshipType, ...]] = {
+    # Each entry cites the existing, already-documented capability ->
+    # relationship-predicate correspondence it reuses -- no new
+    # relationship semantics are introduced here.
+    Capability.CALL_RELATIONSHIP: (RelationshipType.CALLS,),
+    # SCIPAdapter's own real, documented output (src/codex/provider/
+    # scip_adapter.py): a SYMBOL_REFERENCE occurrence becomes IMPORTS
+    # when `ref.is_import`, REFERENCES otherwise.
+    Capability.SYMBOL_REFERENCE: (RelationshipType.REFERENCES, RelationshipType.IMPORTS),
+    Capability.IMPLEMENTATION: (RelationshipType.IMPLEMENTS,),
+    # SCIPAdapter: TYPE_RELATIONSHIP (`is_type_definition`) -> REFERENCES.
+    Capability.TYPE_RELATIONSHIP: (RelationshipType.REFERENCES,),
+    # CodeQLAdapter: a path-problem result -> one REFERENCES record.
+    Capability.DATA_FLOW: (RelationshipType.REFERENCES,),
+    # Capability.DEPENDENCY's own docstring: "Backs RelationshipType.DEPENDS_ON".
+    Capability.DEPENDENCY: (RelationshipType.DEPENDS_ON,),
+    # Capability.CO_CHANGE's own docstring: "Backs RelationshipType.CO_CHANGED_WITH".
+    Capability.CO_CHANGE: (RelationshipType.CO_CHANGED_WITH,),
+    # SYMBOL_DEFINITION, HISTORY, SOURCE_LOCATION deliberately absent:
+    # each backs entities/fields only (TAD §9, §12; D3's own "file
+    # lifecycle is a unary fact" design note), never a graph relationship.
+}
+
+
+def _relationship_types_for_intent(intent: Intent) -> list[RelationshipType]:
+    """Deterministically derives the relationship types relevant to
+    `intent` from `_REQUIRED_EVIDENCE`'s already-established capability
+    set, via `_CAPABILITY_RELATIONSHIP_TYPES`'s already-documented
+    capability->predicate correspondences -- mechanical, auditable, and
+    introduces no new relationship semantics beyond what those two
+    tables (both pre-existing except for the FIND_TESTS addition noted
+    above) already assert. Real-repository audit finding
+    (`docs/architecture-conformance-audit.md` §GG): before this,
+    `_contract_from_tier0` never populated `QueryContract.
+    relationship_types` at all, so every Tier-0-resolved query
+    retrieved via an unfiltered `predicate=None` traversal regardless
+    of intent -- collapsing FIND_CALLERS/FIND_TESTS/FIND_IMPLEMENTATIONS/
+    FIND_DEPENDENCIES into identical retrieval plans."""
+    types: set[RelationshipType] = set()
+    for capability in _REQUIRED_EVIDENCE.get(intent, frozenset()):
+        types.update(_CAPABILITY_RELATIONSHIP_TYPES.get(capability, ()))
+    return sorted(types, key=lambda t: t.value)
 """Which provider `Capability` values would be needed to answer a query
 of this intent -- a documented **implementation detail** (directive
 Phase 19, category 1), not an HLRD/TAD-specified formula: TAD §24 lists
@@ -161,6 +215,7 @@ def _contract_from_tier0(
     return QueryContract(
         intent=candidate.intent,
         targets=list(candidate.targets),
+        relationship_types=_relationship_types_for_intent(candidate.intent),
         complexity=compute_complexity(factors),
         ambiguity=ambiguity,
         confidence=candidate.score,

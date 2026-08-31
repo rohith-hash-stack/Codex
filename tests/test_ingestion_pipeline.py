@@ -310,12 +310,14 @@ def test_multiple_providers_contradictory_evidence_all_preserved() -> None:
     provider_a = DeterministicFakeAdapter(
         name="provider_a",
         capabilities=frozenset({Capability.CO_CHANGE}),
+        entity_paths=("a.py", "b.py"),
         relationship_pairs=(("a.py", "b.py"),),
         confidence=0.9,
     )
     provider_b = DeterministicFakeAdapter(
         name="provider_b",
         capabilities=frozenset({Capability.CO_CHANGE}),
+        entity_paths=("a.py", "b.py"),
         relationship_pairs=(("a.py", "b.py"),),
         confidence=0.1,
     )
@@ -332,12 +334,45 @@ def test_multiple_providers_contradictory_evidence_all_preserved() -> None:
     assert "provider_a:rev1:0" in rel.supporting_evidence_ids
     assert "provider_b:rev1:0" in rel.supporting_evidence_ids
     assert len(rel.contradicting_evidence_ids) == 0
-    # This fake adapter reports relationship evidence without also reporting
-    # entities for "a.py"/"b.py" -- Evidence Reconciliation (post-D7 directive
-    # Phase C) correctly treats a relationship whose endpoints aren't known
-    # entities as UNRESOLVED (an information/system gap), never as support or
-    # contradiction, per directive Phase C §19-20.
-    assert rel.status is EvidenceStatus.UNRESOLVED
+    assert rel.status is EvidenceStatus.SUPPORTED
+
+
+def test_relationship_with_unresolved_endpoint_is_excluded_from_the_graph() -> None:
+    """Real-repository audit finding (`docs/architecture-conformance-
+    audit.md` §GG): a provider can report relationship evidence without
+    also reporting entities for its subject/object (exactly what
+    `GitAdapter`'s real `CO_CHANGE` capability does for a file touched
+    only in an older commit-window entry, never in the tip diff).
+    Evidence Reconciliation (post-D7 directive Phase C) already marks
+    such a relationship `UNRESOLVED` (an information/system gap, never
+    support or contradiction) -- `_materialize_store` now additionally
+    excludes it from the queryable graph entirely, rather than letting
+    `InMemoryGraphStore.upsert_relationship`'s NetworkX backing silently
+    create an attribute-less node that later crashes `find_entities`/
+    `get_entity` with `KeyError: 'entity'`. No entity is fabricated:
+    the evidence itself remains real and unmodified (still resolvable
+    through the `EvidenceStore`), only the graph-level relationship
+    edge is withheld.
+    """
+    pipeline, registry, evidence_store = make_pipeline()
+    provider = DeterministicFakeAdapter(
+        name="ghost_relationship_provider",
+        capabilities=frozenset({Capability.CO_CHANGE}),
+        relationship_pairs=(("a.py", "b.py"),),  # no entity_paths -- deliberate
+        confidence=0.9,
+    )
+    registry.register(provider, PROFILE)
+
+    result = pipeline.run(make_repository())
+
+    assert result.graph_store.get_relationships() == []
+    # Real entities were never fabricated to paper over the gap.
+    assert result.graph_store.find_entities() == []
+    # The graph never even gained a dangling node -- find_entities/
+    # get_entity are safe to call, the original crash condition.
+    assert result.graph_store.get_entity("a.py") is None
+    # The evidence itself is untouched -- reachable, not silently dropped.
+    assert evidence_store.get_evidence("ghost_relationship_provider:rev1:0") is not None
 
 
 # ---------------------------------------------------------------------------

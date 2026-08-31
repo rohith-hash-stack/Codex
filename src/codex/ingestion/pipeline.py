@@ -519,9 +519,32 @@ class IngestionPipeline:
         return version.publish()
 
     def _materialize_store(self, repository_id: str, version: GraphVersion) -> InMemoryGraphStore:
+        """Real-repository audit finding (`docs/architecture-conformance-
+        audit.md` §GG): `GitAdapter`'s `CO_CHANGE` capability can emit a
+        `CO_CHANGED_WITH` relationship referencing a file from an older
+        commit-window entry that `HISTORY`/SCIP never entity-ized (e.g. a
+        non-Python file touched only in a prior commit) -- `known_entity_
+        ids` (the same set `_reconcile_relationships` already computes,
+        one call above in `run()`) is reused here to skip materializing
+        any relationship whose subject/object was never resolved to a
+        real entity, rather than letting `InMemoryGraphStore.
+        upsert_relationship`'s NetworkX backing silently create an
+        attribute-less node for it (which later crashed `find_entities`/
+        `get_entity` with `KeyError: 'entity'`).
+
+        This never fabricates a missing entity (repository truth is
+        preserved unchanged) -- the relationship's evidence remains
+        fully retrievable through `EvidenceStore`/`_relationships`; it is
+        only excluded from the *queryable graph*, exactly matching
+        `EvidenceStatus.UNRESOLVED`'s own existing meaning ("an
+        information gap, never a dispute") for this precise case.
+        """
         store = InMemoryGraphStore(version)
-        for entity in self._entities.get(repository_id, {}).values():
+        entities = self._entities.get(repository_id, {})
+        for entity in entities.values():
             store.upsert_entity(entity)
         for relationship in self._relationships.get(repository_id, {}).values():
+            if relationship.subject not in entities or relationship.object not in entities:
+                continue
             store.upsert_relationship(relationship)
         return store

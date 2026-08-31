@@ -204,3 +204,121 @@ def test_normalization_collapses_whitespace_variants_to_same_result() -> None:
     a = understand_query("Who   calls\tauthenticate?", repository_id="repo1")
     b = understand_query("Who calls authenticate?", repository_id="repo1")
     assert a.contract == b.contract
+
+
+# --- relationship_types propagation (real-repository audit fix) -------------
+#
+# Before this fix, `_contract_from_tier0` never populated `QueryContract.
+# relationship_types` at all, so every Tier-0-resolved query retrieved via
+# an unfiltered `predicate=None` D9 traversal regardless of intent --
+# collapsing structurally different questions into identical retrieval
+# plans (`docs/architecture-conformance-audit.md` §GG).
+
+
+def test_find_callers_relationship_types_include_calls() -> None:
+    result = understand_query("Who calls authenticate?", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_CALLERS
+    from codex.ontology.relationships import RelationshipType
+
+    assert RelationshipType.CALLS in result.contract.relationship_types
+
+
+def test_find_tests_relationship_types_include_calls_and_references() -> None:
+    result = understand_query("Which tests call authenticate?", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_TESTS
+    from codex.ontology.relationships import RelationshipType
+
+    assert RelationshipType.CALLS in result.contract.relationship_types
+    assert RelationshipType.REFERENCES in result.contract.relationship_types
+
+
+def test_find_implementations_relationship_types_are_implements_only() -> None:
+    result = understand_query("Implementations of authenticate", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_IMPLEMENTATIONS
+    from codex.ontology.relationships import RelationshipType
+
+    assert result.contract.relationship_types == [RelationshipType.IMPLEMENTS]
+
+
+def test_find_dependencies_relationship_types_are_depends_on_only() -> None:
+    result = understand_query(
+        "What does authenticate depend on", repository_id="repo1", now=NOW
+    )
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_DEPENDENCIES
+    from codex.ontology.relationships import RelationshipType
+
+    assert result.contract.relationship_types == [RelationshipType.DEPENDS_ON]
+
+
+def test_relationship_types_are_deterministic_across_repeated_calls() -> None:
+    first = understand_query("Who calls authenticate?", repository_id="repo1", now=NOW)
+    second = understand_query("Who calls authenticate?", repository_id="repo1", now=NOW)
+    assert first.contract is not None and second.contract is not None
+    assert first.contract.relationship_types == second.contract.relationship_types
+
+
+def test_four_audited_intents_produce_four_distinct_relationship_type_sets() -> None:
+    """The regression proof the audit fix requires: FIND_CALLERS,
+    FIND_TESTS, FIND_IMPLEMENTATIONS, and FIND_DEPENDENCIES on
+    structurally similar queries no longer collapse into the same
+    (empty, unfiltered) relationship_types list."""
+    queries = {
+        Intent.FIND_CALLERS: "Who calls authenticate?",
+        Intent.FIND_TESTS: "Which tests call authenticate?",
+        Intent.FIND_IMPLEMENTATIONS: "Implementations of authenticate",
+        Intent.FIND_DEPENDENCIES: "What does authenticate depend on",
+    }
+    type_sets = {}
+    for intent, query_text in queries.items():
+        result = understand_query(query_text, repository_id="repo1", now=NOW)
+        assert result.contract is not None
+        assert result.contract.intent is intent
+        assert result.contract.relationship_types, f"{intent} produced empty relationship_types"
+        type_sets[intent] = frozenset(result.contract.relationship_types)
+
+    # Not all four collapse into one identical set (the pre-fix bug: every
+    # intent produced the same empty, unfiltered `[]`). FIND_CALLERS and
+    # FIND_TESTS legitimately share the CALLS predicate (a test calling X
+    # is still a CALLS edge) -- they are not required to be pairwise
+    # disjoint, only for the *distribution* to no longer be a single
+    # universal set shared by all four.
+    distinct_sets = set(type_sets.values())
+    assert len(distinct_sets) > 1, "all four intents still collapsed into one relationship_types"
+    # FIND_IMPLEMENTATIONS and FIND_DEPENDENCIES, which share no
+    # capability with FIND_CALLERS/FIND_TESTS at all, must be genuinely
+    # distinct from every other intent's set.
+    assert type_sets[Intent.FIND_IMPLEMENTATIONS] not in (
+        type_sets[Intent.FIND_CALLERS],
+        type_sets[Intent.FIND_TESTS],
+        type_sets[Intent.FIND_DEPENDENCIES],
+    )
+    assert type_sets[Intent.FIND_DEPENDENCIES] not in (
+        type_sets[Intent.FIND_CALLERS],
+        type_sets[Intent.FIND_TESTS],
+        type_sets[Intent.FIND_IMPLEMENTATIONS],
+    )
+
+
+def test_slm_path_relationship_types_are_untouched_by_this_fix() -> None:
+    """The SLM path must remain unchanged -- it already populates
+    `relationship_types` from `SLMInterpretation.relationship_types`
+    directly (`_contract_from_slm`), never touching `_REQUIRED_EVIDENCE`/
+    `_CAPABILITY_RELATIONSHIP_TYPES`. An ambiguous query (below Tier-0's
+    deterministic threshold) escalates to the SLM, whose own explicit
+    `relationship_types` choice (deliberately picked to differ from
+    what `_CAPABILITY_RELATIONSHIP_TYPES` would derive for FIND_CALLERS)
+    must pass through unchanged."""
+    from codex.ontology.relationships import RelationshipType
+
+    interpretation = make_interpretation(
+        intent=Intent.FIND_CALLERS, targets=["authenticate"]
+    ).model_copy(update={"relationship_types": [RelationshipType.EXTENDS]})
+    adapter = FakeSLMAdapter(interpretation)
+    result = understand_query("vague", repository_id="repo1", slm_adapter=adapter, now=NOW)
+    assert result.status is UnderstandingStatus.RESOLVED
+    assert result.contract is not None
+    assert result.contract.relationship_types == [RelationshipType.EXTENDS]
