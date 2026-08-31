@@ -570,3 +570,65 @@ Every specific clarification the directive restates (complexity weights, Tier-0/
 - **TAD §33 completeness percentage denominator** (the one previously-flagged open gap): re-confirmed still undefined in the current `docs/TAD.md` (re-read directly, no change since the prior gap-closure pass). **Determined not to block D8**: Query Understanding only needs to select which `CompletenessLevel` a query requires (an enum classification, driven by query phrasing — e.g. a negative/exhaustive-shaped query selects `EXHAUSTIVE`), never to compute or verify an achieved percentage against a metric. Recorded per the directive's own instruction: **"OPEN — DEFERRED TO PLANNER/COVERAGE CALIBRATION."** Not invented, not silently resolved, does not block D8.
 
 No genuine HLRD↔TAD contradiction, no QueryContract field defined differently across documents, no conflict with an already-approved D1-D6/Entity-Resolution/Reconciliation/Coverage contract, and no requirement forcing D7 to be reopened. **No STOP condition triggered.** Proceeding to implementation.
+
+## Q. D8 — Query Understanding Engine: Cross-DTD Audit After Implementation — 2026-08-31
+
+Package: `src/codex/query_understanding/` (`models.py`, `complexity.py`, `tier0.py`, `slm.py`, `session.py`, `engine.py`, `__init__.py`). Tests: `tests/test_qu_tier0.py`, `tests/test_qu_complexity.py`, `tests/test_qu_session.py`, `tests/test_qu_contract.py`, `tests/test_qu_engine.py`, `tests/test_qu_security.py`, `tests/test_qu_boundaries.py`, `tests/fake_slm_adapter.py`. 78 new tests, 100% coverage on all seven new modules. Validated in a fresh venv: `ruff check src tests` clean, `mypy src` clean (45 source files), full suite 435 passed.
+
+### A. Requirements implemented in full
+
+All ~22 items traced in P.1 as "Traced" are implemented: `QueryContract` (exact TAD §27 field list, no invented fields), the deterministic Tier-0 detector (`tier0.detect`, TAD §23 thresholds), the `SLMAdapter` Protocol boundary (TAD §24-25, interface only), session context (TAD §28, one-repository/10-query/30-minute/decay/repo-change-reset), the exact TAD §26 complexity formula and weights, `UnderstandingStatus` (RESOLVED/SLM_UNAVAILABLE/LLM_ESCALATION_REQUIRED) honestly representing the three real outcomes rather than fabricating a contract when no SLM is configured or confidence is below the escalate floor, `required_evidence` derivation per intent, and the security/validation requirements (query text treated strictly as data; malformed contracts rejected by pydantic validators).
+
+### B. Requirements partially implemented
+
+None. Every item traced as "Traced" in P.1 has a corresponding implementation and test; items explicitly out of scope (cache, budget pruning, negative-query coverage evaluation, graph-version capture) are full non-implementations, not partial ones — see C.
+
+### C. Requirements intentionally deferred (not blocking D8)
+
+- **Query Understanding Cache** (TAD §46) — no cache layer exists anywhere in Codex yet; would be scope creep ahead of the components that actually need one.
+- **Budget pruning** (TAD §41-42) — Query Planner's responsibility (`NOT_IMPLEMENTED`), not Query Understanding's; D8 only populates `token_budget`/`latency_budget` from defaults.
+- **Negative-query coverage evaluation** (TAD §34) — already implemented in `codex.coverage` from a prior phase; D8's only obligation is classifying `completeness_requirement`, which it does.
+- **Graph-version capture** — explicitly the Planner's job per the original "GRAPH VERSION LOCK" instructions; Query Understanding never touches the graph, so it has no version to capture. `QueryContract` deliberately has no `graph_version` field (tested structurally in `test_qu_boundaries.py`).
+- **TAD §33 completeness-percentage metric** — genuinely undefined in TAD itself (not a Codex gap); does not block D8 since D8 only selects a `CompletenessLevel`, never computes an achieved percentage.
+
+### D. New ambiguities discovered during implementation
+
+None beyond the one already resolved in P.1 (intent-vocabulary granularity, HLRD §28 vs. §30/TAD §23) and the one already flagged in P.2 (TAD §33 metric). Implementation did not surface any new HLRD/TAD gap not already anticipated pre-implementation.
+
+### E. Cross-document contradictions found
+
+None. HLRD and TAD remain mutually consistent on every point checked (P.2); the intent-vocabulary difference is a granularity difference, not a contradiction (P.1 Granularity note).
+
+### F. Silent implementation choices avoided / documented interpretations made
+
+Per directive Phase 19's classification scheme, all non-trivial choices were classified explicitly rather than made silently:
+- **Implementation detail** (category 1): `TemporalDimension` enum values (`NONE/POINT_IN_TIME/RANGE/HISTORICAL`) — TAD names the field but not its values; `_REQUIRED_EVIDENCE` intent→Capability mapping table — TAD does not enumerate this mapping, and no downstream component depends on its exact contents yet; `DECAY_HALF_LIFE_QUERIES = 5.0` — a documented calibration point, same pattern as ADR-018's freshness half-life.
+- **Documented interpretation** (category 2): intent-vocabulary granularity (P.1); `constraints[]` typed as `list[str]` (no schema given anywhere).
+- No category-3 (ADR-required) or category-4 (STOP) decisions were needed for D8.
+
+### G. Security concerns identified and how addressed
+
+Query text is user-controlled and must never be interpreted as instructions. Addressed by construction: Tier-0 only ever produces a bounded enum (`Intent`) plus regex-captured substrings used solely as opaque `targets` strings — it cannot set `token_budget`, `latency_budget`, or `completeness_requirement` from text content (all three are fixed defaults or SLM-derived, never text-derived, and are covered by dedicated injection tests in `test_qu_security.py`). The SLM boundary is a typed Protocol returning a validated `SLMInterpretation` pydantic model — even a compromised/malicious SLM output is bounded by pydantic's field types and value ranges, and query text that impersonates a "system directive" but matches no Tier-0 pattern is inert, proven structurally by `test_injection_attempt_is_treated_as_ordinary_unmatched_text`. `QueryContract`'s own validators reject out-of-range confidence/complexity/ambiguity and non-positive budgets regardless of source.
+
+### H. Dependency-boundary violations found
+
+None. `test_qu_boundaries.py` programmatically parses every module's imports via `ast` and asserts none of `codex.provider.contract`, `codex.provider.git_adapter`, `codex.provider.scip_adapter`, `codex.provider.codeql_adapter`, `codex.provider.scip`, `codex.registry`, `codex.graph`, `codex.ingestion`, `codex.resolution`, or `codex.reconciliation` are imported anywhere in the package. The one deliberate exception, `codex.provider.capability.Capability`, is a stateless vocabulary enum with no provider-selection or extraction behavior, reused the same way `RelationshipType` and `CompletenessLevel` already are — documented inline in the boundary test itself.
+
+### I. Tests proving each architectural invariant
+
+- **No graph access**: `test_no_graph_access_result_never_carries_graph_data`, `test_query_contract_has_no_graph_or_provider_fields`.
+- **No provider/registry/graph/ingestion/resolution/reconciliation imports**: `test_no_module_imports_graph_provider_registry_ingestion_resolution_reconciliation` (AST-based, structural, not convention-based).
+- **No real model dependency**: `test_no_llm_or_slm_model_dependency_imported`.
+- **No LLM answer generation**: `test_no_llm_answer_generation_llm_escalation_never_carries_an_answer`.
+- **SLM not invoked for every query**: `test_slm_not_invoked_for_deterministic_query`.
+- **Calibrated-probability semantics**: `test_slm_confidence_is_bounded_to_calibrated_probability_range`, confidence-band routing tests.
+- **Determinism/repeatability**: `test_deterministic_repeatability_same_input_same_output`, `test_normalization_collapses_whitespace_variants_to_same_result`.
+- **Six directive adversarial Tier-0 examples**: all present as named tests in `test_qu_tier0.py`, each asserting non-collapse into the wrong intent.
+- **Session semantics** (10-query/30-minute/repo-isolation/decay/stale-context-non-domination): full suite in `test_qu_session.py`.
+- **Security/prompt-injection resistance**: full suite in `test_qu_security.py`.
+
+### J. Remaining blockers
+
+None for D8 itself. The only standing, non-blocking open item is the TAD §33 completeness-percentage metric, explicitly deferred to the Planner/Coverage calibration phase (P.2, C above) — not a D8 blocker, and not to be silently resolved when that phase begins.
+
+**D8 — READY FOR REVIEW.** Per the directive's explicit closing instruction, D9 (Planner/Retrieval) work is not started. Stopping after D8 for review.
