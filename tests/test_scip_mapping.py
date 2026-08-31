@@ -30,6 +30,46 @@ def test_parse_symbol_malformed_header_returns_none() -> None:
     assert parse_symbol("") is None
 
 
+# --- SCIP's "." empty-field placeholder (Phase D gap-closure directive, Gap A) --
+# Confirmed against the reference `scip` Rust crate's
+# `bindings/rust/src/symbol.rs`: format_symbol emits "." for an empty/absent
+# Package field, and its own parse_symbol round-trips "." back to "" -- "."
+# means "unset," the empty string is the correct normalized value, never the
+# literal "." character.
+
+
+def test_parse_symbol_normalizes_dot_manager_to_empty_string() -> None:
+    parsed = parse_symbol("scip-ctags . scip-test 1.0.0 src/`a.ts`/foo.")
+    assert parsed is not None
+    assert parsed.manager == ""
+    assert parsed.package_name == "scip-test"
+
+
+def test_parse_symbol_normalizes_dot_name_to_empty_string() -> None:
+    parsed = parse_symbol("scip-ctags npm . 1.0.0 src/`a.ts`/foo.")
+    assert parsed is not None
+    assert parsed.package_name == ""
+
+
+def test_parse_symbol_normalizes_dot_version_to_empty_string() -> None:
+    parsed = parse_symbol("scip-ctags npm scip-test . src/`a.ts`/foo.")
+    assert parsed is not None
+    assert parsed.package_version == ""
+
+
+def test_parse_symbol_normalizes_all_dots_when_package_entirely_absent() -> None:
+    """Matches the reference crate's own `formats_symbol_with_dots` test
+    case: a symbol with no Package at all serializes as three literal
+    dots (`"scip-ctags . . . foo."`), which must round-trip to three
+    empty strings, not three literal periods."""
+    parsed = parse_symbol("scip-ctags . . . foo.")
+    assert parsed is not None
+    assert parsed.manager == ""
+    assert parsed.package_name == ""
+    assert parsed.package_version == ""
+    assert parsed.descriptor_path == "foo."
+
+
 def test_is_local_symbol() -> None:
     assert is_local_symbol("local 2") is True
     assert is_local_symbol("local") is True

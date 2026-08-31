@@ -397,6 +397,32 @@ def test_external_symbol_becomes_external_library_entity(tmp_path: Path) -> None
     assert external[0].source_location is None
 
 
+def test_external_symbol_with_dot_manager_normalizes_to_empty_string(tmp_path: Path) -> None:
+    """Phase D gap-closure directive, Gap A: SCIP's "." placeholder for an
+    unset Package field (confirmed against the reference `scip` Rust
+    crate) must normalize to an empty string in the resulting
+    EXTERNAL_LIBRARY identity, never leak through as a literal "."
+    character."""
+    local_symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Impl#"
+    external_symbol = "scip-test . unmanaged-pkg . src/`x.ts`/External#"
+
+    local_def = occurrence(local_symbol, roles=1, range_=(0, 0, 4))
+    ref_to_external = occurrence(external_symbol, roles=0, range_=(1, 0, 8))
+    local_sym_info = symbol_information(local_symbol, kind=7)
+    doc = document(
+        "src/a.ts", occurrences=(local_def, ref_to_external), symbols=(local_sym_info,)
+    )
+
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == ":unmanaged-pkg@"
+
+
 def test_external_library_identity_independent_of_repository_revision(tmp_path: Path) -> None:
     (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_linked_index())
     adapter = SCIPAdapter()
@@ -583,6 +609,39 @@ def test_real_artifact_square_implements_both_circle_and_shape(tmp_path: Path) -
     entities_by_id = {ent.canonical_id: ent for ent in normalized.entities}
     targets = {entities_by_id[e.object].qualified_name.split("/")[-1] for e in implements}
     assert targets == {"Circle#", "Shape#"}
+
+
+def test_real_artifact_source_location_flows_through_to_the_graph(tmp_path: Path) -> None:
+    """SourceLocation gap-closure directive Gap G: verify the *complete*
+    provider -> normalization -> graph path with a real artifact, not
+    just the ontology type in isolation. A real `Greeter` class
+    definition's location, decoded from genuine `scip-typescript`
+    output, must reach the graph as a valid `SourceLocation` (0-based,
+    passing the model's own validator -- would raise ValidationError on
+    a malformed range) with the exact repo-relative `file_path`
+    convention `SourceLocation`'s docstring requires."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(REAL_FIXTURE.read_bytes())
+    standalone_adapter = SCIPAdapter()
+    extraction = standalone_adapter.extract(
+        make_repository(tmp_path), standalone_adapter.supported_capabilities
+    )
+    greeter_canonical_id = next(
+        e.canonical_id
+        for e in standalone_adapter.normalize(extraction).entities
+        if e.qualified_name.endswith("Greeter#")
+    )
+
+    registry = CapabilityRegistry()
+    registry.register(SCIPAdapter(), ProviderScoreProfile(evidence_quality=0.9, cost_factor=0.9))
+    pipeline = IngestionPipeline(registry, InMemoryEvidenceStore())
+    result = pipeline.run(make_repository(tmp_path))
+
+    greeter = result.graph_store.get_entity(greeter_canonical_id)
+    assert greeter is not None
+    assert greeter.source_location is not None
+    assert greeter.source_location.file_path == "src/greeter.ts"
+    assert greeter.source_location.start_line >= 0
+    assert greeter.source_location.end_line >= greeter.source_location.start_line
 
 
 def test_real_artifact_through_ingestion_pipeline(tmp_path: Path) -> None:
