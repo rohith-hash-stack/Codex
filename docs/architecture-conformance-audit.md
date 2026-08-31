@@ -1529,3 +1529,75 @@ ADR-015 (API Protocol) and ADR-017 (Deployment Architecture) remain fully open �
 4. Confirm Feedback collection and Shadow/Canary/Production stay explicitly out of scope and unaddressed — CC.6 and CC.8 remain correctly STOPPED, not silently reopened by implication.
 
 **If these four are not affirmed, the original §BB.10 STOP stands in full, unchanged.** No production or test code was written this pass. No HLRD/TAD text was modified. D1-D12 and D7's recorded status are unchanged. Stopping here for review.
+
+---
+
+## DD. D13-A Implementation — Dataset/Evaluation Slice — 2026-08-31
+
+Per the "Implement the narrow D13-A Dataset/Evaluation slice, based on research §CC" directive, closing §CC.10's four decisions per explicit approval:
+
+1. **Read-only evaluation infrastructure, not full calibration.** Confirmed by construction — `codex.evaluation` has no write method anywhere (DD.2's boundary tests), and its public surface excludes every write/tune/record/calibrate-shaped name.
+2. **D11 telemetry records reused unchanged.** `codex.evaluation.dataset.select_dataset` is a thin wrapper over the existing, unmodified `TelemetryStore.query_events` — zero changes to `src/codex/telemetry/`.
+3. **Ground truth = a caller-supplied `BenchmarkCorpus` (HLRD §56-57), never fabricated.** No corpus data, sample repository, or benchmark file is bundled with this implementation — `evaluate()`'s default is `ground_truth=None`.
+4. **No calibration writes, no feedback collection, no retention policy, no Shadow/Canary/Production, D7/HLRD/TAD untouched, D1-D12 contracts unmodified.** All confirmed by DD.2's boundary tests and by `git diff --stat` showing zero files touched outside the new `codex.evaluation` package and its own tests.
+
+### DD.1 Pre-implementation inspection (before any code was written)
+
+Re-read §CC in full plus the exact schemas of `QueryTelemetryEvent` (`src/codex/telemetry/models.py`), `RetrievalPlan`/`PlanTelemetry` (`src/codex/planner/models.py`), and `VerificationStatus`/`to_routing_bucket` (`src/codex/verification/state.py`) directly before designing anything, per the directive's explicit "inspect existing code and §CC first" instruction. This inspection surfaced one finding not previously stated this precisely in §BB or §CC:
+
+**`RetrievalPlan.target_entity_ids` is the query's own *target* entities (input side — `resolve_targets(graph, query_contract.targets)`, confirmed by reading `codex.planner.planner` line 126), not a ranked list of retrieved/ranked candidates (output side).** Neither `RetrievalPlan` nor `QueryTelemetryEvent` records the actual ranked candidate/MSS entity-id list anywhere — TAD §65's closed schema (D11) captures only `candidate_count`/`mss_size` as bare integers. **This means Precision@10, Recall@10, and MRR are not computable from the closed D11 telemetry schema at all, independent of whether a benchmark corpus exists** — a stronger, more specific finding than §CC's framing (which treated the retrieval metrics' blocker as primarily a ground-truth gap). This finding directly shaped DD.2's metric classification below and was the deciding factor in choosing `MISSING_TELEMETRY_DATA` (a permanent, schema-level reason) rather than `MISSING_GROUND_TRUTH` (a supply-side reason) for those three metrics.
+
+Cross-checked against the directive's own STOP-if-undefined instruction: every one of the 9 TAD §66/HLRD §56-named metrics resolved to exactly one of two dispositions — a well-defined, standard formula computable given real ground truth (2 metrics), or a permanent, precisely-reasoned exclusion (7 metrics) — with no metric left in an ambiguous middle state requiring invention. **No STOP condition was found**; implementation proceeded.
+
+### DD.2 Design — `codex.evaluation`
+
+Three new modules, mirroring the `codex.telemetry`/`codex.artifact` package-per-Protocol precedent:
+
+- **`models.py`** — `EvaluationMetric` (9 values, the deduplicated union of TAD §66's 7 named metrics and HLRD §56's 2 HLRD-only targets — Token efficiency, Assertion traceability); `NotEvaluableReason` (4 values: `MISSING_GROUND_TRUTH`, `MISSING_TELEMETRY_DATA`, `UNDEFINED_FORMULA`, `INSUFFICIENT_SAMPLE` — a new, minimal taxonomy this implementation introduces to make *why* a metric wasn't scored legible and distinguishable, not a TAD/HLRD-defined vocabulary); `GroundTruthLabel` (per-query `expected_verification_status`/`should_abstain`, the minimal fields the two computable metrics need — deliberately not modeling HLRD §57's fuller repository/query-category corpus characterization, which is a corpus-*construction* concern outside this slice); `BenchmarkCorpus` (a required, non-empty `corpus_version` per HLRD §56's "versioned" requirement, plus a `query_id -> GroundTruthLabel` map); `MetricResult`/`EvaluationReport`.
+- **`dataset.py`** — `select_dataset(store, *, repository_id=None, query_id=None)`, a direct pass-through to `TelemetryStore.query_events` — the entirety of "Dataset construction" for this slice, since §CC.2 already established the schema needs no new fields.
+- **`evaluate.py`** — `evaluate(dataset, ground_truth=None, *, now=None) -> EvaluationReport`. Per-metric disposition:
+
+| Metric | Disposition | Reason |
+|---|---|---|
+| `PRECISION_AT_10` | Always `NOT_EVALUABLE` | `MISSING_TELEMETRY_DATA` — no ranked candidate list in the closed schema (DD.1) |
+| `RECALL_AT_10` | Always `NOT_EVALUABLE` | `MISSING_TELEMETRY_DATA` — same |
+| `MRR` | Always `NOT_EVALUABLE` | `MISSING_TELEMETRY_DATA` — same |
+| `FACTUAL_ACCURACY` | Always `NOT_EVALUABLE` | `MISSING_TELEMETRY_DATA` — no answer content/correctness flag recorded; conflating it with `CLAIM_VERIFICATION_ACCURACY` would invent an equivalence TAD never states |
+| `CLAIM_VERIFICATION_ACCURACY` | **Computed** given ground truth | Matches recorded `verification_result` against `GroundTruthLabel.expected_verification_status` — directly supported by HLRD §57's "ground truth sufficient to measure...Verification" |
+| `UNSUPPORTED_CLAIM_RATE` | Always `NOT_EVALUABLE` | `UNDEFINED_FORMULA` — no total-claim-count denominator exists anywhere in the schema, no formula given |
+| `ABSTENTION_PRECISION` | **Computed** given ground truth | Precision over events where `to_routing_bucket(verification_result) == "ABSTAIN"` (reusing D10's own closed `REJECTED -> ABSTAIN` mapping, not re-derived) against `GroundTruthLabel.should_abstain` |
+| `TOKEN_EFFICIENCY` | Always `NOT_EVALUABLE` | `UNDEFINED_FORMULA` — no naive-retrieval baseline defined or implemented anywhere in Codex |
+| `ASSERTION_TRACEABILITY` | Always `NOT_EVALUABLE` | `UNDEFINED_FORMULA` — HLRD names a target percentage, never a computable ratio definition |
+
+Both computable metrics fall back to `NOT_EVALUABLE`/`MISSING_GROUND_TRUTH` when no `BenchmarkCorpus` is supplied at all, and to `NOT_EVALUABLE`/`INSUFFICIENT_SAMPLE` when a corpus is supplied but zero dataset events have both a recorded value and a matching, populated label — **never a fabricated score in any case.**
+
+### DD.3 Dependency-direction and security boundary, enforced by tests
+
+`tests/test_evaluation_boundaries.py` (7 tests), extending the `test_telemetry_boundaries.py`/`test_artifact_boundaries.py` `ast`-based pattern with the stronger checks §BB.6 flagged as necessary for any Offline-Learning-shaped package:
+
+- **Nothing upstream depends on it** — all sixteen existing top-level `codex` packages (D1-D12) scanned; none imports `codex.evaluation`.
+- **`codex.llm` specifically never imports it** (extends TAD §61's boundary by the same reasoning already applied to `codex.artifact`).
+- **Minimal dependency surface** — `codex.evaluation`'s own `codex.*` imports are limited to `codex.telemetry.*`/`codex.verification.state` — no graph, evidence, artifact, planner, or registry type.
+- **Never imports `codex.artifact`** — checked directly (this slice never touches Artifact Store, per the approved scope).
+- **Never imports a graph/evidence/artifact mutation surface** (`codex.graph.memory_store`, `codex.evidence.store`, `codex.ingestion.pipeline`, `codex.artifact.store`).
+- **No write-shaped name in its public API** — `codex.evaluation.__all__` scanned for `store`/`write`/`record`/`calibrat`/`tune`/`update`/`delete` substrings; none found.
+- **Never calls `TelemetryStore.record_query_event`/`record_failure_event`** — an `ast`-level call-site scan, the strongest of the checks, proving read-only behavior at the call level, not just the import level.
+
+### DD.4 Tests
+
+44 new tests across four files, 100% coverage on all four new `codex.evaluation` modules:
+
+| File | Tests | Covers |
+|---|---|---|
+| `tests/test_evaluation_models.py` | 7 | `EvaluationMetric` has exactly 9 values; `BenchmarkCorpus` rejects an empty version; `GroundTruthLabel`'s fields are independently optional; `MetricResult` never carries a value when not evaluable; value is bounded `[0,1]` |
+| `tests/test_evaluation_dataset.py` | 5 | `select_dataset` reuses `TelemetryStore.query_events` unchanged (no filter, `repository_id`, `query_id`), empty store, never mutates the store |
+| `tests/test_evaluation_evaluate.py` | 25 | Every structurally-excluded metric stays `NOT_EVALUABLE` even when ground truth *is* supplied (parametrized ×7); report always has exactly 9 results; empty dataset/no ground truth; ground truth supplied with zero overlapping labels (`INSUFFICIENT_SAMPLE`); `CLAIM_VERIFICATION_ACCURACY` computed correctly (all-correct, partial-mismatch, skips unrecorded results, skips unlabeled events); `ABSTENTION_PRECISION` computed correctly (all-correct, partial, ignores non-abstained events, skips unlabeled events); `corpus_version` propagation; determinism; no mutation of `dataset`/`ground_truth` |
+| `tests/test_evaluation_boundaries.py` | 7 | Dependency-direction and security-boundary proof (DD.3) |
+
+### DD.5 Validation
+
+Fresh `.venv-work` run: **764/764 tests passing** (697 → 720 at D12 → 764 now, +44 new), **99% project-wide coverage** (all four `codex.evaluation` modules 100%; the only sub-100% modules remain the pre-existing, unrelated `repository/manager.py`/`evidence/store.py`/`graph/memory_store.py`), `ruff check src/ tests/` clean, `mypy src/` clean (75 source files, up from 71). No new pip dependency. No ADR created. No HLRD/TAD text modified. **Zero D1-D12 modules modified** — confirmed via `git status`/`git diff --stat` showing only new files under `src/codex/evaluation/` and four new test files.
+
+**No genuine HLRD/TAD contradiction found** during implementation, beyond what §BB/§CC already characterized.
+
+**D13-A — COMPLETE for the approved narrow scope.** The full TAD §59 pipeline (Calibration's write path, Feedback collection, retention/governance, Shadow/Canary/Production) remains explicitly not implemented, per §BB's standing STOP and the directive's own closing instruction ("Do not start full D13 calibration"). Stopping here for review.
