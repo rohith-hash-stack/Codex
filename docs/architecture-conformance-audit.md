@@ -935,3 +935,11 @@ Re-confirmed: TAD §33's `LOW ≥50%/MEDIUM ≥75%/HIGH ≥90%` denominator rema
 No HLRD/TAD contradiction found (T.4). No missing architectural decision materially blocks D10 (T.7's four items are calibration points/interpretations, each with a recommended, non-inventive resolution awaiting confirmation, not a STOP-worthy gap). The one PARTIAL closure item (T.1 #11) is non-blocking with a clear recommended fix. The completeness-metric dependency is confirmed non-blocking (T.8).
 
 **D10 IMPLEMENTATION READY — AWAITING EXPLICIT APPROVAL.**
+
+## U. D10 Implementation — 2026-08-31
+
+Approved per explicit user directive: "APPROVED — PROCEED WITH D10 IMPLEMENTATION," which also locks four binding decisions (T.7's open items) before code: contradiction thresholds `>0.60`/`<0.40` (documented calibration constants, swappable); one shared re-synthesis counter across both trigger types; `ResponseContract` = TAD §44's own schema, no competing structure; `EvidencePackage.evidence` must resolve both `supporting_evidence_ids` and `contradicting_evidence_ids`.
+
+### U.0 D9 addendum (T.1 item 11 fix)
+
+`codex.planner.retrieval.collect_evidence()` now resolves `(*rel.supporting_evidence_ids, *rel.contradicting_evidence_ids)` instead of only the former — `EvidencePackage.evidence` is now the verifier's authoritative, self-sufficient evidence boundary per TAD §42, with no need to reach around the package into `EvidenceStore`. 5 new regression tests in `tests/test_planner_retrieval.py` prove: supporting evidence included, contradicting evidence included, independence-group provenance preserved unmodified, deduplication when an id appears in both roles, and an end-to-end `execute_query()` proof using a hand-crafted `DISPUTED` relationship. 100% coverage maintained on `codex.planner` (527 tests project-wide at this point), clean ruff/mypy.

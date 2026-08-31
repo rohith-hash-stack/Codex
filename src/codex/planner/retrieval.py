@@ -116,13 +116,20 @@ def bounded_traversal(
 def collect_evidence(
     evidence_store: EvidenceStore, relationships: list[CanonicalRelationship]
 ) -> list[Evidence]:
-    """Resolve `CanonicalRelationship.supporting_evidence_ids` into real
-    `Evidence` records via the caller-supplied `EvidenceStore` (same
-    explicit-injection pattern as `GraphReader` -- `docs/architecture-
-    conformance-audit.md` §R.3)."""
+    """Resolve both `CanonicalRelationship.supporting_evidence_ids` **and**
+    `.contradicting_evidence_ids` into real `Evidence` records via the
+    caller-supplied `EvidenceStore` (same explicit-injection pattern as
+    `GraphReader` -- `docs/architecture-conformance-audit.md` §R.3).
+
+    D10 Decision 4 (post-D9 closure audit §T.1 item 11): the package
+    must be the verifier's **authoritative evidence boundary** -- a
+    downstream Verification stage must never need to reach around
+    `EvidencePackage` back into `EvidenceStore` merely to look up the
+    evidence that contradicts a claim it is evaluating.
+    """
     seen: dict[str, Evidence] = {}
     for rel in relationships:
-        for evidence_id in rel.supporting_evidence_ids:
+        for evidence_id in (*rel.supporting_evidence_ids, *rel.contradicting_evidence_ids):
             if evidence_id in seen:
                 continue
             evidence = evidence_store.get_evidence(evidence_id)
