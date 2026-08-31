@@ -1347,3 +1347,114 @@ Fresh `.venv-work` run: **720/720 tests passing** (697 pre-existing + 23 new exe
 **No genuine HLRD/TAD contradiction found** during implementation, beyond what §Z already characterized.
 
 **D12 — COMPLETE for the approved scope.** Offline Calibration Pipeline (TAD component #18), D7, and production feedback collection remain explicitly not implemented, per the directive's own closing instruction. **D13 not started.** Stopping here for review.
+
+---
+
+## BB. D13 Pre-Implementation Audit — Offline Calibration Pipeline — 2026-08-31
+
+Per the "Perform D13 — Offline Calibration Pipeline (#18) pre-implementation audit only" directive. Re-read TAD §6, §25-26, §33, §37, §59-61, §65, §75-78, §84 and HLRD §5-6, §35-36, §44-45, §52-53, §62 directly (not from memory or the D11 audit's prior conclusions), grepped both documents in full for every "calibrat"/"offline" occurrence, and inspected the current, real state of `codex.telemetry` (D11) and `codex.artifact` (D12). **No production or test code was written. No calibration formula, threshold, dataset, retention policy, or feedback-collection mechanism was invented.**
+
+### BB.1 Exact scope, reconstructed from TAD/HLRD text
+
+TAD §6 names component #18 "Offline Calibration Pipeline." TAD §59 (Learning Architecture) is the only place TAD gives it a shape:
+
+```
+Telemetry → Dataset → Evaluation → Calibration → Shadow → Canary → Production
+```
+
+HLRD §45 (Learning Deployment Lifecycle) gives a related but non-identical shape:
+
+```
+Production Telemetry → Training Dataset → Offline Evaluation → Shadow Mode → Canary → Production → Monitoring → Rollback
+```
+
+HLRD's version has no separately-named "Calibration" stage (folded silently into "Offline Evaluation," or simply absent) and adds two stages after Production (Monitoring, Rollback) that TAD's diagram never shows. This is the same "TAD narrows/reshapes HLRD's aspirational list" pattern already found for the Observability field lists at D8/D9/D11 — not a contradiction, since neither document asserts the other's list is exhaustive, but a real, documented gap in how precisely the two align.
+
+Beyond the pipeline-stage diagram, TAD says nothing else about component #18 specifically. There is no TAD section analogous to §52 (Artifact Store's URI-scheme contract) or §65 (Telemetry's exact field list) that defines what a "Dataset," "Evaluation" result, or "Calibration" output actually contains.
+
+### BB.2 Dependency path from Telemetry Store (D11) + Artifact Store (D12)
+
+TAD §75 (Architecture Dependency Rules) states the one relevant directed edge explicitly: `Offline Learning → Telemetry`. D13 is therefore an authorized, TAD-named consumer of `codex.telemetry` (confirmed still append-only, read-only for every existing consumer — `src/codex/telemetry/store.py`, re-read this pass). Nothing in TAD names an `Offline Learning → Artifact Store` edge, but TAD §53 (Cache Architecture) and §78 group Telemetry and Artifact Store together as sibling V1-mandatory stores, and HLRD §45's "Training Dataset" stage is a plausible consumer of both — telemetry for query-level facts, artifact storage for any larger derived dataset blob too large to embed in a telemetry record. This is a reasonable, TAD-consistent design inference, not a textual requirement.
+
+Concretely, both prerequisite stores now exist and were re-inspected this pass:
+- `codex.telemetry`: `QueryTelemetryEvent`/`FailureTelemetryEvent`/`FeedbackRecord` models, append-only `InMemoryTelemetryStore` (`record_query_event`/`record_failure_event`/`query_events`/`failure_events` — no bulk-export, no aggregation, no query-by-time-range beyond `repository_id`/`query_id` filters).
+- `codex.artifact`: opaque, immutable `store`/`resolve` on `reference: str -> bytes`, no listing, no query-by-prefix, no metadata.
+
+Neither store offers a way to enumerate "all events since timestamp T" or "all events for calibration run N" — `query_events()`'s only filters are `repository_id`/`query_id`. Any Dataset-construction step would need to iterate the entire in-memory list itself (feasible for the in-memory implementation, but not a designed query capability) or would need a new read-path added to `TelemetryStore` — a design question, not a blocking one, but worth naming: **D13 cannot be scoped as "wire together two already-complete Protocols" the way D9 wired D1/D2/D3, because the read-side query surface either store exposes today wasn't designed with dataset-extraction in mind.**
+
+### BB.3 Calibration algorithms/metrics explicitly required by HLRD/TAD
+
+Grepped in full. Every existing "calibration" reference in the codebase's governing documents is a **named but unformulated placeholder**, not a defined algorithm:
+
+| Location | What it calls a calibration parameter | Defined how to compute it? |
+|---|---|---|
+| TAD §25/§26 | SLM confidence routing thresholds (`0.85`, `0.50`) | No — "Calibration will be benchmark-driven" / "SHALL be calibrated against validation data." No formula. |
+| TAD §33 | Completeness thresholds (`75%`/`90%`/`100%`) | No — "initial benchmark-calibrated thresholds." Also: TAD never defines the underlying percentage's denominator at all (a pre-existing, separately-tracked open gap, re-confirmed unrelated to D13). |
+| TAD §37 / HLRD §35 | Ranking signal weights (`w1..w4`) | No — "Weights are calibration parameters" / "Weights may be learned offline." |
+| HLRD §26 | SLM routing thresholds (duplicate of TAD §25/§26) | No — "These values are initial configuration values, not immutable scientific constants." |
+| HLRD §44 | A broader list of "what learning may improve": query classification, complexity prediction, provider selection, ranking, retrieval policy, **confidence calibration**, subgraph selection, cache behavior | No — none of the eight items has a stated method. |
+| TAD §66 | Key Metrics: Precision@10/Recall@10/MRR (retrieval); Factual accuracy/Claim verification accuracy/Unsupported claim rate/Abstention precision (answer) | Named, but no ground-truth source is defined anywhere — computing Precision@10 requires labeled relevance judgments Codex has no mechanism to obtain or store. |
+
+No document states: what statistical or ML method "Calibration" performs (curve-fitting a probability calibration model, e.g. Platt scaling per the HLRD §62 resource list's own "Model Calibration" reference, vs. a human manually reviewing an Evaluation report and editing a config constant); what the input dataset schema is; what "passing" an Evaluation looks like before promotion to Shadow; or how Shadow/Canary results feed back into a go/no-go decision. HLRD §62's own "Model Calibration" resource link (scikit-learn's probability-calibration docs) is the *only* hint anywhere in either document toward an actual technique, and it is listed as background reading, not a binding choice.
+
+### BB.4 What is defined vs. genuinely unspecified — contrast with D11/D12
+
+This is the load-bearing finding of this audit. D11 and D12 both had a concrete, TAD-specified **data contract** to implement even before their respective human decisions were resolved:
+
+- D11 (Telemetry Store): TAD §65 gives the exact field list. The only open decisions (§X) were about *scope and integration* (which store, how to bridge an existing exception, whether to add HLRD-only fields) — never about what a `QueryTelemetryEvent` itself contains.
+- D12 (Artifact Store): TAD §52 gives the exact URI-scheme contract (`artifact://`/`s3://`/`file://`) and states provenance is carried by the referencing record. The only open decisions (§Z) were about *overwrite/retention/reference-parsing policy* — never about what `store`/`resolve` do.
+
+D13 has no analogous contract at any stage. There is no TAD or HLRD text defining: a Dataset record's shape; what "Evaluation" computes or against what ground truth; what a "Calibration" output looks like (a single new float? a versioned bundle of all recalibrated constants? a trained model artifact?); or what a Shadow/Canary run's own bookkeeping record contains. Writing even a minimal `Protocol` for any of these stages — the same "Protocol + in-memory implementation" pattern that worked cleanly for every prior store — would require inventing the calibration dataset schema, the evaluation-result schema, or the calibration-output schema. The directive explicitly forbids all three. **This is a difference in kind, not just degree, from D11/D12's starting position.**
+
+### BB.5 Required feedback/artifact provenance and reproducibility
+
+TAD §60 (User Feedback) states feedback enters the Telemetry Store and lists six examples (thumbs up/down, correction, click-through, follow-up query, explicit disambiguation) — already fully typed as `FeedbackKind`/`FeedbackRecord` since D11. Re-confirmed this pass: **zero production code anywhere calls `record_query_event`/`record_failure_event` with a populated `user_feedback` field, and no collection mechanism (API endpoint, CLI, UI) exists anywhere in the repository.** TAD §54 (External API Boundary) is itself "deliberately outside" HLRD's scope, and no such API layer has been built through D1-D12. This reconfirms, a second time and in more depth, the D11 audit's (§X) original finding: Codex has never run against real repository/query traffic, so **no real telemetry or feedback data exists, and none can exist until an API/serving layer (TAD §54, ADR-015/ADR-017, both fully open) is built.** D13's own required input — Telemetry — is therefore populated only by synthetic test fixtures today, structurally, not by choice.
+
+Reproducibility: TAD's invariants (§76) already guarantee graph-version immutability and locked-version reads, and D11/D12's provenance pattern (a store's content is reachable only through an already-versioned containing record, never carrying its own separate identity scheme) would extend cleanly to a Calibration output *if* one were ever built — e.g. a calibration run's provenance could be satisfied by recording which `GraphVersion`/provider-version range and which Telemetry event-id range fed it, mirroring D11/D12's precedent exactly. This part of the design is not blocked; it is the *content* of what gets recorded that has no defined shape (BB.4).
+
+### BB.6 Security and dependency boundaries
+
+TAD §59, verbatim: *"Production runtime does not perform unrestricted online learning."* TAD invariant #14 (§76): *"Learning is offline."* Invariant #15: *"User feedback does not directly mutate repository truth."* TAD §75's dependency rule (`Offline Learning → Telemetry`) is one-directional and already satisfiable by construction — the same `ast`-based boundary-test technique already proven for `test_telemetry_boundaries.py`/`test_artifact_boundaries.py` would extend directly: nothing in D1-D12 may import a future `codex.calibration` (or similarly named) package, and — a **stronger** requirement than D11/D12 needed, since neither of those packages exposes any write path back into upstream state — a future D13 package must itself expose no callable that mutates any D1-D12 runtime constant, config value, or store record directly. TAD §61's LLM boundary list doesn't name calibration output specifically, but the same "the LLM receives only the approved EvidencePackage" principle would forbid any calibration artifact from becoming LLM-reachable content, by extension of the existing rule.
+
+This boundary is well-defined and requires no human decision — it is a design constraint any implementation must satisfy, independent of what BB.4's open schema questions resolve to.
+
+### BB.7 Whether D7 or any open ADR/gap blocks D13
+
+D7 (Sourcegraph/RepoGraph adapter, still STOPPED/deferred) has no relationship to D13 — D13 depends only on Telemetry (D11) and, plausibly, Artifact Store (D12), both provider-independent.
+
+Of TAD §77's 17 named ADR candidates, none is titled for calibration technology, ML training infrastructure, or dataset storage specifically — the same "TAD's own ADR list has a genuine incompleteness, not a contradiction" finding already made for Telemetry Store at D11 (§X.4). However, one real, newly-identified dependency exists: **TAD §59's own pipeline only terminates once a calibrated parameter reaches Production via Shadow → Canary.** Doing that requires *some* live deployment/serving/traffic-routing mechanism — and **ADR-017 (Deployment Architecture) is fully open**, TAD §84 rates "Deployment technology" 🟡 ADR, and no API layer (TAD §54, ADR-015, also open) exists anywhere in the codebase. This was not previously flagged this precisely in any prior audit, because D11/D12 never needed a live promotion path — a Telemetry/Artifact Store's job ends at "the record is stored," it never needs to be *deployed*. **D13's own TAD-defined pipeline cannot reach its own terminal stage without ADR-017 (and, for the API surface any Shadow/Canary traffic would flow through, ADR-015) being resolved first.** This is a genuine, structural blocking dependency for the pipeline's back half (Shadow/Canary/Production), independent of BB.4's schema gap for the front half (Dataset/Evaluation/Calibration).
+
+Separately, TAD §84 (TAD Closure Status) itself rates **"Benchmark calibration" 🟡 Research** — a materially earlier-maturity classification than "Observability" (🟢 CLOSED, D11's own governing row) or the storage-architecture row underlying Artifact Store (🟢 CLOSED, only its backend *technology* was 🟡 ADR). TAD's own authors, at closure time, already distinguished calibration as unfinished *research*, not settled architecture pending only a technology choice — the same distinction this audit independently arrives at via BB.3/BB.4.
+
+### BB.8 HLRD/TAD contradictions or ambiguities found
+
+No outright contradiction (two documents asserting incompatible facts) was found — HLRD and TAD are consistent in spirit, if not identical in stage-naming (BB.1). Three genuine ambiguities/tensions were found, none resolvable from existing precedent:
+
+1. **HLRD §5 vs. TAD §78 — scoping mismatch.** HLRD §5's "V1 shall support" list includes "offline learning/calibration" as a bare V1 requirement, alongside telemetry. TAD §78's **Mandatory** V1 component list, by contrast, names **Telemetry** and **Artifact Store** explicitly but does **not** include "Offline Calibration Pipeline" anywhere — neither in Mandatory nor Optional. TAD is the more granular, implementation-facing document and was already treated as authoritative over HLRD's aspirational list at D8/D9/D11 for field-level detail; the same precedent would suggest TAD's omission is the more binding signal — component #18 is real (named in TAD §6) but was deliberately left off TAD's own V1-Mandatory list, unlike its two sibling stores. This is a genuine, human-decidable question: does D13 count as V1-required (per HLRD §5's literal text) or as a V1.x/later-phase item (per TAD §78's own Mandatory-list omission)?
+2. **HLRD §53 vs. established D12 precedent — retention.** HLRD §53 (Data Retention) explicitly requires: *"Learning datasets: versioned + governed retention."* This is the first governing text in this entire project that mandates retention semantics for a category of stored data — every prior store (Graph/Evidence/Telemetry/Artifact) either had no retention requirement stated, or (Artifact Store, D12) was explicitly decided **immutable with no retention/lifecycle policy at all** per the user's own approved decision. If D13's Dataset artifacts were stored through the existing `codex.artifact` package unchanged, they would carry zero retention/versioning semantics — directly at odds with HLRD §53's explicit, D13-specific requirement. This cannot be resolved by extending D12's precedent; it needs its own decision.
+3. **TAD §59 vs. HLRD §45 — stage-shape mismatch** (BB.1). Non-blocking but should be reconciled explicitly (which stage list is canonical) before any implementation names its own internal steps, the same way C-1/C-2/C-3 were formally reconciled during the original Architecture Reconciliation pass.
+
+### BB.9 Minimal implementation/test plan (not executed — for a future approved D13)
+
+Recorded for the record only, not authorized by this audit:
+
+- **Front half (Dataset/Evaluation/Calibration)** could, in principle, be scoped as pure infrastructure the same way D11/D12 were — *if and only if* a human first supplies: (a) the Dataset record schema (which Telemetry/Artifact fields it draws from, and any selection/sampling rule), (b) the Evaluation output schema and its ground-truth source, and (c) the Calibration output schema (single value vs. versioned bundle vs. trained-model artifact) and whether "Calibration" is an automated fitting procedure or a human-reviewed recommendation. None of these three may be invented by an implementer; all three are the "required human decisions" this audit identifies.
+- **Back half (Shadow/Canary/Production)** cannot be meaningfully scoped at all until ADR-015 (API Protocol) and ADR-017 (Deployment Architecture) are resolved — there is no traffic-routing surface for a "Shadow" or "Canary" run to attach to yet.
+- Even with (a)-(c) resolved, there is **no real data to run the front half against** (BB.5) — any implementation would be provably correct only against synthetic fixtures, the same limitation already true of D11's telemetry tests, but here compounding on top of an already-unspecified schema.
+- A dependency-boundary test file (`test_calibration_boundaries.py`, mirroring `test_telemetry_boundaries.py`/`test_artifact_boundaries.py`) is straightforward to write once a package name/shape exists, and should prove both the standard upstream-import-freedom property and the new, stronger "no write path back into D1-D12 state" property (BB.6).
+
+### BB.10 Verdict
+
+**STOP.**
+
+Unlike D11 and D12, this is not a "GO WITH CONDITIONS requiring human decisions about scope/policy around an already-defined contract" situation. TAD and HLRD together give component #18 a named pipeline of stage-labels (BB.1) but **zero concrete schema, algorithm, formula, dataset shape, or metric-computation method at any stage** (BB.3, BB.4) — the one respect in which D13 differs in kind, not degree, from every phase implemented so far. Writing any Protocol or record type today would require inventing at least one of: a Dataset schema, an Evaluation ground-truth mechanism, or a Calibration output shape — each explicitly forbidden by this directive. Independently of that gap, the pipeline's own terminal stages (Shadow/Canary/Production) are structurally blocked on two fully-open ADRs (ADR-015 API Protocol, ADR-017 Deployment Architecture) that no prior D-phase needed to resolve (BB.7), and TAD's own closure table (§84) separately rates the underlying research 🟡 **Research**, a categorically earlier status than the 🟢 CLOSED architecture rows D11/D12 built against. Three genuine, human-decidable ambiguities were found and are not resolvable from existing precedent (BB.8): whether D13 is actually V1-Mandatory (HLRD §5 says yes; TAD §78's own Mandatory list omits it); how HLRD §53's explicit "Learning datasets: versioned + governed retention" requirement is meant to interact with this project's now-established immutable/no-retention precedent (D12); and which of TAD §59's vs. HLRD §45's two non-identical pipeline-stage lists is canonical.
+
+**Required human decisions before any D13 implementation can begin:**
+1. Is D13 V1-Mandatory (HLRD §5) or a later-phase item (TAD §78's Mandatory list omits it)?
+2. What is the Dataset record's schema — which Telemetry/Artifact fields, what selection/sampling rule?
+3. What does "Evaluation" compute, and where does ground truth for TAD §66's metrics (Precision@10, factual accuracy, etc.) come from — is a benchmark/ground-truth corpus (HLRD's own still-not-started "Research / Benchmark validation" item) a hard prerequisite?
+4. What does "Calibration" produce, and by what method — automated fitting, or a human-reviewed recommendation report? Is it in scope for D13 to touch any of the existing calibration-labeled constants (TAD §25/§26/§33/§37) at all, or only to build the pipeline shell?
+5. How does HLRD §53's "governed retention" requirement for Learning datasets apply, given D12's approved immutable/no-retention precedent for Artifact Store?
+6. Should Shadow/Canary/Production promotion be scoped at all before ADR-015/ADR-017 are resolved, or should D13 (if approved at all) be explicitly limited to the Dataset/Evaluation/Calibration front half, with Shadow/Canary/Production left as an explicitly out-of-scope stub?
+
+**D13 was not implemented. No production or test code was written or modified.** No HLRD/TAD text was modified. Stopping here for review.
