@@ -736,3 +736,59 @@ Every field below traces to R.1; no speculative field added:
 | `telemetry` | `PlanTelemetry` — graph_version, budget trace (original/pruned estimate, pruning occurred, reason — TAD §32's exact required fields), `CONCURRENT_UPDATE_DETECTED` flag (TAD §55) |
 
 **Decision: proceed to implementation.**
+
+## S. D9 — Query Planner/Retrieval: Cross-DTD Audit After Implementation — 2026-08-31
+
+Package: `src/codex/planner/` (`models.py`, `provider_selection.py`, `budget.py`, `retrieval.py`, `ranking.py`, `cache.py`, `mss.py`, `planner.py`, `__init__.py`). Additive extension: `codex.graph.store.GraphReader.find_entities()` / `codex.graph.memory_store.InMemoryGraphStore.find_entities()` (§R.5). Tests: `tests/test_planner_{planning,graph_version,provider_selection,budget,completeness,negative_queries,ranking,mss,cache,boundaries,retrieval}.py`, `tests/planner_fixtures.py`, plus 6 new `find_entities` tests appended to `tests/test_graph_store.py`. 92 new planner tests + 6 new graph-store tests = 98 new tests. 100% coverage on all nine new `codex.planner` modules; `codex.graph.{store,memory_store}` unaffected in behavior (additive only, all pre-existing tests pass unmodified). Validated in a fresh venv: `ruff check src tests` clean, `mypy src` clean (54 source files), full suite 522 passed.
+
+### A. Requirements implemented in full
+
+`plan_query()` (DTD-03, TAD §29): graph-version lock (TAD §20), provider selection via unmodified D2 `CapabilityRegistry.rank()` (TAD §31), budget-aware five-step pruning (TAD §32) with `PLAN_BLOCKED`/`PLAN_UNSUPPORTED` distinguished per TAD §32/§41, negative-query safety via unmodified `codex.coverage` (TAD §34), completeness-level propagation (TAD §33). `execute_query()` (DTD-04, TAD §35): deterministic bounded traversal, TAD §36-37's four ranking signals with exact literal constants (`1.0`/`0.3`, `0.9^d`), TAD §39-40's MSS construction and bounded SOURCE_CONTEXT expansion (2 cycles/50 nodes, exact), TAD §42's `EvidencePackage`. TAD §54-55's query-level cache, keyed exactly on repository/graph_version/schema_version/policy_version/query-identity. `GraphVersionMismatchError` proves the graph-version lock structurally (§R.3's "holding the reference is the lock" claim is now enforced, not just asserted).
+
+### B. Requirements partially implemented
+
+None. Every R.1-traced item has a corresponding implementation and dedicated test category; scope exclusions (C below) are complete non-implementations honestly deferred, not partial stubs.
+
+### C. Requirements intentionally deferred (not blocking D9)
+
+- **TAD §33 LOW/MEDIUM/HIGH completeness percentage** — the denominator remains genuinely undefined in TAD; D9 propagates the requested `CompletenessLevel` and refuses to prune `EXHAUSTIVE` below required coverage (the one level with a full quantitative check, `codex.coverage.is_exhaustive_coverage`), without computing a numeric percentage for the other three, per R.2's reasoning.
+- **Fine-grained (sub-`GraphVersion`) cache invalidation** — TAD defines no versioning granularity finer than the whole `GraphVersion`; V1's cache correctness is by construction at that granularity only (`cache.py`'s own docstring).
+- **Actual source-text retrieval for `EvidencePackage.source_context`** — carries `SourceLocation`-bearing `RepositorySymbol`s, not fetched file content; no D1-D8 provider exposes arbitrary file-content-at-revision reads.
+- **A "Graph Version Registry" / "current version for repository X" lookup** — deliberately not built; obtaining the `GraphReader` to plan against is an orchestration-layer concern above D9, matching how every other cross-cutting dependency in this codebase is supplied (explicit injection, never global lookup).
+
+### D. New ambiguities discovered during implementation
+
+None beyond the two already flagged pre-implementation (latency-budget cost-model extension by analogy, R.2; ranking-weight calibration point, R.2). No new HLRD/TAD gap surfaced only during coding.
+
+### E. Cross-document contradictions found
+
+None. One directive/document citation mismatch confirmed and resolved as a documented interpretation, not a contradiction: the directive's "TAD §46" for cache architecture actually names the Verification Engine section; the real cache sections are TAD §54-55 (R.2) — the same class of paraphrase mismatch flagged repeatedly across this project's history (D7's taxonomy, D8's intent vocabulary).
+
+### F. Silent implementation choices avoided / documented interpretations made
+
+Per directive Phase 19's classification: **implementation detail** (category 1) — `_BASE_DEPTH_BY_INTENT` (TAD §29 names "traversal depth" as a Planner output with no formula), `DEFAULT_AVERAGE_NODE_COST_TOKENS`/`DEFAULT_AVERAGE_EDGE_COST_TOKENS` (TAD §41 gives the formula, not the constants — ADR-018 precedent), `DEFAULT_LATENCY_MS_PER_DEPTH_LEVEL` (no TAD formula at all for latency; extended from the token pattern by direct, labeled analogy — the single most judgment-laden call in D9, R.2/R.6), `RANKING_WEIGHTS` equal 0.25 each (TAD §37: "weights are calibration parameters," no default given), `query_identity` field (no TAD name given; a deterministic content hash). **Documented interpretation** (category 2) — `query_constraint_match`'s vacuous-case rule (no constraints requested = trivially satisfied, `1.0`); `RetrievalPlan.constraints` added as a field beyond R.7's original checklist, needed to make `query_constraint_match` meaningfully exercised rather than trivially `1.0` on every real query (traces cleanly to `QueryContract.constraints`, TAD §27, flowing into TAD §36's own signal — not a speculative addition, a necessary wiring of two already-approved contracts). No category-3 (ADR-required) or category-4 (STOP) decisions were needed.
+
+### G. Security concerns identified and how addressed
+
+`QueryContract` is treated as trusted, already-validated structured input (D8's own boundary) — the planner never re-parses query text; `plan_query`/`execute_query` derive every decision from typed `QueryContract`/`RetrievalPlan` fields only. `resolve_targets`/`find_entities` perform deterministic substring matching with no code execution, no embeddings, no external calls. `execute_query` refuses (`GraphVersionMismatchError`) rather than silently executing against a mismatched graph snapshot — a concurrency-safety property, not just a functional one.
+
+### H. Dependency-boundary findings
+
+None. `tests/test_planner_boundaries.py` programmatically parses every module's imports via `ast` and asserts none of `codex.llm`, `codex.slm`, `codex.verification`, `codex.query_understanding.slm`, or the behavioral provider submodules (`codex.provider.contract`/`.git_adapter`/`.scip_adapter`/`.codeql_adapter`/`.scip`) are imported anywhere in `codex.planner`. A regex check confirms no hard-coded provider-name branching exists. A structural check confirms `select_providers()` is a thin pass-through to `CapabilityRegistry.rank()` with no local scoring function. `RetrievalPlan` carries no `answer`/`verification_status`/`claims`/`llm_response`-shaped field.
+
+### I. Tests proving each architectural invariant
+
+- **Graph-version lock**: `test_graph_version_is_captured_into_the_plan`, `test_concurrent_graph_update_does_not_change_an_in_flight_plan`, `test_execute_query_against_a_different_version_raises_concurrent_update`.
+- **No provider-selection duplication**: `test_select_providers_reuses_registry_rank_not_a_new_algorithm`, `test_ingestion_time_runs_every_usable_provider_query_time_only_ranks`.
+- **Budget pruning order + EXHAUSTIVE refusal**: full suite in `test_planner_budget.py`, including both blocking paths (latency, token).
+- **Negative-query safety via `codex.coverage`, never bypassed**: full suite in `test_planner_negative_queries.py`, including a hand-crafted `PARTIAL` cohort and a stale-but-COMPLETE cohort proving staleness is not conflated with completeness.
+- **Ranking determinism/tie-breaking/each signal**: full suite in `test_planner_ranking.py`.
+- **MSS bounds (2 cycles/50 nodes) and PARTIAL reporting**: full suite in `test_planner_mss.py`, including a frontier-entity-skipped-once-cycle-is-full test.
+- **Cache key isolation on all four TAD §54 dimensions**: full suite in `test_planner_cache.py`.
+- **No LLM/SLM/verification/provider-specific dependency**: `test_planner_boundaries.py`.
+
+### J. Remaining blockers
+
+None for D9 itself. Standing, non-blocking open items carried forward unchanged: TAD §33's completeness-percentage metric (deferred to Planner/Coverage calibration, as it already was after D8); the latency-budget cost-model analogy (R.2/R.6) remains the one item most worth a human calibration pass if/when real latency data becomes available, but does not block D9's correctness today.
+
+**D9 — READY FOR REVIEW.** Per the directive's explicit closing instruction, D10 (LLM Gateway/Answer Generation/Verification Engine) work is not started. Stopping after D9 for review.
