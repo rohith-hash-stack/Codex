@@ -1295,3 +1295,55 @@ Two requirements, both directly grounded in TAD text, neither invented:
 ### Z.10 Verdict
 
 **GO WITH CONDITIONS.** No genuine HLRD/TAD contradiction was found (HLRD is silent, not contradictory, on Artifact Store entirely). No blocking architectural decision prevents scoping or beginning D12 — zero of TAD's ADR candidates (including ADR-002/ADR-003 specifically, item 10) are prerequisites for the Protocol/interface scope this audit reconstructs (Z.7, Z.9). D12's contract is reconstructed directly from TAD §6/§52-54/§61/§77-78 text: a store/resolve Protocol for opaque, scheme-validated, provider-produced raw artifact bytes, with provenance already satisfied structurally through the containing `Evidence`/`ExtractionResult` record and requiring no new identity scheme (Z.1, Z.4). A concrete, already-existing consumer gap was found and precisely characterized, not left vague: D6's CodeQL adapter already emits real `artifact://sarif/...` references with no resolution service to answer them (Z.5). Four items (Z.8) require an explicit human decision before implementation proceeds — overwrite semantics, reference-string structure, retention-policy scope, and confirming D3/D5 stay untouched — none blocking in the sense of preventing D12 from being scoped, only in the sense of needing a decision this audit is not authorized to make. **D12 was not implemented.** No production code was written or modified in this phase. Stopping here for review.
+
+---
+
+## AA. D12 Implementation — Artifact Store — 2026-08-31
+
+Per the "D12 decisions are approved" directive, closing Z.8's four decisions:
+
+1. **Overwrite: immutable.** Same reference + same bytes = idempotent success. Same reference + different bytes = deterministic `ArtifactConflictError`. Never a silent overwrite.
+2. **Reference: opaque.** D1's existing `validate_raw_reference`/`RAW_REFERENCE_SCHEMES` scheme validation is reused unchanged; no fragment/path-segment parsing or normalization was added.
+3. **Retention: none.** No TTL, eviction, or deletion method exists anywhere on the Protocol.
+4. (Item 4 of Z.8 — confirming D3/D5 stay untouched — is honored by construction: see AA.1.)
+
+Re-read TAD §52-54, §61, §77-78 and this document's own §Z directly before writing any code (unchanged since the prior pass, `git log` re-confirmed). **No cross-document contradiction found** — re-confirms Z.8/§Z's own conclusion; nothing new surfaced during implementation.
+
+### AA.1 Design — `codex.artifact`
+
+Two new files, `src/codex/artifact/{store,__init__}.py`, following the exact `EvidenceStore`/`GraphStore`/`TelemetryStore` in-memory-behind-a-Protocol precedent:
+
+- **`ArtifactStore` Protocol**: `store(reference: str, content: bytes) -> None`, `resolve(reference: str) -> bytes | None`. Nothing else — no delete, no list, no metadata query, matching decision 3 (no retention/lifecycle surface) literally.
+- **`InMemoryArtifactStore`**: a single `dict[str, bytes]`. `store()` calls D1's own `validate_raw_reference()` unchanged (imported from `codex.evidence.model`, the only cross-package import this module needs) before touching the dict; a reference already holding identical bytes is a no-op success; a reference already holding different bytes raises `ArtifactConflictError` (a `ValueError` subclass, matching this codebase's existing exception-hierarchy convention — `GraphVersionMismatchError` also subclasses `ValueError`) naming the offending reference. `resolve()` is a plain dict lookup, matching `EvidenceStore.get_evidence`'s precedent (no read-side validation).
+- **Content is always opaque bytes.** Nothing in `codex.artifact` parses, decodes, or interprets what it stores — proven behaviorally (AA.3), not just asserted.
+
+**D12's own scope is deliberately the store/resolve *capability* only — `src/codex/provider/{git_adapter,scip_adapter,codeql_adapter}.py` were not opened, read for modification, or changed in any way.** This directly honors decision 4/Z.8 item 4 ("confirming D3/D5 stay untouched") by construction: nothing in `codex.artifact` depends on, imports, or requires a provider-adapter change, and none was made. Compatibility with D6's already-real `raw_reference` output is proven purely by an integration test constructing real adapter output and feeding it to the new store (AA.3) — never by touching the adapter itself.
+
+### AA.2 Dependency-direction and security boundary, enforced by tests
+
+`tests/test_artifact_boundaries.py` (5 tests), the same `ast`-based mechanism `test_planner_boundaries.py`/`test_telemetry_boundaries.py` already established:
+
+- **Nothing upstream depends on it.** All fifteen existing top-level `codex` packages (`ontology` through `telemetry`, now including D11) are scanned; none imports `codex.artifact`.
+- **`codex.llm` specifically never imports it** — checked directly, not merely inferred from the generic upstream sweep, since TAD §61 names this exact boundary by name (*"The LLM must not have unrestricted access to... artifact storage"*).
+- **Minimal dependency surface** — `codex.artifact`'s own imports are limited to `codex.evidence.model` (for `validate_raw_reference`) — no pipeline type (`Evidence`, `RetrievalPlan`, `GraphVersion`, ...) is imported at all, since the store deals only in opaque `reference: str`/`content: bytes`, unlike `codex.telemetry` which legitimately needs pipeline types for its own field typing.
+- **No write path into the graph/evidence store** — `InMemoryArtifactStore` has no `upsert_entity`/`upsert_relationship`/`add_evidence`/`publish`-shaped method.
+
+### AA.3 Tests
+
+21 new test functions across three files (23 test executions — `test_each_d1_scheme_is_accepted` is parametrized ×3 schemes), 100% coverage on both new `codex.artifact` modules:
+
+| File | Functions (executions) | Covers |
+|---|---|---|
+| `tests/test_artifact_store.py` | 13 (15) | Normal store/resolve round trip (including full binary byte range), unknown-reference miss, all three D1 schemes accepted (parametrized), invalid scheme rejected with no partial write, idempotent re-store of identical content, deterministic `ArtifactConflictError` on differing content (never silently overwriting the original), no delete/update/retention method exists, content never parsed/executed (code-, JSON-, script-, and raw-binary-shaped payloads all round-trip byte-for-byte) |
+| `tests/test_artifact_integration.py` | 3 (3) | The real, **unmodified** `CodeQLAdapter` run against the real `path-problem.sarif` fixture, producing the real `Evidence.raw_reference == "artifact://sarif/0/0"` already proven by `test_codeql_adapter.py`; the real SARIF file's bytes stored and resolved under that exact reference; a second identical run proven idempotent (matching D4's own repeated-ingestion precedent); a genuinely different real artifact (`valid-sarif.sarif`'s bytes) under the same reference proven to raise `ArtifactConflictError` |
+| `tests/test_artifact_boundaries.py` | 5 (5) | Dependency-direction and TAD §61 security-boundary proof (AA.2) |
+
+Every directive-required test category is covered: normal store/resolve, idempotent-on-identical-content, deterministic-conflict-on-differing-content, D1-scheme-validation reuse, no invented parsing, no retention surface, real-CodeQL-reference compatibility, dependency-direction/security boundaries.
+
+### AA.4 Validation
+
+Fresh `.venv-work` run: **720/720 tests passing** (697 pre-existing + 23 new executions from 21 new test functions: 13 store [15 executions] + 3 integration + 5 boundary), **99% project-wide coverage** (`artifact/store.py`/`artifact/__init__.py` both 100%; the only sub-100% module remains `repository/manager.py`, pre-existing, unrelated), `ruff check src/ tests/` clean, `mypy src/` clean (71 source files, up from 69). No new pip dependency. No ADR created (Z.4/Z.9/Z.10 already established none are prerequisites; none were touched). No HLRD/TAD text modified. **Zero D1-D11 modules modified** — confirmed by `git status`/`git diff --stat` showing only new files under `src/codex/artifact/` and `tests/`.
+
+**No genuine HLRD/TAD contradiction found** during implementation, beyond what §Z already characterized.
+
+**D12 — COMPLETE for the approved scope.** Offline Calibration Pipeline (TAD component #18), D7, and production feedback collection remain explicitly not implemented, per the directive's own closing instruction. **D13 not started.** Stopping here for review.
