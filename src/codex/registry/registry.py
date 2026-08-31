@@ -84,6 +84,38 @@ class CapabilityRegistry:
     def registered_providers(self) -> list[ProviderAdapter]:
         return list(self._providers.values())
 
+    def provider_authority_map(self) -> dict[str, float]:
+        """Per-provider trust score for TAD §48's Verification Confidence
+        ``provider_authority`` factor (D10.4; directive: "D2 gap
+        hardening pass," ``docs/architecture-conformance-audit.md`` §W).
+
+        TAD §48 names ``provider_authority`` but never defines what it
+        measures. The closest, already-canonical, already-required
+        per-provider trust metric Codex has is
+        ``ProviderScoreProfile.evidence_quality`` (TAD §31, ADR-018) —
+        normalized ``[0.0, 1.0]``, supplied once per provider at
+        :meth:`register`, never per query. Reusing it here is not a
+        duplication of TAD §48's *own*, differently-scoped
+        ``evidence_quality`` factor
+        (``codex.verification.confidence.compute_factors``), which
+        averages the *retrieved* ``Evidence.confidence`` values for one
+        query — a dynamic, per-record quantity computed only from
+        ``EvidencePackage.evidence``, never from registry data. This
+        method's result is static, per-provider metadata; the two
+        never read the same underlying numbers.
+
+        A provider registered with no profile is simply absent from
+        the returned mapping — unlike :meth:`rank`, which raises for a
+        *usable candidate* missing a profile, this is a best-effort
+        lookup: an absent entry lets a caller safely fall back to
+        ``provider_authority``'s own historical default of ``1.0``
+        (uniform trust) rather than raising, since Verification must
+        never fail merely because a provider used only for evidence
+        (not for provider *selection*) happens to lack a scoring
+        profile.
+        """
+        return {name: profile.evidence_quality for name, profile in self._profiles.items()}
+
     def providers_for(self, capability: Capability) -> list[ProviderAdapter]:
         """Providers that declare support for ``capability`` (TAD §10).
 

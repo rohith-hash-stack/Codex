@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 from codex.llm.gateway import GenerationStatus, LLMGateway, LLMRequest
 from codex.llm.schema import StructuredAnswer
 from codex.planner.mss import EvidencePackage
+from codex.registry.registry import CapabilityRegistry
 from codex.verification.contradiction import handle_contradictions
 from codex.verification.engine import ClaimVerification, verify_claims
 
@@ -71,12 +72,27 @@ def run_verification_loop(
     package: EvidencePackage,
     *,
     provider_authority: Mapping[str, float] | None = None,
+    registry: CapabilityRegistry | None = None,
     now: datetime | None = None,
 ) -> ResynthesisResult:
     """TAD §46's full per-query loop: generate -> validate/verify ->
     (if correctable and budget remains) one re-synthesis -> final
     state. Never recurses past `MAX_ATTEMPTS` (directive D10.7: "No
-    recursive/unbounded retry loop")."""
+    recursive/unbounded retry loop").
+
+    `provider_authority`, if given explicitly, always wins (preserves
+    every pre-existing caller's exact behavior). If omitted but
+    `registry` is given, `provider_authority` is derived from it via
+    `CapabilityRegistry.provider_authority_map()` (D2 gap-hardening
+    pass, `docs/architecture-conformance-audit.md` §W) -- the smallest
+    conformant wiring of TAD §48's `provider_authority` factor to D2's
+    already-canonical per-provider trust metadata. Passing neither
+    preserves the pre-hardening default: every provider is trusted
+    uniformly (`1.0`)."""
+    effective_authority = provider_authority
+    if effective_authority is None and registry is not None:
+        effective_authority = registry.provider_authority_map()
+
     resynthesis_available = True
     current_request = request
     all_removed: list[ClaimVerification] = []
@@ -104,7 +120,7 @@ def run_verification_loop(
             )
 
         verifications = verify_claims(
-            generation.answer.claims, package, provider_authority=provider_authority, now=now
+            generation.answer.claims, package, provider_authority=effective_authority, now=now
         )
         handling = handle_contradictions(verifications)
         all_removed.extend(handling.removed)

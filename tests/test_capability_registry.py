@@ -382,3 +382,44 @@ def test_rank_derives_freshness_from_the_adapters_extraction_history() -> None:
     )[0]
     # freshness now contributes its full 0.15 (age == 0)
     assert just_extracted.score == pytest.approx(0.40 + 0.15, abs=1e-6)
+
+
+# --- provider_authority_map (D2 gap-hardening pass, TAD §48) ---
+
+
+def test_provider_authority_map_empty_when_nothing_registered() -> None:
+    registry = CapabilityRegistry()
+    assert registry.provider_authority_map() == {}
+
+
+def test_provider_authority_map_reflects_each_providers_evidence_quality() -> None:
+    registry = CapabilityRegistry()
+    registry.register(FakeProviderAdapter(name="A"), profile(evidence_quality=0.9))
+    registry.register(FakeProviderAdapter(name="B"), profile(evidence_quality=0.3))
+    assert registry.provider_authority_map() == {"A": 0.9, "B": 0.3}
+
+
+def test_provider_authority_map_omits_providers_with_no_profile() -> None:
+    """Unlike rank(), which raises for a usable candidate missing a
+    profile, this is a best-effort lookup -- a provider used only for
+    evidence (never for provider selection) may legitimately have no
+    ProviderScoreProfile, and callers fall back to the historical
+    default (1.0) for an absent entry rather than erroring."""
+    registry = CapabilityRegistry()
+    registry.register(FakeProviderAdapter(name="A"), profile(evidence_quality=0.7))
+    registry.register(FakeProviderAdapter(name="B"))  # no profile
+    assert registry.provider_authority_map() == {"A": 0.7}
+
+
+def test_provider_authority_map_drops_a_providers_entry_on_unregister() -> None:
+    registry = CapabilityRegistry()
+    registry.register(FakeProviderAdapter(name="A"), profile(evidence_quality=0.6))
+    registry.unregister("A")
+    assert registry.provider_authority_map() == {}
+
+
+def test_provider_authority_map_updates_when_a_new_profile_replaces_the_old_one() -> None:
+    registry = CapabilityRegistry()
+    registry.register(FakeProviderAdapter(name="A"), profile(evidence_quality=0.2))
+    registry.register(FakeProviderAdapter(name="A"), profile(evidence_quality=0.8))
+    assert registry.provider_authority_map() == {"A": 0.8}
