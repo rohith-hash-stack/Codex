@@ -111,8 +111,8 @@ out of D4's scope.
 
 from __future__ import annotations
 
-from collections.abc import Collection
-from datetime import datetime
+from collections.abc import Collection, Mapping
+from datetime import UTC, datetime
 
 from codex.evidence.model import CanonicalRelationship, Evidence, EvidenceCohort
 from codex.evidence.store import EvidenceStore
@@ -122,6 +122,7 @@ from codex.ingestion.models import IngestionResult, ProviderRunOutcome, Provider
 from codex.ontology.entities import RepositorySymbol
 from codex.provider.capability import Capability
 from codex.provider.contract import ProviderAdapter, ProviderExtractionError
+from codex.reconciliation.reconciler import reconcile_relationship
 from codex.registry.models import ProviderEvaluationStatus
 from codex.registry.registry import CapabilityRegistry
 from codex.repository.models import RepositoryMetadata
@@ -153,9 +154,26 @@ def _build_version_id(
 class IngestionPipeline:
     """PROVIDERS -> INGESTION PIPELINE -> EVIDENCE NORMALIZATION -> CANONICAL GRAPH."""
 
-    def __init__(self, registry: CapabilityRegistry, evidence_store: EvidenceStore) -> None:
+    def __init__(
+        self,
+        registry: CapabilityRegistry,
+        evidence_store: EvidenceStore,
+        *,
+        provider_authority: Mapping[str, float] | None = None,
+    ) -> None:
+        """``provider_authority`` feeds TAD §38's Reconciliation formula
+        (``codex.reconciliation``, post-D7 directive Phase C) — a
+        per-provider trust weight with no defined source anywhere in
+        HLRD/TAD (the same kind of gap ADR-018 already resolved for
+        ``evidence_quality``/``cost_factor``). Unlike ADR-018's factors,
+        a missing entry here defaults to full trust (``1.0``) rather than
+        raising: this weight only adjusts *confidence* on an
+        already-committed relationship, not provider *selection*, so
+        every existing caller that never configures it keeps working
+        unchanged."""
         self._registry = registry
         self._evidence_store = evidence_store
+        self._provider_authority = provider_authority or {}
         self._entities: dict[str, dict[str, RepositorySymbol]] = {}
         self._relationships: dict[str, dict[tuple[str, str, str], CanonicalRelationship]] = {}
 
@@ -194,6 +212,7 @@ class IngestionPipeline:
                 )
             )
 
+        self._reconcile_relationships(repository.repository_id, now=now)
         graph_version = self._publish(repository, outcomes, now=now)
         graph_store = self._materialize_store(repository.repository_id, graph_version)
 
@@ -403,6 +422,47 @@ class IngestionPipeline:
                 )
             relationships[key] = relationship
         return len(evidence_list)
+
+    def _reconcile_relationships(self, repository_id: str, *, now: datetime | None) -> None:
+        """Evidence Reconciliation (post-D7 directive Phase C): recompute
+        every accumulated relationship's ``status``/``confidence``/
+        ``contradiction_score`` from its full ``Evidence`` records, once
+        per ``run()`` over the complete current accumulator state — not
+        incrementally per evidence commit, so a relationship's status
+        always reflects everything known about it at publish time,
+        matching D4's existing "each run() builds one new, immutable,
+        published GraphVersion" model.
+
+        ``contradicting=()`` always: no current provider (Git/SCIP/
+        CodeQL) can assert a negative fact — the ontology has no
+        negation mechanism (see `codex.reconciliation.reconciler`'s
+        module docstring) — so there is no deterministic signal this
+        pipeline could use to populate it without inventing one. This
+        is an intentional, documented limitation, not an oversight:
+        every relationship reconciled through the real provider set
+        today resolves to `SUPPORTED`/`WEAKLY_SUPPORTED`/`UNRESOLVED`
+        only; `DISPUTED`/`CONTRADICTED`/`UNSUPPORTED` are proven correct
+        against handcrafted evidence in `tests/test_reconciler.py`, not
+        reachable end-to-end with the current three providers.
+        """
+        reference_time = now if now is not None else datetime.now(UTC)
+        known_entity_ids = frozenset(self._entities.get(repository_id, {}))
+        relationships = self._relationships.get(repository_id, {})
+        for key, relationship in relationships.items():
+            supporting = [
+                evidence
+                for evidence_id in relationship.supporting_evidence_ids
+                if (evidence := self._evidence_store.get_evidence(evidence_id)) is not None
+            ]
+            relationships[key] = reconcile_relationship(
+                relationship.subject,
+                relationship.predicate,
+                relationship.object,
+                supporting=supporting,
+                provider_authority=self._provider_authority,
+                known_entity_ids=known_entity_ids,
+                now=reference_time,
+            )
 
     def _publish(
         self,
