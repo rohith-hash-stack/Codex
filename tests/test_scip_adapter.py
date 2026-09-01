@@ -619,25 +619,30 @@ def test_real_artifact_source_location_flows_through_to_the_graph(tmp_path: Path
     output, must reach the graph as a valid `SourceLocation` (0-based,
     passing the model's own validator -- would raise ValidationError on
     a malformed range) with the exact repo-relative `file_path`
-    convention `SourceLocation`'s docstring requires."""
+    convention `SourceLocation`'s docstring requires.
+
+    Looks the entity up in the graph by `qualified_name` rather than by
+    a `canonical_id` precomputed from the standalone `normalize()` call:
+    since the D7/D9 convergence directive, `IngestionPipeline` runs
+    every committed entity through `resolve_entities()`, which -- for a
+    CLASS/METHOD/FUNCTION entity carrying a `source_location`, `Greeter`
+    included -- now unconditionally recomputes `canonical_id` from the
+    symbol-location identity key (`codex.resolution.entity_resolver`'s
+    `SYMBOL_LOCATION_IDENTITY`), not merely when a second provider's
+    matching entity happens to also be present. A standalone `normalize()`
+    call never runs entity resolution, so its raw id is expected to
+    differ from the graph's resolved id here -- that is the intended
+    behavior this directive introduced, not a defect in either path."""
     (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(REAL_FIXTURE.read_bytes())
-    standalone_adapter = SCIPAdapter()
-    extraction = standalone_adapter.extract(
-        make_repository(tmp_path), standalone_adapter.supported_capabilities
-    )
-    greeter_canonical_id = next(
-        e.canonical_id
-        for e in standalone_adapter.normalize(extraction).entities
-        if e.qualified_name.endswith("Greeter#")
-    )
 
     registry = CapabilityRegistry()
     registry.register(SCIPAdapter(), ProviderScoreProfile(evidence_quality=0.9, cost_factor=0.9))
     pipeline = IngestionPipeline(registry, InMemoryEvidenceStore())
     result = pipeline.run(make_repository(tmp_path))
 
-    greeter = result.graph_store.get_entity(greeter_canonical_id)
-    assert greeter is not None
+    greeter = next(
+        e for e in result.graph_store.find_entities() if e.qualified_name.endswith("Greeter#")
+    )
     assert greeter.source_location is not None
     assert greeter.source_location.file_path == "src/greeter.ts"
     assert greeter.source_location.start_line >= 0

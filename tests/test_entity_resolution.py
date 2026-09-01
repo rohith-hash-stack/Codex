@@ -210,10 +210,18 @@ def test_different_revisions_never_merge() -> None:
 def test_non_path_shaped_entities_are_never_renormalized() -> None:
     """A CLASS (symbol-level) entity's qualified_name is a SCIP descriptor
     path, not a filesystem path -- normalize_repo_relative_path must never
-    be applied to it. No second provider produces symbol-level entities
-    today (D5 closure audit, §J), so this proves the *absence* of
-    accidental cross-provider symbol merging, not a positive convergence
-    case that doesn't yet exist."""
+    be applied to it, on the `NORMALIZED_PATH_IDENTITY` (path) axis. This
+    entity carries no `source_location`, so it is also ineligible for the
+    *other* axis, symbol-location identity (D7/D9 convergence directive)
+    -- there is no location to key on, so it is trusted as-is, exactly
+    the module's "only use signals the architecture actually supports"
+    principle applied to a second axis. Contrast with
+    `test_symbol_location_identity_converges_scip_and_ast_function` etc.
+    below, where an otherwise-identical entity *with* a `source_location`
+    is eligible and does converge -- this test protects the no-location
+    case specifically, not "symbol-level entities never converge" (which
+    is no longer true since D7 added a second symbol-producing
+    provider)."""
     cid = build_canonical_id(
         repository_id="repo1",
         repository_revision="abc123",
@@ -232,6 +240,211 @@ def test_non_path_shaped_entities_are_never_renormalized() -> None:
     result = resolve_entities([symbol])
 
     assert result.entities[0].qualified_name == "src/a.py/Greeter#greet()."
+    assert result.entities[0].canonical_id == cid
+    assert result.merges[0].reason is MatchReason.EXACT_CANONICAL_ID
+
+
+# --- Symbol-location identity (D7/D9 convergence directive) -----------------
+
+
+def _symbol(
+    *,
+    repo: str = "repo1",
+    revision: str = "abc123",
+    qualified_name: str,
+    base_type: BaseEntityType = BaseEntityType.FUNCTION,
+    file_path: str = "src/a.py",
+    start_line: int = 10,
+    roles: list[str] | None = None,
+    provider_ids: dict[str, str] | None = None,
+) -> RepositorySymbol:
+    from codex.ontology.entities import SourceLocation
+
+    cid = build_canonical_id(
+        repository_id=repo,
+        repository_revision=revision,
+        qualified_name=qualified_name,
+        base_type=base_type,
+    )
+    return RepositorySymbol(
+        canonical_id=cid,
+        repository_id=repo,
+        repository_revision=revision,
+        name=qualified_name,
+        qualified_name=qualified_name,
+        base_type=base_type,
+        roles=roles or [],
+        provider_ids=provider_ids or {},
+        source_location=SourceLocation(
+            file_path=file_path, start_line=start_line, end_line=start_line
+        ),
+    )
+
+
+def test_symbol_location_identity_converges_scip_and_ast_function() -> None:
+    """A SCIP-style descriptor qualified_name and an AstCallsAdapter-style
+    `<path>::<name>` qualified_name for the same real function -- same
+    `(repository_id, repository_revision, base_type, file_path,
+    start_line)` -- converge to one entity, tagged
+    `SYMBOL_LOCATION_IDENTITY`, even though their `qualified_name`
+    strings share no structure at all."""
+    scip_style = _symbol(qualified_name="`mod`/foo().", file_path="src/a.py", start_line=10)
+    ast_style = _symbol(qualified_name="src/a.py::foo", file_path="src/a.py", start_line=10)
+
+    result = resolve_entities([scip_style, ast_style])
+
+    assert len(result.entities) == 1
+    assert result.merges[0].reason is MatchReason.SYMBOL_LOCATION_IDENTITY
+    assert result.entities[0].canonical_id not in (scip_style.canonical_id, ast_style.canonical_id)
+
+
+def test_symbol_location_identity_converges_scip_and_ast_method() -> None:
+    scip_style = _symbol(
+        qualified_name="`mod`/Greeter#greet().",
+        base_type=BaseEntityType.METHOD,
+        file_path="src/a.py",
+        start_line=20,
+    )
+    ast_style = _symbol(
+        qualified_name="src/a.py::Greeter.greet",
+        base_type=BaseEntityType.METHOD,
+        file_path="src/a.py",
+        start_line=20,
+    )
+
+    result = resolve_entities([scip_style, ast_style])
+
+    assert len(result.entities) == 1
+    assert result.merges[0].reason is MatchReason.SYMBOL_LOCATION_IDENTITY
+
+
+def test_symbol_location_identity_applies_even_to_a_singleton() -> None:
+    """Unconditional application (the cross-batch evidence-staleness fix):
+    a symbol-level entity with a `source_location` and no merge partner
+    in this batch still recomputes to the location-derived id (tagged
+    `SYMBOL_LOCATION_IDENTITY`), not its raw provider-computed id -- this
+    is what lets a provider's *own first commit* already receive the
+    entity's final, stable id."""
+    lone = _symbol(qualified_name="src/a.py::solo", file_path="src/a.py", start_line=30)
+
+    result = resolve_entities([lone])
+
+    assert result.entities[0].canonical_id != lone.canonical_id
+    assert result.merges[0].reason is MatchReason.SYMBOL_LOCATION_IDENTITY
+    assert result.merges[0].source_canonical_ids == (lone.canonical_id,)
+
+
+def test_symbol_location_same_type_different_line_does_not_converge() -> None:
+    a = _symbol(qualified_name="src/a.py::foo", file_path="src/a.py", start_line=10)
+    b = _symbol(qualified_name="`mod`/foo().", file_path="src/a.py", start_line=99)
+
+    result = resolve_entities([a, b])
+
+    assert len(result.entities) == 2
+
+
+def test_symbol_location_same_name_different_file_does_not_converge() -> None:
+    """Two distinct real functions that happen to share a bare name
+    (e.g. two `execute` methods in different modules) must never merge
+    just because their `name`/`qualified_name` look alike -- only
+    `file_path`+`start_line` (plus repo/revision/base_type) decide."""
+    a = _symbol(qualified_name="src/a.py::execute", file_path="src/a.py", start_line=10)
+    b = _symbol(qualified_name="src/b.py::execute", file_path="src/b.py", start_line=10)
+
+    result = resolve_entities([a, b])
+
+    assert len(result.entities) == 2
+
+
+def test_symbol_location_different_entity_type_same_location_does_not_converge() -> None:
+    """Same file/line, but one FUNCTION and one METHOD (e.g. a decorator-
+    generated wrapper and the class body it's attached to reporting
+    overlapping ranges from two providers) -- base_type is part of the
+    key, so these never merge."""
+    fn = _symbol(
+        qualified_name="src/a.py::thing", base_type=BaseEntityType.FUNCTION,
+        file_path="src/a.py", start_line=10,
+    )
+    method = _symbol(
+        qualified_name="`mod`/Thing#thing().", base_type=BaseEntityType.METHOD,
+        file_path="src/a.py", start_line=10,
+    )
+
+    result = resolve_entities([fn, method])
+
+    assert len(result.entities) == 2
+
+
+def test_symbol_location_different_revision_does_not_converge() -> None:
+    a = _symbol(
+        qualified_name="src/a.py::foo", file_path="src/a.py", start_line=10, revision="rev1"
+    )
+    b = _symbol(
+        qualified_name="`mod`/foo().", file_path="src/a.py", start_line=10, revision="rev2"
+    )
+
+    result = resolve_entities([a, b])
+
+    assert len(result.entities) == 2
+
+
+def test_symbol_location_identity_is_order_independent() -> None:
+    a = _symbol(qualified_name="src/a.py::foo", file_path="src/a.py", start_line=10)
+    b = _symbol(qualified_name="`mod`/foo().", file_path="src/a.py", start_line=10)
+
+    forward = resolve_entities([a, b])
+    backward = resolve_entities([b, a])
+
+    assert forward.entities == backward.entities
+    assert forward.merges == backward.merges
+
+
+def test_symbol_location_merge_preserves_provenance_from_both_sides() -> None:
+    """Roles and provider_ids from both the AST-style and SCIP-style raw
+    entities must both survive the symbol-location merge -- the same
+    provenance-preservation guarantee `_merge_pair` already gives
+    FILE/DIRECTORY convergence, now exercised for the symbol-location
+    axis."""
+    ast_side = _symbol(
+        qualified_name="src/a.py::foo",
+        file_path="src/a.py",
+        start_line=10,
+        roles=["ast_calls:definition"],
+        provider_ids={"ast_calls": "src/a.py::foo"},
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/foo().",
+        file_path="src/a.py",
+        start_line=10,
+        roles=["scip:definition"],
+        provider_ids={"scip": "mod/foo()."},
+    )
+
+    result = resolve_entities([ast_side, scip_side])
+
+    assert len(result.entities) == 1
+    merged = result.entities[0]
+    assert set(merged.roles) == {"ast_calls:definition", "scip:definition"}
+    assert merged.provider_ids == {"ast_calls": "src/a.py::foo", "scip": "mod/foo()."}
+
+
+def test_symbol_location_entity_without_source_location_never_keyed() -> None:
+    """An eligible base type (FUNCTION) but no `source_location` at all
+    (e.g. a provider that reports symbols without positions) is not
+    eligible for this axis -- it is trusted as-is, exactly like a
+    non-symbol base type with no path shape."""
+    cid = build_canonical_id(
+        repository_id="repo1", repository_revision="abc123",
+        qualified_name="src/a.py::foo", base_type=BaseEntityType.FUNCTION,
+    )
+    no_location = RepositorySymbol(
+        canonical_id=cid, repository_id="repo1", repository_revision="abc123",
+        name="foo", qualified_name="src/a.py::foo", base_type=BaseEntityType.FUNCTION,
+    )
+
+    result = resolve_entities([no_location])
+
+    assert result.entities[0].canonical_id == cid
     assert result.merges[0].reason is MatchReason.EXACT_CANONICAL_ID
 
 

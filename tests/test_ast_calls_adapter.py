@@ -111,6 +111,64 @@ def test_module_level_function_call_resolved(tmp_path: Path) -> None:
         assert ev.provider == "ast_calls"
 
 
+def test_source_location_is_0_based_matching_established_convention(tmp_path: Path) -> None:
+    """`SourceLocation`'s convention (closed 2026-08-31,
+    `codex.ontology.entities.SourceLocation`'s own docstring) is 0-based,
+    half-open, "matches SCIP's own documented `[start, end)` range
+    semantics" -- Python's `ast` module is 1-based for line numbers, so
+    this adapter must convert. `def helper` is real (1-based) source
+    line 1 -- the corrected `start_line` must be 0, not 1."""
+    write(tmp_path, "a.py", "def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n")
+    adapter = AstCallsAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    norm = adapter.normalize(result)
+    helper = next(e for e in norm.entities if e.qualified_name == "a.py::helper")
+    caller = next(e for e in norm.entities if e.qualified_name == "a.py::caller")
+    assert helper.source_location is not None
+    assert helper.source_location.start_line == 0  # real line 1, 1-based -> 0-based
+    assert helper.source_location.end_line == 1  # real line 2 (the `return 1` line)
+    assert caller.source_location is not None
+    assert caller.source_location.start_line == 4  # real line 5, 1-based -> 0-based
+
+
+def test_source_location_multiline_definition_end_line_is_0_based(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "a.py",
+        "def target():\n    return 1\n\n\n"
+        "def multi():\n"
+        "    x = 1\n"
+        "    y = 2\n"
+        "    return target()\n",
+    )
+    adapter = AstCallsAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    norm = adapter.normalize(result)
+    multi = next(e for e in norm.entities if e.qualified_name == "a.py::multi")
+    assert multi.source_location is not None
+    # real (1-based) lines 5-8 -> 0-based start_line=4, end_line=7
+    assert multi.source_location.start_line == 4
+    assert multi.source_location.end_line == 7
+
+
+def test_source_location_columns_unchanged_already_0_based_half_open(tmp_path: Path) -> None:
+    """Only line numbers need `- 1`; `ast`'s own `col_offset`/
+    `end_col_offset` are already 0-based and half-open (CPython's own
+    documented convention), matching `SourceLocation` exactly -- no
+    conversion needed or applied."""
+    write(tmp_path, "a.py", "def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n")
+    adapter = AstCallsAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    norm = adapter.normalize(result)
+    helper = next(e for e in norm.entities if e.qualified_name == "a.py::helper")
+    assert helper.source_location is not None
+    assert helper.source_location.start_column == 0
+    # end_col_offset spans to the end of the *whole definition* (its
+    # last body statement, "    return 1"), not just the `def` line --
+    # ast's own multi-line-span behavior, unrelated to this fix.
+    assert helper.source_location.end_column == len("    return 1")
+
+
 def test_self_method_call_resolved(tmp_path: Path) -> None:
     write(
         tmp_path,

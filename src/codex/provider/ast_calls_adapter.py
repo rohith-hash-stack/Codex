@@ -505,10 +505,37 @@ def _bare_name(qualified_name: str) -> str:
 
 
 def _location(record: _DefRecord) -> SourceLocation:
+    """Converts `_DefRecord`'s raw, unmodified `ast` module line numbers
+    (Python's own 1-based, inclusive-both-ends convention -- `node.
+    lineno`/`node.end_lineno`, stored as-is by `_record`) into `Source
+    Location`'s established 0-based convention (closed 2026-08-31,
+    `codex.ontology.entities.SourceLocation`'s own docstring: "matches
+    SCIP's own documented `[start, end)` range semantics, and the LSP/
+    tree-sitter convention").
+
+    Only the **line** numbers need conversion (`- 1`): a 1-based line
+    that is the Nth line becomes the 0-based index of that same Nth
+    line (`N - 1`), for both `start_line` and `end_line` -- confirmed
+    against real `SCIPAdapter` output for the identical real definition
+    (`classify()` in `veyra`: SCIP's own `start_line=16`/`end_line=16`
+    for the single-line name-token span at real (1-based) line 17,
+    i.e. `17 - 1 = 16`). This is *not* "add one line of slack" --
+    `end_line` names the same 0-based line the last included character
+    sits on, matching a single-line SCIP span's `start_line == end_line`
+    exactly; it is `end_column` (already exclusive, see below) that
+    carries this type's "half-open" property, not an independent
+    one-past-the-line-count `end_line`.
+
+    Columns need **no** conversion: `ast`'s own `col_offset` (0-based,
+    first included column) and `end_col_offset` (0-based, first column
+    *not* included -- CPython's own documented convention) already
+    match `SourceLocation`'s convention exactly, byte-for-byte the same
+    semantics SCIP itself uses.
+    """
     return SourceLocation(
         file_path=record.relative_path,
-        start_line=record.lineno,
-        end_line=record.end_lineno,
+        start_line=record.lineno - 1,
+        end_line=record.end_lineno - 1,
         start_column=record.col_offset,
         end_column=record.end_col_offset,
     )
