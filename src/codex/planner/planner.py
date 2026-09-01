@@ -132,36 +132,67 @@ def plan_query(
     budget = compute_budget(query_contract.token_budget, query_contract.latency_budget_ms)
     max_nodes, max_edges = budget.max_nodes, budget.max_edges
 
+    pruning_steps: list[str] = []
+
     # TAD §41: budget cannot support even a minimally viable evidence
     # package (the target entities themselves) -> PLAN_UNSUPPORTED.
+    #
+    # D9 target-resolution refinement (real-repository benchmark findings
+    # #12/#13/#22/#24): a short/common target name's deterministic
+    # substring lookup (HLRD §34) can legitimately return far more
+    # entities than the budget can seed a traversal from -- most of them
+    # unrelated to the query (every path under a self-hosted repository's
+    # own directory contains that repository's name as a substring, for
+    # example). `_resolve_one_target` already narrows to an exact match
+    # when one exists; when the set is *still* over budget, this is TAD
+    # §32's own kind of budget-aware pruning applied to the target seed
+    # set itself (the same `pruning_steps`/`BudgetTrace` record every
+    # other pruning step in this function already uses), not a new
+    # mechanism -- deterministically keep the first `max_nodes` entities
+    # in `resolve_targets`'s own established canonical-id sort order and
+    # continue planning, rather than declaring no plan possible.
+    #
+    # EXHAUSTIVE queries are the one case this must never apply to --
+    # "Exhaustive queries cannot be pruned below required coverage" (TAD
+    # §32) -- so an EXHAUSTIVE query over budget still gets exactly
+    # today's unconditional PLAN_UNSUPPORTED, unchanged. Likewise when
+    # `max_nodes == 0`: truncating to zero entities is not "a smaller but
+    # still usable seed set", it is the exact "cannot support even a
+    # minimally viable evidence package" case TAD §41 describes, so that
+    # also keeps today's unconditional PLAN_UNSUPPORTED.
     if max_nodes < len(target_entities):
-        plan = _build_plan(
-            query_identity=identity,
-            graph_version=graph_version,
-            target_entity_ids=[e.canonical_id for e in target_entities],
-            relationship_types=relationship_types,
-            traversal_depth=0,
-            query_contract=query_contract,
-            selected_providers=selected_providers,
-            budget=budget,
-            status=PlanStatus.PLAN_UNSUPPORTED,
-            negative_query_candidate=False,
-            negative_query_result=None,
-            budget_trace=BudgetTrace(
-                original_node_estimate=len(target_entities),
-                original_edge_estimate=0,
-                pruned_node_estimate=len(target_entities),
-                pruned_edge_estimate=0,
-                pruning_occurred=False,
-                reason="token_budget cannot support even the target entities themselves",
-            ),
+        if is_exhaustive or max_nodes == 0:
+            plan = _build_plan(
+                query_identity=identity,
+                graph_version=graph_version,
+                target_entity_ids=[e.canonical_id for e in target_entities],
+                relationship_types=relationship_types,
+                traversal_depth=0,
+                query_contract=query_contract,
+                selected_providers=selected_providers,
+                budget=budget,
+                status=PlanStatus.PLAN_UNSUPPORTED,
+                negative_query_candidate=False,
+                negative_query_result=None,
+                budget_trace=BudgetTrace(
+                    original_node_estimate=len(target_entities),
+                    original_edge_estimate=0,
+                    pruned_node_estimate=len(target_entities),
+                    pruned_edge_estimate=0,
+                    pruning_occurred=False,
+                    reason="token_budget cannot support even the target entities themselves",
+                ),
+            )
+            if cache is not None:
+                cache.put(key, plan)
+            return plan
+        original_target_count = len(target_entities)
+        target_entities = target_entities[:max_nodes]
+        pruning_steps.append(
+            f"reduce target-entity set to budget ({original_target_count} -> {max_nodes})"
         )
-        if cache is not None:
-            cache.put(key, plan)
-        return plan
 
     depth_ceiling = latency_derived_depth_ceiling(query_contract.latency_budget_ms, base_depth)
-    pruning_steps: list[str] = []
     effective_depth = base_depth
     effective_relationship_types = relationship_types
 
