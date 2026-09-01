@@ -771,32 +771,52 @@ def _extract_calls(root: Path) -> tuple[dict[str, _DefRecord], list[_CallSite]]:
         # Collector.visit`), so a lookup by `stmt.name` / `(stmt.name,
         # child.name)` here is always already present -- direct indexing,
         # not `.get()` + a None-check for a case that cannot occur.
-        for stmt in tree.body:
-            if isinstance(stmt, ast.ClassDef):
-                for child in stmt.body:
-                    if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        continue
+        #
+        # This file's call sites are collected into `file_call_sites` --
+        # a local, per-file list, never the shared `call_sites` directly --
+        # and only folded into `call_sites` once the whole file's body has
+        # been processed without error. A pathologically deep expression
+        # (e.g. hundreds of nested subscripts/calls) can exceed Python's
+        # own recursion limit inside `_CallCollector`'s recursive
+        # `ast.NodeVisitor`; catching `RecursionError` here and moving on
+        # to the next `relative_path` means one such file skips only its
+        # own call sites, never aborts collection for every other file
+        # already known to have parsed cleanly. The local-list-then-fold
+        # pattern keeps that skip deterministic and all-or-nothing: a
+        # crash partway through this file's body can never leave a
+        # partial subset of its own call sites in the final result,
+        # dependent on exactly which statement the recursion limit hit.
+        file_call_sites: list[_CallSite] = []
+        try:
+            for stmt in tree.body:
+                if isinstance(stmt, ast.ClassDef):
+                    for child in stmt.body:
+                        if not isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            continue
+                        _collect_call_sites_for_body(
+                            child,
+                            caller=collector.methods[(stmt.name, child.name)],
+                            enclosing_class=stmt.name,
+                            own_functions=collector.functions,
+                            own_methods=collector.methods,
+                            imports=imports,
+                            functions_by_module=functions_by_module,
+                            call_sites=file_call_sites,
+                        )
+                elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     _collect_call_sites_for_body(
-                        child,
-                        caller=collector.methods[(stmt.name, child.name)],
-                        enclosing_class=stmt.name,
+                        stmt,
+                        caller=collector.functions[stmt.name],
+                        enclosing_class=None,
                         own_functions=collector.functions,
                         own_methods=collector.methods,
                         imports=imports,
                         functions_by_module=functions_by_module,
-                        call_sites=call_sites,
+                        call_sites=file_call_sites,
                     )
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _collect_call_sites_for_body(
-                    stmt,
-                    caller=collector.functions[stmt.name],
-                    enclosing_class=None,
-                    own_functions=collector.functions,
-                    own_methods=collector.methods,
-                    imports=imports,
-                    functions_by_module=functions_by_module,
-                    call_sites=call_sites,
-                )
+        except RecursionError:
+            continue
+        call_sites.extend(file_call_sites)
 
     return all_definitions, call_sites
 

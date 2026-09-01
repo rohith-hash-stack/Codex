@@ -8,6 +8,9 @@ own precedent of handcrafted fixtures for exactly this reason).
 from __future__ import annotations
 
 import ast
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -46,6 +49,36 @@ def write(tmp_path: Path, relative: str, source: str) -> None:
 def evidence_pairs(norm) -> set[tuple[str, str]]:  # type: ignore[no-untyped-def]
     by_id = {e.canonical_id: e.qualified_name for e in norm.entities}
     return {(by_id[ev.subject], by_id[ev.object]) for ev in norm.evidence}
+
+
+def pathological_nested_calls(depth: int) -> str:
+    """A function body shaped exactly like the real crash this adapter's
+    per-file isolation fix targets (Finding 1 of the external GitHub
+    real-repository readiness audit): `sourcegraph/scip-python`'s own
+    `maxParseDepth2.py` test fixture (`x[0][0][0]...`, nested ~359 deep,
+    itself a pyright parser-stress-test) triggered `RecursionError` inside
+    `_CallCollector.visit_Call`'s recursive `ast.NodeVisitor.generic_visit`
+    chain -- a deeply nested `Call` expression reproduces the identical
+    `visit_Call -> generic_visit -> visit -> visit_Call -> ...` recursion
+    shape deterministically and without depending on the external clone."""
+    return "def pathological():\n    return " + "f(" * depth + "1" + ")" * depth + "\n"
+
+
+@contextmanager
+def lowered_recursion_limit(limit: int) -> Iterator[None]:
+    """Temporarily lowers Python's own recursion limit so a *small*, fast
+    nested-`Call` fixture reliably reproduces `RecursionError` -- avoiding
+    a dependency on exactly how many real stack frames this adapter's own
+    recursive visitors consume per AST level (an implementation detail
+    that could shift with any future refactor), matching this project's
+    own established `sys.setrecursionlimit`-based technique for testing
+    recursion-limit-dependent behavior deterministically."""
+    original = sys.getrecursionlimit()
+    sys.setrecursionlimit(limit)
+    try:
+        yield
+    finally:
+        sys.setrecursionlimit(original)
 
 
 # --- identity / capabilities -------------------------------------------------
@@ -456,6 +489,97 @@ def test_syntax_error_file_skipped_not_fatal(tmp_path: Path) -> None:
     result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
     norm = adapter.normalize(result)
     assert evidence_pairs(norm) == {("good.py::caller", "good.py::helper")}
+
+
+# --- Finding 1 (external GitHub real-repository readiness audit): a single
+# pathologically deep file must not abort CALLS extraction for the whole
+# repository -- isolation is per-file, not per-capability. ------------------
+
+
+def test_recursion_error_in_one_file_does_not_abort_other_files(tmp_path: Path) -> None:
+    """The exact regression this fix closes: before it, one file raising
+    `RecursionError` inside `_extract_calls` propagated all the way up to
+    `extract()`'s own `try/except`, marking `CALL_RELATIONSHIP` FAILED and
+    discarding every other file's real, already-collected call sites too
+    -- confirmed against the real `sourcegraph/scip-python` repository
+    (1,075 real files, all zero'd out by one pathological fixture). Here,
+    `bad.py` (sorted before `good.py`, so the loop must genuinely continue
+    past it, not merely stop before reaching it) reproduces that same
+    crash; `good.py` is real, ordinary, resolvable source with nothing
+    pathological about it."""
+    write(tmp_path, "bad.py", pathological_nested_calls(depth=60))
+    write(
+        tmp_path,
+        "good.py",
+        "def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n",
+    )
+    adapter = AstCallsAdapter()
+    with lowered_recursion_limit(80):
+        result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+
+    # The whole-capability outcome: CALL_RELATIONSHIP now succeeds despite
+    # the pathological file, unlike the pre-fix behavior (FAILED/PARTIAL).
+    assert result.cohort.successful_capabilities == [Capability.CALL_RELATIONSHIP.value]
+    assert result.cohort.failed_capabilities == []
+    assert result.cohort.coverage_status is CoverageStatus.FULL
+
+    norm = adapter.normalize(result)
+    # good.py's real call is present -- other files are unaffected.
+    assert evidence_pairs(norm) == {("good.py::caller", "good.py::helper")}
+    # No fabricated evidence: nothing involving `bad.py`/`pathological` at all.
+    assert all("bad.py" not in q and "pathological" not in q for q in
+               (e.qualified_name for e in norm.entities))
+
+
+def test_recursion_error_file_contributes_no_partial_call_sites(tmp_path: Path) -> None:
+    """A crashing file's contribution is deterministically all-or-nothing:
+    an earlier, real, resolvable call in the *same* file as the crash
+    (`earlier` calling `helper`, both defined before `pathological` in
+    source order, so their call site would already be collected by the
+    time the crash happens) must not leak through just because it was
+    gathered before the `RecursionError` -- the whole file is discarded
+    together, never a partial, order-dependent subset of it."""
+    write(
+        tmp_path,
+        "bad.py",
+        "def helper():\n    return 1\n\n\n"
+        "def earlier():\n    return helper()\n\n\n"
+        + pathological_nested_calls(depth=60),
+    )
+    adapter = AstCallsAdapter()
+    with lowered_recursion_limit(80):
+        result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    norm = adapter.normalize(result)
+    assert norm.evidence == []
+
+
+def test_recursion_error_isolation_is_deterministic_across_repeated_extraction(
+    tmp_path: Path,
+) -> None:
+    """Two independent extraction runs against the same pathological
+    repository state produce byte-identical results -- the same
+    determinism guarantee this adapter's other extraction paths already
+    give (see `test_deterministic_repeated_extraction_same_ids`-style
+    coverage in the real-repository integration tests)."""
+    write(tmp_path, "bad.py", pathological_nested_calls(depth=60))
+    write(
+        tmp_path,
+        "good.py",
+        "def helper():\n    return 1\n\n\ndef caller():\n    return helper()\n",
+    )
+    adapter1 = AstCallsAdapter()
+    adapter2 = AstCallsAdapter()
+    with lowered_recursion_limit(80):
+        norm1 = adapter1.normalize(
+            adapter1.extract(make_repository(tmp_path), adapter1.supported_capabilities)
+        )
+        norm2 = adapter2.normalize(
+            adapter2.extract(make_repository(tmp_path), adapter2.supported_capabilities)
+        )
+    assert sorted(e.canonical_id for e in norm1.entities) == sorted(
+        e.canonical_id for e in norm2.entities
+    )
+    assert evidence_pairs(norm1) == evidence_pairs(norm2)
 
 
 def test_virtualenv_directory_excluded_regardless_of_name(tmp_path: Path) -> None:
