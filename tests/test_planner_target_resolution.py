@@ -1164,3 +1164,268 @@ def test_gap1_fix_deterministic_across_repeated_calls() -> None:
     runs = [resolve_targets(store, ["approx"]) for _ in range(3)]
     ids = [[e.canonical_id for e in r] for r in runs]
     assert ids[0] == ids[1] == ids[2] == ["real-approx"]
+
+
+# --- GAP-6 fix (SCIP independent-validation finding): GAP-1's fix
+# protected only AstCallsAdapter's `<file>::<symbol>` qualified_name
+# shape; SCIPAdapter's qualified_name is SCIP's own raw descriptor path
+# (no `"::"` at all), so the original fix's "no separator -> return
+# unchanged" fallback left it completely unprotected. Reproduced
+# independently on `django/django`'s real SCIP index: "What are the
+# implementations of Storage?" resolved 641 candidates (module-path
+# collisions via the `` `django.core.files.storage.*`/... `` shape),
+# truncating away both real implementations `FileSystemStorage` and
+# `InMemoryStorage` entirely; "What are the implementations of Command?"
+# resolved 981 candidates for ~57 real implementations, and truncation
+# left zero real relationships. Shapes below are the real,
+# source-verified SCIP descriptor format (confirmed against the complete
+# real django SCIP index, not guessed): a single, optionally
+# backtick-quoted module descriptor, `"/"`, then the symbol's own
+# `"#"`/`"()."`-suffixed descriptor chain. ----------------------------
+
+
+def test_scip_module_path_collision_does_not_pollute_target_seeds() -> None:
+    """Requirement 1: entities that merely live in a SCIP module whose
+    dotted path contains the target string, but whose own symbol
+    descriptor has no real relationship to it, must never be resolved as
+    candidates purely from that module-path coincidence (reproduced on
+    `django/django`'s real `django.core.files.storage.memory` module:
+    `TimingMixin` lives there but has nothing to do with `"Storage"`)."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-storage",
+            name="Storage",
+            qualified_name="`django.core.files.storage.base`/Storage#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-filesystemstorage",
+            name="FileSystemStorage",
+            qualified_name="`django.core.files.storage.filesystem`/FileSystemStorage#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-timingmixin",
+            name="TimingMixin",
+            qualified_name="`django.core.files.storage.memory`/TimingMixin#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-dirnode",
+            name="InMemoryDirNode",
+            qualified_name="`django.core.files.storage.memory`/InMemoryDirNode#",
+        )
+    )
+    resolved = resolve_targets(store, ["Storage"])
+    ids = {e.canonical_id for e in resolved}
+    assert "unrelated-timingmixin" not in ids
+    assert "unrelated-dirnode" not in ids
+
+
+def test_scip_exact_class_symbol_still_resolves() -> None:
+    """Requirement 2: a genuine exact match on a SCIP class descriptor's
+    own symbol path is still tier-0 exact identity after the GAP-6 fix."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="exact",
+            name="Storage",
+            qualified_name="`django.core.files.storage.base`/Storage#",
+        )
+    )
+    resolved = resolve_targets(store, ["Storage"])
+    assert [e.canonical_id for e in resolved] == ["exact"]
+
+
+def test_scip_method_descriptor_matching_still_resolves() -> None:
+    """Requirement 3: a SCIP method descriptor (`Class#method().`) whose
+    own symbol path contains the target is still discoverable, exactly
+    like `_resolve_one_target`'s pre-existing SCIP-decorated-name test."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="scalar-eq",
+            name="__eq__",
+            qualified_name="`src._pytest.approx`/ApproxScalar#__eq__().",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="compare-approx",
+            name="_compare_approx",
+            qualified_name="`src._pytest.approx`/_compare_approx().",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    ids = {e.canonical_id for e in resolved}
+    assert "compare-approx" in ids
+
+
+def test_scip_boundary_aligned_symbol_collision_still_discovered() -> None:
+    """Requirement 4: a genuine boundary-aligned identifier collision
+    within a SCIP symbol's own descriptor (not its module path) remains
+    discoverable exactly as D9 intends -- the real django shape:
+    `StorageHandler#`/`StorageSettingsMixin#` both boundary-align on
+    `"Storage"` at position 0 of their own class names (this codebase's
+    established, character-based boundary rule, unchanged by this fix,
+    does *not* treat a camelCase-internal capital as a boundary --
+    `FileSystemStorage#`/`InMemoryStorage#` are real, legitimate *buried*
+    matches for `"Storage"` under that same pre-existing rule, exactly
+    like `SubclassableObject` is buried for `"classab"`; real django
+    evidence confirms this doesn't prevent them from being retrieved as
+    real `IMPLEMENTS` relationships once the base `Storage#` entity
+    itself resolves as a seed -- `bounded_traversal`'s directional
+    anchoring collects real edges by their *object*, not by requiring
+    every real subclass to also independently resolve as a target)."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="base",
+            name="Storage",
+            qualified_name="`django.core.files.storage.base`/Storage#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="handler",
+            name="StorageHandler",
+            qualified_name="`django.core.files.storage.handler`/StorageHandler#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="mixin",
+            name="StorageSettingsMixin",
+            qualified_name="`django.core.files.storage.mixins`/StorageSettingsMixin#",
+        )
+    )
+    resolved = resolve_targets(store, ["Storage"])
+    assert {e.canonical_id for e in resolved} == {"base", "handler", "mixin"}
+
+
+def test_scip_buried_symbol_substring_still_rejected() -> None:
+    """Requirement 5: a buried, mid-identifier substring collision within
+    a SCIP symbol's own descriptor (not its module path) is still
+    correctly excluded once a real exact/boundary match exists -- the D9
+    `ClassAB`/`SubclassableObject` shape, now with a real SCIP
+    `` `module`/Class# `` qualified_name."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="exact",
+            name="ClassAB",
+            qualified_name="`pkg.mod`/ClassAB#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="buried",
+            name="SubclassableObject",
+            qualified_name="`pkg.mro`/SubclassableObject#",
+        )
+    )
+    resolved = resolve_targets(store, ["ClassAB"])
+    assert {e.canonical_id for e in resolved} == {"exact"}
+
+
+def test_astcallsadapter_shape_unaffected_by_gap6_fix() -> None:
+    """Requirement 6: `AstCallsAdapter`'s `<file>::<symbol>` shape
+    continues to resolve exactly as the original GAP-1 fix left it --
+    the GAP-6 generalization only adds a second, SCIP-specific branch,
+    it never changes the first (`"::"`-present) branch's behavior."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-approx",
+            name="approx",
+            qualified_name="src/_pytest/approx.py::approx",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated",
+            name="_is_bool",
+            qualified_name="src/_pytest/approx.py::_is_bool",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    assert {e.canonical_id for e in resolved} == {"real-approx"}
+
+
+def test_scip_module_path_only_match_returns_no_candidates() -> None:
+    """Requirement 7: a target that matches *only* a SCIP module/path
+    segment, with no real symbol of that name anywhere (in either its own
+    bare `name` or its symbol-descriptor path), resolves to nothing --
+    not a confident-looking non-empty candidate set (the sharper GAP-6
+    case, mirroring GAP-1's own `models`/`models.py` finding but for the
+    SCIP qualified_name shape). Neither entity's own `name` contains
+    `"widgets"` at all -- only the module path does -- so this exercises
+    the `qualified_name`-axis filter specifically, not the (always
+    unnarrowed) `name` axis."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-1",
+            name="Helper",
+            qualified_name="`pkg.widgets.internal`/Helper#",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-2",
+            name="Utility",
+            qualified_name="`pkg.widgets.internal`/Utility#",
+        )
+    )
+    resolved = resolve_targets(store, ["widgets"])
+    assert resolved == []
+
+
+def test_scip_gap6_fix_deterministic_across_repeated_calls() -> None:
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-storage",
+            name="Storage",
+            qualified_name="`django.core.files.storage.base`/Storage#",
+        )
+    )
+    for i in range(20):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"unrelated-{i}",
+                name=f"Helper{i}",
+                qualified_name=f"`django.core.files.storage.memory`/Helper{i}#",
+            )
+        )
+    runs = [resolve_targets(store, ["Storage"]) for _ in range(3)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert ids[0] == ids[1] == ids[2] == ["real-storage"]
+
+
+def test_symbol_path_scip_shape_splits_on_last_slash() -> None:
+    """Direct unit check of `_symbol_path`'s SCIP branch, including the
+    nested-class-inside-method shape real django SCIP output produces
+    (a local class defined inside a test method) -- only the one
+    module-boundary `"/"` is stripped; the full nested descriptor chain
+    after it is preserved verbatim."""
+    from codex.planner.retrieval import _symbol_path
+
+    assert _symbol_path("`django.core.files.storage.memory`/TimingMixin#") == "TimingMixin#"
+    assert (
+        _symbol_path(
+            "`tests.invalid_models_tests.test_ordinary_fields`/"
+            "CharFieldTests#test_choices_named_group_non_pairs().Model#"
+        )
+        == "CharFieldTests#test_choices_named_group_non_pairs().Model#"
+    )
+    assert _symbol_path("`django.utils.crypto`/get_random_string().") == "get_random_string()."
+    # a FILE entity's own plain path (no "#", no trailing ".") is never split
+    assert _symbol_path("django/shortcuts.py") == "django/shortcuts.py"
+    assert _symbol_path("django/contrib/gis/db/backends/oracle/operations.py") == (
+        "django/contrib/gis/db/backends/oracle/operations.py"
+    )

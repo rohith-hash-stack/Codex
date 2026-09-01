@@ -70,25 +70,61 @@ def _has_boundary_aligned_occurrence(text: str, target: str) -> bool:
 
 def _symbol_path(qualified_name: str) -> str:
     """The portion of `qualified_name` identifying the symbol itself, as
-    opposed to the file/directory path it lives under (GAP-1 fix,
-    "qualified-name file-path substring causes unrelated-symbol seed
-    explosion" -- D13 independent-validation finding). `qualified_name`'s
-    established format across every provider this project has is
-    `<file-path>::<symbol-path>` -- confirmed for `AstCallsAdapter`
-    (`"src/_pytest/approx.py::approx"`) and for SCIP-sourced entities too
-    (`_resolve_one_target`'s own regression test constructs
-    `"pkg/a.py::AdapterA.extract"` as the `qualified_name` for a
-    SCIP-decorated `"AdapterA#extract()."` entity's `name`) -- so the
-    substring after the *last* `"::"` is always the symbol's own path,
-    never a directory/file segment. A `qualified_name` with no `"::"` at
-    all (a bare module/file-level identity with no separate symbol
-    suffix, as several of this module's own pre-existing tests
-    construct) is returned unchanged -- there is no file-path segment to
-    strip from it in that shape, and narrowing it would silently drop
-    real matches the pre-GAP-1 substring/boundary logic already relied
-    on for those entities.
+    opposed to the file/directory or module path it lives under (GAP-1
+    fix, "qualified-name file-path substring causes unrelated-symbol seed
+    explosion" -- D13 independent-validation finding; generalized by the
+    GAP-6 fix, "GAP-1's fix does not generalize to SCIP-sourced
+    qualified_name" -- SCIP independent-validation finding).
+
+    Two real, distinct `qualified_name` shapes exist in this codebase,
+    and each needs its own split rule -- there is no single separator
+    that works for both:
+
+    1. `AstCallsAdapter`: `<file-path>::<symbol-path>`, e.g.
+       `"src/_pytest/approx.py::approx"`. Unchanged from the original
+       GAP-1 fix: split on the last `"::"`.
+    2. `SCIPAdapter`: `qualified_name` is SCIP's own raw descriptor path
+       (`scip_adapter.py`'s `_resolve_symbol`, `parsed.descriptor_path`
+       verbatim for every non-`FILE` entity) -- never contains `"::"` at
+       all. Confirmed against the complete real `django/django` SCIP
+       index (65,033 entities, GAP-6 fix's own investigation, not
+       guessed): every one of its 57,642 non-`FILE` SCIP entities has
+       *exactly* one `"/"`, separating a single (optionally
+       backtick-quoted) module/namespace descriptor from the symbol's
+       own descriptor chain -- e.g.
+       `` "`django.core.files.storage.memory`/TimingMixin#" `` splits to
+       `"TimingMixin#"`; a nested case like
+       `` "`pkg.tests`/Outer#inner_test().Nested#" `` splits to
+       `"Outer#inner_test().Nested#"` (the full nested-class/method
+       descriptor chain, correctly kept intact -- only the one module-
+       boundary `"/"` is stripped, never a `"/"` that could appear
+       *within* the symbol descriptor itself, because SCIP's grammar
+       never emits one there). Detected by the presence of SCIP's own
+       descriptor-terminator characters (`"#"` for a type, or a
+       trailing `"."` for a term/method) -- confirmed, not assumed,
+       against every real `FILE` entity in the same index (2,202 of
+       them, several with a single `"/"` too, e.g. `"django/shortcuts.py"`)
+       containing *neither* marker, so a `FILE` entity's own plain,
+       unsuffixed path is never mistaken for a symbol descriptor and
+       never gets a legitimate path segment stripped from its identity.
+       Both markers were checked against the complete real index with
+       zero mismatches and zero false positives before being adopted
+       here, not assumed from the SCIP spec alone.
+
+    A `qualified_name` matching neither shape (no `"::"`, and either no
+    `"/"` or no descriptor-terminator marker -- a bare module/file-level
+    identity with no separate symbol suffix, as several of this module's
+    own pre-existing tests construct, or a `FILE` entity's own plain
+    path) is returned unchanged -- there is no symbol/path boundary to
+    strip from it, and narrowing it would silently drop real matches the
+    pre-GAP-1 substring/boundary logic already relied on for those
+    entities.
     """
-    return qualified_name.rpartition("::")[2] if "::" in qualified_name else qualified_name
+    if "::" in qualified_name:
+        return qualified_name.rpartition("::")[2]
+    if "/" in qualified_name and ("#" in qualified_name or qualified_name.endswith(".")):
+        return qualified_name.rpartition("/")[2]
+    return qualified_name
 
 
 def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
@@ -192,21 +228,28 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     `"approx"` -- and `psf/requests`'s `models.py`, where the same
     mechanism produced a confident-looking non-empty candidate set for
     `"models"` even though no symbol literally named `"models"` exists
-    anywhere in the repository). `qualified_name`'s established format
-    across every provider is `<file-path>::<symbol-path>`
-    (`_symbol_path`) -- the `qualified_name` axis's raw substring result
-    is narrowed, immediately after the store lookup, to only the entities
-    where `target` genuinely occurs in that *symbol*-path portion, not
-    merely somewhere in the file/directory-path prefix. This is a
-    distinct axis-narrowing from the exact-match one two paragraphs up
-    (that one prefers a full-string exact match when one exists; this one
-    removes candidates that were never really about the target symbol at
-    all) -- both apply to the same `qualified_name` axis, never to the
-    `name` axis, and neither touches `GraphReader.find_entities` itself.
-    A `qualified_name` with no `"::"` at all keeps today's behavior
-    entirely (`_symbol_path`'s own documented fallback) -- this fix is
-    scoped exactly to the `<file-path>::<symbol-path>` shape it was
-    written for.
+    anywhere in the repository), **generalized by the GAP-6 fix** (SCIP
+    independent-validation finding: the original fix protected only
+    `AstCallsAdapter`'s `<file-path>::<symbol-path>` shape, leaving
+    `SCIPAdapter`'s differently-shaped `qualified_name` completely
+    unprotected -- real-repository confirmation: `django/django`'s
+    `"What are the implementations of Storage?"` resolved 641
+    candidates, most via a module-path collision, truncating away both
+    real production implementations, `FileSystemStorage` and
+    `InMemoryStorage`, entirely). The `qualified_name` axis's raw
+    substring result is narrowed, immediately after the store lookup, to
+    only the entities where `target` genuinely occurs in the *symbol*-path
+    portion `_symbol_path` isolates (its own docstring has the full,
+    now-two-shape split rule) -- never merely somewhere in the
+    file/directory/module-path prefix, whichever of the two real
+    `qualified_name` shapes an entity happens to have. This is a distinct
+    axis-narrowing from the exact-match one two paragraphs up (that one
+    prefers a full-string exact match when one exists; this one removes
+    candidates that were never really about the target symbol at all) --
+    both apply to the same `qualified_name` axis, never to the `name`
+    axis, and neither touches `GraphReader.find_entities` itself. A
+    `qualified_name` matching neither shape keeps today's behavior
+    entirely (`_symbol_path`'s own documented fallback).
     """
     raw_by_qualified_name = graph.find_entities(qualified_name=target)
     target_lower = target.lower()
