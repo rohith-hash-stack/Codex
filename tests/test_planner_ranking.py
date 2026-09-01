@@ -11,6 +11,7 @@ from codex.ontology.entities import BaseEntityType, RepositorySymbol
 from codex.ontology.relationships import RelationshipType
 from codex.planner.planner import execute_query, plan_query
 from codex.planner.ranking import (
+    RANKING_WEIGHTS,
     RankingSignals,
     bm25_scores,
     candidate_tags,
@@ -95,13 +96,67 @@ def test_candidate_tags_includes_roles_base_type_and_path_segments() -> None:
 
 
 def test_score_is_weighted_sum_of_four_signals() -> None:
-    signals = RankingSignals(
-        semantic_relevance=1.0,
-        structural_relevance=0.0,
-        graph_proximity=0.0,
-        query_constraint_match=0.0,
+    # D13's calibrated weights (semantic=0.25, structural=0.40,
+    # proximity=0.25, constraint=0.10) -- one signal at a time,
+    # isolating each weight rather than hardcoding equal weighting.
+    assert (
+        score(
+            RankingSignals(
+                semantic_relevance=1.0,
+                structural_relevance=0.0,
+                graph_proximity=0.0,
+                query_constraint_match=0.0,
+            )
+        )
+        == RANKING_WEIGHTS["semantic_relevance"]
     )
-    assert score(signals) == 0.25  # equal 0.25 weighting
+    assert (
+        score(
+            RankingSignals(
+                semantic_relevance=0.0,
+                structural_relevance=1.0,
+                graph_proximity=0.0,
+                query_constraint_match=0.0,
+            )
+        )
+        == RANKING_WEIGHTS["structural_relevance"]
+    )
+    assert (
+        score(
+            RankingSignals(
+                semantic_relevance=0.0,
+                structural_relevance=0.0,
+                graph_proximity=1.0,
+                query_constraint_match=0.0,
+            )
+        )
+        == RANKING_WEIGHTS["graph_proximity"]
+    )
+    assert (
+        score(
+            RankingSignals(
+                semantic_relevance=0.0,
+                structural_relevance=0.0,
+                graph_proximity=0.0,
+                query_constraint_match=1.0,
+            )
+        )
+        == RANKING_WEIGHTS["query_constraint_match"]
+    )
+
+
+def test_ranking_weights_sum_to_one() -> None:
+    assert abs(sum(RANKING_WEIGHTS.values()) - 1.0) < 1e-9
+
+
+def test_structural_relevance_weighted_above_semantic_and_proximity() -> None:
+    """D13's calibration finding, pinned as a regression guard: structural
+    relevance -- the one signal immune to the repository-name BM25-token
+    pathology (see `RANKING_WEIGHTS`'s own docstring) -- must outweigh
+    each of the other three individually."""
+    assert RANKING_WEIGHTS["structural_relevance"] > RANKING_WEIGHTS["semantic_relevance"]
+    assert RANKING_WEIGHTS["structural_relevance"] > RANKING_WEIGHTS["graph_proximity"]
+    assert RANKING_WEIGHTS["structural_relevance"] > RANKING_WEIGHTS["query_constraint_match"]
 
 
 # --- rank_entities: determinism, tie-breaking, distance ----------------------

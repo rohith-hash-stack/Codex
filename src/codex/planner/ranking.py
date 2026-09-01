@@ -2,11 +2,15 @@
 
 V1's four deterministic ranking proxies, implemented exactly as TAD §36
 specifies -- **no signal here was invented**; `docs/architecture-
-conformance-audit.md` §R.2 traces each one to its exact TAD text. Only
-the aggregation weights (`RANKING_WEIGHTS`) are a documented calibration
-point: TAD §37 explicitly calls them "calibration parameters" and gives
-no V1 default, so this module uses equal weighting (0.25 each),
-non-final, clearly labeled -- the formula *shape* itself is TAD's own.
+conformance-audit.md` §R.2 traces each one to its exact TAD text. The
+aggregation weights (`RANKING_WEIGHTS`) are TAD §37's own named
+calibration point ("weights are calibration parameters", no V1 default
+given).
+
+D13 Phase 1/2 (ranking-calibration design/experiment, this project's
+first genuine independent-validation-informed calibration pass) moved
+these off equal weighting -- see `RANKING_WEIGHTS`'s own docstring for
+the evidence.
 """
 
 from __future__ import annotations
@@ -22,12 +26,46 @@ from codex.ontology.relationships import RelationshipType
 
 RANKING_WEIGHTS: Final[dict[str, float]] = {
     "semantic_relevance": 0.25,
-    "structural_relevance": 0.25,
+    "structural_relevance": 0.40,
     "graph_proximity": 0.25,
-    "query_constraint_match": 0.25,
+    "query_constraint_match": 0.10,
 }
-"""Calibration point (TAD §37: "weights are calibration parameters",
-no V1 default given) -- equal weighting, not a claimed-final value."""
+"""Calibration point (TAD §37: "weights are calibration parameters", no
+V1 default given). D13's first calibration pass (Codex commit `e5a8754`
+frozen as the pre-calibration reference), evaluated against
+`django/django` (this project's one `INDEPENDENT_VALIDATION` repository)
+plus `psf/requests` as a second independent set, with
+`sourcegraph/scip-python`'s full 56-query battery re-run as a
+research-evidence-only regression check (never as calibration evidence,
+per this project's repository-independence policy):
+
+- Equal weighting (baseline) ranked django's real dependency entities
+  (`django`, `asgiref`, `sqlparse`, ...) at position 5 among 30
+  candidates for `"What does django depend on?"` -- `semantic_relevance`
+  (BM25 over qualified-name path tokens) gets swamped by the literal
+  token `"django"` recurring in dozens of unrelated same-repository
+  test names (`test_is_django_module`, ...), the same
+  repository-name-token pathology Finding 2/D9 already fought at
+  candidate-generation time, now observed independently at ranking
+  time. *Boosting* `semantic_relevance` (tried at 0.40 and 0.55) made
+  this measurably **worse** (rank 5 -> 20 -> 23) and helped nothing
+  else -- rejected.
+- `structural_relevance` (does the candidate have an incident
+  relationship of the query's actual primary predicate type) is
+  unaffected by this pathology -- it looks at graph structure, not
+  name tokens. Boosting it to 0.40 (query_constraint_match reduced to
+  0.10 to compensate, since it is vacuously 1.0 for the near-totality
+  of real queries this project has ever run and so contributes little
+  real signal) fixed the dependency-ranking case outright (rank 5 -> 0)
+  with **zero** change to any other django query, **zero** change on
+  `psf/requests`, and **zero** invariant differences (`plan_status`,
+  `entity_count`, `relationship_count`, `coverage`,
+  `negative_query_candidate`) across the *entire* 56-query
+  `scip-python` regression sweep -- confirming, empirically, what the
+  architecture already guarantees (`execute_query`'s own data flow):
+  ranking can only ever reorder `package.entities`, never change which
+  relationships or entities are present.
+"""
 
 GRAPH_PROXIMITY_DECAY: Final[float] = 0.9
 """TAD §36's own literal constant: `0.9^d`."""
