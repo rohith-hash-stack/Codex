@@ -10,12 +10,30 @@ model call (directive Part 11, TAD §30).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Final
 
 from codex.evidence.model import CanonicalRelationship, Evidence
 from codex.evidence.store import EvidenceStore
 from codex.graph.store import GraphReader
 from codex.ontology.entities import RepositorySymbol
 from codex.ontology.relationships import RelationshipType
+
+_DIRECTIONAL_PREDICATES: Final = frozenset({RelationshipType.CALLS, RelationshipType.IMPLEMENTS})
+"""Predicates with a single caller-facing "correct" direction relative to a
+queried target (post-fix external-repository readiness audit, "relationship-
+set imprecision" finding).
+
+Every intent in `codex.query_understanding.models.Intent` that can ever
+produce `RelationshipType.CALLS` (`FIND_CALLERS`, `FIND_TESTS`,
+`TRACE_EXECUTION` -- see `codex.query_understanding.engine`'s
+`_relationship_types_for_intent`) means "X calls the target" -- there is no
+"what does the target call" intent in the current vocabulary, so this can be
+keyed on predicate alone without threading `Intent` through `RetrievalPlan`.
+`RelationshipType.IMPLEMENTS` is even narrower: only `FIND_IMPLEMENTATIONS`
+ever produces it. Neither ambiguity case this file's docstrings warn about
+elsewhere (SCIP naming decoration, provider coupling) applies here: this is
+graph-topology direction, not name normalization.
+"""
 
 
 def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbol]:
@@ -145,6 +163,34 @@ def bounded_traversal(
     (TAD §41) and `depth` (TAD §29's Planner output). Deterministic:
     frontier order follows `find_entities`'s sorted seed order and
     `neighbors()`'s own deterministic iteration; final output is sorted.
+
+    **Directional-predicate anchoring** (post-fix external-repository
+    readiness audit, "relationship-set imprecision" finding): for
+    `_DIRECTIONAL_PREDICATES` (`CALLS`, `IMPLEMENTS`), a relationship is only
+    collected when its *object* endpoint is one of the original `seeds` --
+    i.e. one of `resolve_targets`'s own resolved entities for this query,
+    unchanged (D9 candidate generation is not touched by this filter; it
+    decides *which* entities are seeds, this decides *which edges touching
+    them* answer the directional question actually asked). Confirmed against
+    the real `sourcegraph/scip-python` repository: this is what turns
+    `"What calls foo?"`'s 7 relationships (4 wrong-directioned/unrelated) into
+    the subset that actually reads "caller -> foo", and what makes
+    `"Implementations of ClassAB"` (a real leaf class with zero subclassers)
+    stop surfacing `ClassAB`'s own upward `IMPLEMENTS` edges as if they
+    answered "what implements ClassAB".
+
+    A directional-predicate relationship's *subject* endpoint is therefore
+    never used to admit it, regardless of whether the subject is itself a
+    seed or a hop-expanded neighbor -- `"What calls __init__?"` no longer
+    surfaces `__init__ -> test1` (a real edge, wrong direction for this
+    question) as if it were evidence of a caller. Non-directional predicates
+    (`REFERENCES`, `IMPORTS`, `DEPENDS_ON`, `CO_CHANGED_WITH`, ...) keep the
+    prior both-direction, any-frontier-entity collection unchanged -- this
+    finding and its fix are specific to `CALLS`/`IMPLEMENTS`, not a general
+    retrieval redesign.
+
+    Node visitation (which entities enter `visited`/get returned) is
+    completely unaffected -- only which *edges* end up in `relationships`.
     """
     visited: dict[str, RepositorySymbol] = {s.canonical_id: s for s in seeds}
     distances: dict[str, int] = {s.canonical_id: 0 for s in seeds}
@@ -152,18 +198,23 @@ def bounded_traversal(
     truncated = False
     frontier = list(seeds)
     predicates: list[RelationshipType | None] = list(relationship_types) or [None]
+    seed_ids = frozenset(visited)
 
     for level in range(depth):
         next_frontier: list[RepositorySymbol] = []
         for entity in frontier:
             for predicate in predicates:
-                for rel in graph.get_relationships(
-                    subject=entity.canonical_id, predicate=predicate
-                ):
-                    if rel.key not in relationships and len(relationships) >= max_edges:
-                        truncated = True
-                        continue
-                    relationships[rel.key] = rel
+                directional = predicate in _DIRECTIONAL_PREDICATES
+                if not directional:
+                    for rel in graph.get_relationships(
+                        subject=entity.canonical_id, predicate=predicate
+                    ):
+                        if rel.key not in relationships and len(relationships) >= max_edges:
+                            truncated = True
+                            continue
+                        relationships[rel.key] = rel
+                if directional and entity.canonical_id not in seed_ids:
+                    continue
                 for rel in graph.get_relationships(
                     object_id=entity.canonical_id, predicate=predicate
                 ):

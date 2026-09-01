@@ -179,6 +179,38 @@ def test_lookup_intent_is_never_a_negative_query_candidate() -> None:
 
 
 def test_non_empty_result_is_not_a_negative_query_candidate() -> None:
+    # `auth.py` is the caller (subject) and `service.py` the callee (object):
+    # FIND_CALLERS/CALLS only anchors on the object endpoint (post-fix
+    # external-repository readiness audit's "relationship-set imprecision"
+    # fix, `codex.planner.retrieval.bounded_traversal`), so the query target
+    # must be the *callee* for this fixture to represent real forward
+    # evidence rather than accidentally exercising the reverse direction.
+    result, registry, _, repository = build_graph(
+        entity_paths=("service.py", "auth.py"), relationship_pairs=(("auth.py", "service.py"),)
+    )
+    plan = plan_query(
+        query_contract=make_contract(targets=["service.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.negative_query_candidate is False
+
+
+def test_reverse_direction_only_evidence_is_still_a_negative_query_candidate() -> None:
+    """Directional-predicate anchoring (`codex.planner.retrieval.
+    bounded_traversal`, post-fix external-repository readiness audit) is
+    negative-query-detection *policy*-neutral: `plan_query`'s own
+    `negative_candidate = intent in _NEGATIVE_QUERY_INTENTS and
+    len(traversal.relationships) == 0` line is untouched. What changes is
+    only the traversal's own relationship count feeding into it -- a
+    relationship that exists but points the wrong way for `FIND_CALLERS`
+    (the query target is the *caller*, never a real callee) correctly
+    yields zero traversal relationships, and therefore still correctly
+    triggers `negative_query_candidate=True`, exactly as it would if no
+    relationship existed at all.
+    """
     result, registry, _, repository = build_graph(
         entity_paths=("service.py", "auth.py"), relationship_pairs=(("service.py", "auth.py"),)
     )
@@ -189,4 +221,4 @@ def test_non_empty_result_is_not_a_negative_query_candidate() -> None:
         registry=registry,
         repository=repository,
     )
-    assert plan.negative_query_candidate is False
+    assert plan.negative_query_candidate is True
