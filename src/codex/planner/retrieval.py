@@ -36,6 +36,72 @@ graph-topology direction, not name normalization.
 """
 
 
+def _has_boundary_aligned_occurrence(text: str, target: str) -> bool:
+    """True if `target` occurs in `text` (case-insensitive) at a position
+    not immediately preceded by another alphanumeric character -- i.e. at
+    the very start of `text`, or right after a non-alphanumeric separator
+    (`#`, `.`, `/`, `::`, `_`, ...). False only when *every* occurrence of
+    `target` in `text` is buried mid-identifier (preceded by a letter or
+    digit), like `"classab"` inside `"SubclassableObject"` (preceded by the
+    `b` of `"Subclassable"`).
+
+    Deliberately provider-agnostic (`_resolve_one_target`'s own established
+    discipline): this treats *any* non-alphanumeric character as a boundary
+    -- it does not know SCIP's `().`/`#` convention is SCIP's, it just
+    tolerates trailing/leading punctuation generically. `"add"` in
+    `"add()."` (boundary: start of string) and `"extract"` in
+    `"AdapterA#extract()."` (boundary: preceded by `#`) both count; `"add"`
+    in `"AddHelperVariant0"` (boundary: start of string, followed by more
+    letters -- still a real word-initial match) also counts. Only a match
+    with letters/digits on *both* sides that don't include the boundary is
+    buried.
+    """
+    lowered = text.lower()
+    lowered_target = target.lower()
+    start = 0
+    while True:
+        idx = lowered.find(lowered_target, start)
+        if idx == -1:
+            return False
+        if idx == 0 or not text[idx - 1].isalnum():
+            return True
+        start = idx + 1
+
+
+def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
+    """Deterministic 3-way classification of how `entity` relates to the
+    query's target strings (D9 candidate-prioritization refinement,
+    following the directional-retrieval fix's own "relationship-set
+    imprecision" finding to its D9 root cause -- real-repository
+    confirmation: `sourcegraph/scip-python`'s `"SubclassableObject"`
+    resolving as a candidate for `"ClassAB"` only because `"Subclassable"`
+    happens to literally contain the letters `"classab"` mid-word).
+
+    0 = literal identity: `entity.name` or `entity.qualified_name` is
+        exactly (case-insensitively) equal to one of `targets`.
+    1 = boundary-aligned match: not identity, but at least one target
+        occurs in `entity.name` or `entity.qualified_name` at a boundary
+        (`_has_boundary_aligned_occurrence`) -- includes SCIP-decorated
+        symbols (`"add()."`, `"AdapterA#extract()."`) *and* real word-
+        initial collisions (`"AddHelperVariant0"`, `"InterfaceAB"`,
+        `"TestClass1"`) that HLRD §34 discovery must keep finding.
+    2 = incidental/buried: every occurrence of every target in this
+        entity's `name`/`qualified_name` is buried mid-identifier.
+    """
+    name_lower = entity.name.lower()
+    qn_lower = entity.qualified_name.lower()
+    best = 2
+    for target in targets:
+        if name_lower == target or qn_lower == target:
+            return 0
+        if best > 1 and (
+            _has_boundary_aligned_occurrence(entity.name, target)
+            or _has_boundary_aligned_occurrence(entity.qualified_name, target)
+        ):
+            best = 1
+    return best
+
+
 def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbol]:
     """Candidate generation for one target string (HLRD §33), preferring
     an exact `qualified_name` match over a mere substring one (D9
@@ -88,6 +154,38 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     }
     by_name = {e.canonical_id: e for e in graph.find_entities(name=target)}
     combined = {**(exact_qualified_name or by_qualified_name), **by_name}
+
+    # D9 candidate-prioritization refinement (post-Finding-3 external
+    # audit's "candidate-generation ambiguity" finding): once *any*
+    # non-buried match for `target` exists anywhere in `combined` (tier 0
+    # exact, or tier 1 boundary-aligned -- deliberately not tier-0-only,
+    # see below), drop candidates whose *only* connection to `target` is
+    # an incidental, mid-identifier substring occurrence (tier 2) -- e.g.
+    # `"SubclassableObject"` for target `"ClassAB"`. Every boundary-aligned
+    # match is kept unconditionally, including every shape HLRD §34
+    # discovery and the Finding-2 exact-bare-name refinement already rely
+    # on (`"add()."`, `"AdapterA#extract()."`, `"AddHelperVariant0"`,
+    # `"InterfaceAB"`, `"TestClass1"`) -- this narrowing is strictly about
+    # buried, boundary-free occurrences, never about a candidate merely
+    # being a *longer* identifier than `target`.
+    #
+    # The gate is "tier 0 or 1", not "tier 0 only": real-repository
+    # verification (`sourcegraph/scip-python`) showed every class/interface
+    # entity IMPLEMENTS queries resolve is SCIP-only (`AstCallsAdapter`
+    # never emits class-level entities) and therefore *always* carries
+    # SCIP's own `#` class-descriptor suffix (`"ClassAB#"`, never bare
+    # `"ClassAB"`) -- a byte-exact tier-0 match essentially never exists
+    # for these queries at all, only tier-1 ones. Gating on tier-0-only
+    # would make this refinement inert for the exact real-world case it
+    # was written for; gating on "not buried" fixes that without changing
+    # what counts as buried.
+    target_set = {target.lower()}
+    if any(_match_tier(entity, target_set) <= 1 for entity in combined.values()):
+        combined = {
+            canonical_id: entity
+            for canonical_id, entity in combined.items()
+            if _match_tier(entity, target_set) <= 1
+        }
     return list(combined.values())
 
 
@@ -127,15 +225,38 @@ def resolve_targets(graph: GraphReader, targets: list[str]) -> list[RepositorySy
     to match a bare query target ("add") here either -- doing so would
     require this provider-agnostic module to learn SCIP's own naming
     convention, out of scope for this refinement.
+
+    **Candidate prioritization / buried-match narrowing** (D9 refinement,
+    post-Finding-3 external-repository readiness audit's "candidate-
+    generation ambiguity" finding, `_match_tier`): the two-way exact/
+    substring split above is now the outer two tiers of a 3-way
+    `_match_tier` classification (0 exact identity, 1 boundary-aligned
+    substring, 2 incidental/buried substring), used two ways:
+
+    1. Ordering (this function): the sort key is now `_match_tier`
+       (0/1/2) then `canonical_id`, a strict generalization of the
+       previous `bool` key -- every entity this refinement used to sort
+       into the "exact" group still sorts first, identically.
+    2. Membership (`_resolve_one_target`, one target at a time): once an
+       exact (tier 0) match exists for a given *target string*, tier-2
+       (buried) candidates for that same target are dropped entirely --
+       e.g. `"SubclassableObject"` is no longer returned at all for a
+       query naming `"ClassAB"`, once the real `ClassAB` entity exists.
+       This is a genuine change from "only their order" for that one,
+       narrow case; every tier-0 and tier-1 candidate -- which includes
+       *every* shape the docstring above and `_resolve_one_target`'s own
+       docstring guard (`add().`, `AdapterA#extract().`,
+       `AddHelperVariant0`, `InterfaceAB`, `TestClass1`) -- is returned
+       exactly as before, unaffected by this narrowing.
     """
     seen: dict[str, RepositorySymbol] = {}
     for target in targets:
         for entity in _resolve_one_target(graph, target):
             seen[entity.canonical_id] = entity
-    exact_name_targets = {target.lower() for target in targets}
+    target_set = {target.lower() for target in targets}
     return sorted(
         seen.values(),
-        key=lambda e: (e.name.lower() not in exact_name_targets, e.canonical_id),
+        key=lambda e: (_match_tier(e, target_set), e.canonical_id),
     )
 
 

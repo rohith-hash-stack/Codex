@@ -539,6 +539,223 @@ def test_negative_query_unaffected_by_exact_bare_name_preference() -> None:
     assert resolved == []
 
 
+# --- D9 candidate-prioritization refinement (post-Finding-3 external
+# audit's "candidate-generation ambiguity" finding): a real identity match
+# for a target must not be diluted by a *buried*, mid-identifier substring
+# collision (`"classab"` inside `"SubclassableObject"`) -- while every
+# boundary-aligned collision Finding 2 and `_resolve_one_target`'s own
+# regression-prevention test rely on (`"add()."`, `"AdapterA#extract()."`,
+# `"AddHelperVariant0"`, `"InterfaceAB"`, `"TestClass1"`) keeps being
+# discovered, unchanged. -------------------------------------------------
+
+
+def test_exact_bare_name_beats_boundary_and_buried_substring_candidates() -> None:
+    """Requirement 1: with all three tiers present for one target, the
+    exact match sorts first, then the boundary-aligned match, then the
+    buried match -- a strict generalization of Finding 2's own bool key."""
+    store = _store()
+    store.upsert_entity(_entity(canonical_id="exact", name="ClassAB", qualified_name="pkg/a.py"))
+    store.upsert_entity(
+        _entity(canonical_id="boundary", name="ClassABHelper", qualified_name="pkg/b.py")
+    )
+    store.upsert_entity(
+        _entity(canonical_id="buried", name="SubclassableObject", qualified_name="pkg/mro.py")
+    )
+    resolved = resolve_targets(store, ["ClassAB"])
+    assert [e.canonical_id for e in resolved] == ["exact", "boundary"]
+
+
+def test_classab_not_polluted_by_subclassable_object_when_literal_entity_exists() -> None:
+    """Requirement 2, the real repository's own shape: `"SubclassableObject"`
+    (real qualified_name embeds the class name too, mirroring the real
+    `sourcegraph/scip-python` entity exactly) is dropped once the literal
+    `ClassAB` entity exists -- it is a buried match (`"classab"` occurs mid-
+    word, preceded by the `b` of `"Subclassable"`), not a boundary one."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="classab", name="ClassAB#", qualified_name="pkg/abstractClass2.py")
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="subclassable",
+            name="SubclassableObject#",
+            qualified_name="pkg/mro3.py`/SubclassableObject#",
+        )
+    )
+    resolved = resolve_targets(store, ["ClassAB"])
+    assert {e.canonical_id for e in resolved} == {"classab"}
+
+
+def test_foo_prefers_foo_over_foo2_and_fooimpl() -> None:
+    """Requirement 3: `"Foo2"`/`"FooImpl"` are boundary-aligned (`"foo"` at
+    position 0, a real word-initial collision, same shape as Finding 2's
+    own `"AddHelperVariant0"`) -- they are *not* buried, so they remain
+    discoverable, but sort strictly after the exact `"foo"` match."""
+    store = _store()
+    store.upsert_entity(_entity(canonical_id="exact-foo", name="foo", qualified_name="pkg/a.py"))
+    store.upsert_entity(_entity(canonical_id="foo2", name="Foo2", qualified_name="pkg/b.py"))
+    store.upsert_entity(_entity(canonical_id="fooimpl", name="FooImpl", qualified_name="pkg/c.py"))
+    resolved = resolve_targets(store, ["foo"])
+    assert {e.canonical_id for e in resolved} == {"exact-foo", "foo2", "fooimpl"}
+    assert resolved[0].canonical_id == "exact-foo"
+
+
+def test_interfacea_prefers_interfacea_over_interfaceab() -> None:
+    """Requirement 4: `"InterfaceAB"` is boundary-aligned (position 0), so
+    it stays discoverable (unlike the buried `ClassAB`/`SubclassableObject`
+    case) but sorts after the exact `"InterfaceA"` match."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="exact-ia", name="InterfaceA#", qualified_name="pkg/a.py")
+    )
+    store.upsert_entity(
+        _entity(canonical_id="interfaceab", name="InterfaceAB#", qualified_name="pkg/b.py")
+    )
+    resolved = resolve_targets(store, ["InterfaceA"])
+    assert {e.canonical_id for e in resolved} == {"exact-ia", "interfaceab"}
+    assert resolved[0].canonical_id == "exact-ia"
+
+
+def test_testclass_prefers_testclass_over_testclass1_and_testclass2() -> None:
+    """Requirement 5: `"TestClass1"`/`"TestClass2"` are boundary-aligned
+    (position 0), kept discoverable, sorted after the exact match."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="exact-tc", name="TestClass#", qualified_name="pkg/a.py")
+    )
+    store.upsert_entity(_entity(canonical_id="tc1", name="TestClass1#", qualified_name="pkg/b.py"))
+    store.upsert_entity(_entity(canonical_id="tc2", name="TestClass2#", qualified_name="pkg/c.py"))
+    resolved = resolve_targets(store, ["TestClass"])
+    assert {e.canonical_id for e in resolved} == {"exact-tc", "tc1", "tc2"}
+    assert resolved[0].canonical_id == "exact-tc"
+
+
+def test_qualified_name_exact_match_behavior_unchanged_by_tier_refinement() -> None:
+    """Requirement 6: `_resolve_one_target`'s pre-existing exact-
+    `qualified_name` narrowing (whole-string equality, unrelated to the new
+    tier classification) still reduces a repository-name-shaped collision
+    to the one exact match, exactly as before this refinement."""
+    store = _store()
+    store.upsert_entity(_entity(canonical_id="repo-entity", name="repo1", qualified_name="repo1"))
+    for i in range(50):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"decoy{i}",
+                name=f"thing{i}",
+                qualified_name=f"src/repo1/module{i}.py",
+            )
+        )
+    resolved = resolve_targets(store, ["repo1"])
+    assert [e.canonical_id for e in resolved] == ["repo-entity"]
+
+
+def test_substring_discovery_unchanged_when_no_boundary_or_exact_candidate_exists() -> None:
+    """Requirement 7: when *every* candidate for the target is a buried
+    match (no tier 0 or tier 1 candidate exists at all to prefer), the
+    narrowing never activates -- HLRD §34 discovery is preserved in full,
+    exactly as pre-refinement behavior, rather than narrowing a target down
+    to nothing."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="buried-1",
+            name="SubclassableObject",
+            qualified_name="pkg/a.py",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="buried-2",
+            name="UnclassAB1e",
+            qualified_name="pkg/b.py",
+        )
+    )
+    resolved = resolve_targets(store, ["ClassAB"])
+    assert {e.canonical_id for e in resolved} == {"buried-1", "buried-2"}
+
+
+def test_tier_ordering_deterministic_across_repeated_calls() -> None:
+    """Requirement 8."""
+    store = _store()
+    store.upsert_entity(_entity(canonical_id="exact", name="ClassAB", qualified_name="pkg/a.py"))
+    store.upsert_entity(
+        _entity(canonical_id="boundary", name="ClassABHelper", qualified_name="pkg/b.py")
+    )
+    store.upsert_entity(
+        _entity(canonical_id="buried", name="SubclassableObject", qualified_name="pkg/c.py")
+    )
+    runs = [resolve_targets(store, ["ClassAB"]) for _ in range(5)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert all(run == ids[0] for run in ids[1:])
+
+
+def test_80_node_budget_behavior_intact_with_buried_match_narrowing() -> None:
+    """Requirement 9: full `plan_query` reproduction of the `ClassAB`
+    shape -- the buried `SubclassableObject`-style decoy never reaches
+    `plan.target_entity_ids` at all now (excluded at candidate-generation,
+    before budget truncation), and the plan's own `PlanStatus`/budget
+    semantics for the tiny surviving set are otherwise exactly what they
+    were before this refinement (`OK`, no pruning needed for 1 entity well
+    under `max_nodes`)."""
+    result, registry, evidence_store, repository = build_graph(entity_paths=())
+    result.graph_store.upsert_entity(
+        _entity(canonical_id="classab", name="ClassAB#", qualified_name="pkg/abstractClass2.py")
+    )
+    result.graph_store.upsert_entity(
+        _entity(
+            canonical_id="subclassable",
+            name="SubclassableObject#",
+            qualified_name="pkg/mro3.py`/SubclassableObject#",
+        )
+    )
+    plan = plan_query(
+        query_contract=make_contract(
+            targets=["ClassAB"],
+            intent=Intent.FIND_IMPLEMENTATIONS,
+            relationship_types=[RelationshipType.IMPLEMENTS],
+            required_evidence=[Capability.IMPLEMENTATION],
+        ),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.status is PlanStatus.OK
+    assert plan.target_entity_ids == ["classab"]
+
+
+def test_negative_query_unaffected_by_buried_match_narrowing() -> None:
+    """Requirement 10: a genuinely nonexistent symbol still resolves to an
+    empty target set -- the new narrowing only ever activates when a tier-0
+    exact match already exists, so it is a no-op here exactly like every
+    earlier refinement in this file."""
+    result, registry, evidence_store, repository = build_graph(entity_paths=("service.py",))
+    plan = plan_query(
+        query_contract=make_contract(targets=["totallyNonexistentSymbolXyzzy"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.target_entity_ids == []
+    assert plan.negative_query_candidate is True
+
+
+def test_finding_2_extreme_collision_truncation_still_intact() -> None:
+    """Requirement 11: Finding 2's own extreme-collision reproduction is
+    unaffected -- every `"AddHelperVariant{i}"` decoy is boundary-aligned
+    (`"add"` at position 0 of its own name), not buried, so this
+    refinement's narrowing never removes any of them; all 1,937 candidates
+    are still returned, and the 7 real exact matches still survive the
+    80-node truncation, exactly as Finding 2 established."""
+    store = _seed_extreme_name_collision_graph(decoy_count=1930, exact_count=7)
+    resolved = resolve_targets(store, ["add"])
+    assert len(resolved) == 1937
+    truncated = resolved[:80]
+    exact_survivors = [e for e in truncated if e.name == "add"]
+    assert len(exact_survivors) == 7
+
+
 def test_extreme_collision_full_plan_query_pipeline_keeps_exact_matches() -> None:
     """Full `plan_query`/`execute_query` reproduction: the same extreme
     collision shape as the real audit ("add", 1,937 raw candidates,
