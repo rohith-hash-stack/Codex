@@ -78,12 +78,47 @@ def resolve_targets(graph: GraphReader, targets: list[str]) -> list[RepositorySy
     (HLRD §33 "candidate generation" -- deterministic substring lookup via
     `GraphReader.find_entities()`, no embeddings/fuzzy matching, HLRD §34;
     exact-match preference per target, see `_resolve_one_target`).
+
+    **Exact-bare-name-match ordering** (D9 target-resolution refinement,
+    Finding 2 of the external GitHub real-repository readiness audit):
+    when `plan_query`'s own existing budget truncation (`target_entities
+    [:max_nodes]`, `codex.planner.planner`, unchanged by this refinement)
+    later has to cut this list down to `max_nodes`, entities whose bare
+    `name` *exactly* equals one of `targets` (case-insensitively) are
+    sorted first, ahead of every entity that only matched by substring on
+    either axis -- `canonical_id` remains the ordering *within* each of
+    those two groups, exactly as before this refinement (deterministic,
+    unchanged tie-break). This never changes *which* entities
+    `resolve_targets` returns, only their order, so a caller under budget
+    (the common case) sees byte-identical results; it only matters once a
+    combined candidate set from a heavily name-colliding target (real
+    example: a query for "add" resolving 7 exact real entities plus
+    ~1,930 further substring matches, confirmed against `sourcegraph/
+    scip-python`, an independently selected real repository) exceeds
+    `max_nodes` and the previous canonical-id-only order could put every
+    one of the genuine exact matches past the cut, discarding the very
+    entity the query named before any relationship retrieval or
+    verification is ever attempted.
+
+    Deliberately still a plain, undecorated string-equality test against
+    `RepositorySymbol.name` -- exactly `_resolve_one_target`'s own
+    established discipline (its docstring: "does not try to normalize
+    away provider-specific naming decoration itself... exactly the kind
+    of new architectural coupling this refinement must not introduce").
+    A SCIP-decorated name (`add().`) is therefore not specially rewritten
+    to match a bare query target ("add") here either -- doing so would
+    require this provider-agnostic module to learn SCIP's own naming
+    convention, out of scope for this refinement.
     """
     seen: dict[str, RepositorySymbol] = {}
     for target in targets:
         for entity in _resolve_one_target(graph, target):
             seen[entity.canonical_id] = entity
-    return sorted(seen.values(), key=lambda e: e.canonical_id)
+    exact_name_targets = {target.lower() for target in targets}
+    return sorted(
+        seen.values(),
+        key=lambda e: (e.name.lower() not in exact_name_targets, e.canonical_id),
+    )
 
 
 @dataclass(frozen=True)

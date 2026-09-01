@@ -388,3 +388,193 @@ def test_negative_query_with_repository_name_shaped_target_still_empty_when_abse
     result, registry, evidence_store, repository = build_graph(entity_paths=("service.py",))
     resolved = resolve_targets(result.graph_store, ["nonexistent_repo_xyz"])
     assert resolved == []
+
+
+# --- Finding 2 (external GitHub real-repository readiness audit): the
+# literal target entity can be excluded by canonical-id-only truncation
+# under extreme name collision -- exact-bare-name-match entities must sort
+# ahead of substring-only matches before `plan_query`'s existing budget
+# slice ever runs. -----------------------------------------------------------
+
+
+def _seed_extreme_name_collision_graph(
+    *, decoy_count: int, exact_count: int
+) -> InMemoryGraphStore:
+    """Reproduces the real audit finding's exact shape: a bare target
+    ("add") with a handful of genuinely distinct real entities sharing
+    that exact bare name, drowned in a much larger set of entities that
+    only substring-match on `qualified_name` (real example: a vendored
+    third-party stub tree swept into a SCIP index). Decoy `canonical_id`s
+    are deliberately chosen to sort *before* every exact entity's, so the
+    pre-refinement canonical-id-only truncation would keep only decoys."""
+    store = _store()
+    for i in range(decoy_count):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"aaa_decoy_{i:05d}",
+                name=f"AddHelperVariant{i}",
+                qualified_name=f"vendor/stubs/pkg{i}/add_something.pyi",
+            )
+        )
+    for i in range(exact_count):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"zzz_real_add_{i}",
+                name="add",
+                qualified_name=f"src/real_module_{i}.py::add",
+            )
+        )
+    return store
+
+
+def test_exact_bare_name_match_survives_extreme_over_budget_collision() -> None:
+    """The real audit reproduction: a query target ("add") resolves 7
+    exact real entities plus 1,930 further substring-only matches (the
+    exact numbers `sourcegraph/scip-python`, an independently selected
+    real repository, produced) -- all 1,937 candidates exceed `max_nodes`
+    (80, from `token_budget=4000`), and canonical-id-only truncation would
+    keep zero of the 7 real `add` entities (every decoy's id sorts first).
+    With this refinement, all 7 real exact matches survive the cut."""
+    store = _seed_extreme_name_collision_graph(decoy_count=1930, exact_count=7)
+    resolved = resolve_targets(store, ["add"])
+    assert len(resolved) == 1937
+    truncated = resolved[:80]
+    exact_survivors = [e for e in truncated if e.name == "add"]
+    assert len(exact_survivors) == 7
+    assert {e.canonical_id for e in exact_survivors} == {f"zzz_real_add_{i}" for i in range(7)}
+
+
+def test_exact_bare_name_matches_sort_before_substring_only_matches() -> None:
+    """Direct proof of the new ordering rule: every exact-bare-name-match
+    entity sorts ahead of every substring-only entity, regardless of
+    `canonical_id` -- `canonical_id` remains the tie-break *within* each
+    group, unchanged."""
+    store = _seed_extreme_name_collision_graph(decoy_count=10, exact_count=3)
+    resolved = resolve_targets(store, ["add"])
+    assert [e.name for e in resolved[:3]] == ["add", "add", "add"]
+    assert [e.canonical_id for e in resolved[:3]] == sorted(
+        f"zzz_real_add_{i}" for i in range(3)
+    )
+    assert [e.canonical_id for e in resolved[3:]] == sorted(f"aaa_decoy_{i:05d}" for i in range(10))
+
+
+def test_no_unrelated_candidate_incorrectly_promoted() -> None:
+    """A decoy whose `name` merely *contains* the target as a substring
+    (never an exact match) must never be promoted ahead of the
+    canonical-id order it already had -- only a true, case-insensitive
+    exact bare-name match earns the new priority."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="z_substring_only", name="add_something", qualified_name="pkg/a.py")
+    )
+    store.upsert_entity(
+        _entity(canonical_id="a_exact", name="add", qualified_name="pkg/b.py::add")
+    )
+    resolved = resolve_targets(store, ["add"])
+    # The exact match ("a_exact") sorts first despite its canonical_id
+    # also sorting first here -- construct a second case where canonical_id
+    # order alone would put the substring-only decoy first, to prove the
+    # promotion is driven by the exact-name check, not accidental id order.
+    store2 = _store()
+    store2.upsert_entity(
+        _entity(canonical_id="a_substring_only", name="add_something", qualified_name="pkg/a.py")
+    )
+    store2.upsert_entity(
+        _entity(canonical_id="z_exact", name="add", qualified_name="pkg/b.py::add")
+    )
+    resolved2 = resolve_targets(store2, ["add"])
+    assert [e.canonical_id for e in resolved2] == ["z_exact", "a_substring_only"]
+    assert resolved[0].canonical_id == "a_exact"
+
+
+def test_exact_bare_name_preference_is_case_insensitive_matching_existing_convention() -> None:
+    """Matches `_resolve_one_target`'s own established case-insensitive
+    exact-match convention for the `qualified_name` axis -- the new
+    `name`-axis preference uses the same `.lower()` comparison, not a
+    second, inconsistent case-sensitivity rule."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="aaa_decoy", name="AddSomething", qualified_name="pkg/a.py")
+    )
+    store.upsert_entity(_entity(canonical_id="zzz_exact", name="Add", qualified_name="pkg/b.py"))
+    resolved = resolve_targets(store, ["add"])
+    assert resolved[0].canonical_id == "zzz_exact"
+
+
+def test_qualified_name_exact_match_preference_still_applies_first() -> None:
+    """Tier 1 (`_resolve_one_target`'s own exact-`qualified_name`
+    narrowing, per target, unchanged) still runs before this refinement's
+    combined-set bare-name ordering -- for a target whose `qualified_name`
+    exact match already narrows things to one entity, the new bare-name
+    tier has nothing left to reorder."""
+    store = _store()
+    exact_qn = _entity(canonical_id="repo-entity", name="repo1", qualified_name="repo1")
+    store.upsert_entity(exact_qn)
+    for i in range(50):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"decoy{i}",
+                name=f"thing{i}",
+                qualified_name=f"src/repo1/module{i}.py",
+            )
+        )
+    resolved = resolve_targets(store, ["repo1"])
+    assert [e.canonical_id for e in resolved] == ["repo-entity"]
+
+
+def test_exact_bare_name_preference_deterministic_across_repeated_calls() -> None:
+    store = _seed_extreme_name_collision_graph(decoy_count=200, exact_count=7)
+    runs = [resolve_targets(store, ["add"]) for _ in range(3)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert ids[0] == ids[1] == ids[2]
+
+
+def test_negative_query_unaffected_by_exact_bare_name_preference() -> None:
+    """An empty result set (a genuinely nonexistent symbol) is unaffected
+    by the new ordering -- it is a no-op on an already-empty list, exactly
+    like the existing qualified-name exact-match preference already is."""
+    store = _seed_extreme_name_collision_graph(decoy_count=20, exact_count=2)
+    resolved = resolve_targets(store, ["totallyNonexistentSymbolXyzzy"])
+    assert resolved == []
+
+
+def test_extreme_collision_full_plan_query_pipeline_keeps_exact_matches() -> None:
+    """Full `plan_query`/`execute_query` reproduction: the same extreme
+    collision shape as the real audit ("add", 1,937 raw candidates,
+    `max_nodes=80`), through the complete, unmodified planning/execution
+    pipeline -- the plan's own `target_entity_ids` (what `execute_query`
+    actually seeds traversal from) contains real `add`-named entities,
+    not only decoys, and the existing `BudgetTrace`/pruning-step/
+    `PlanStatus.PRUNED` semantics are completely unchanged."""
+    entity_paths = tuple(f"AddHelperVariant{i}" for i in range(90))
+    result, registry, evidence_store, repository = build_graph(entity_paths=entity_paths)
+    for i in range(7):
+        result.graph_store.upsert_entity(
+            _entity(
+                canonical_id=f"zzz_real_add_{i}",
+                name="add",
+                qualified_name=f"src/real_module_{i}.py::add",
+            )
+        )
+    plan = plan_query(
+        query_contract=make_contract(targets=["add"], token_budget=4000),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.status is PlanStatus.PRUNED
+    assert len(plan.target_entity_ids) == 80
+    assert plan.telemetry.budget_trace.pruning_steps[0] == (
+        "reduce target-entity set to budget (97 -> 80)"
+    )
+    surviving_names = {
+        result.graph_store.get_entity(cid).name for cid in plan.target_entity_ids
+    }
+    assert "add" in surviving_names
+    surviving_exact_ids = {cid for cid in plan.target_entity_ids if cid.startswith("zzz_real_add_")}
+    assert len(surviving_exact_ids) == 7
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert package.entities != []
