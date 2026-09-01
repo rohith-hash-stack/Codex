@@ -1930,3 +1930,70 @@ Fresh `.venv-work` run: **948/948 tests passing** (832 → 948: +116), **99% pro
 **D1-D13 contracts and dependency direction preserved.** Two new files added under `codex.provider` (the same package `GitAdapter`/`SCIPAdapter`/`CodeQLAdapter` already live in); zero existing files modified. No new architectural component — both are ordinary `ProviderAdapter` implementations registered into the existing `CapabilityRegistry`, consumed by the existing, unmodified `IngestionPipeline`. D7/ADR-006 is not "reopened" as a deferred *architectural decision* about which external repository-intelligence platform (Sourcegraph, RepoGraph) to adopt — that decision remains untouched and still deferred; what this phase closes is the narrower, concrete "no CALLS/DEPENDS_ON provider exists at all" gap the D7 research audit identified as solvable today with resources already present.
 
 **GO.** Both providers implemented, tested, and validated against real repository data with real, verified query-result improvements. Stopping here for review, per the directive's explicit closing instruction — no further phase started automatically.
+
+---
+
+## II. D9 Target-Resolution Refinement — 2026-09-01
+
+Per the "D9 Target-Resolution Refinement — Implement Only the Benchmark Finding" directive, fixing the specific target-resolution failure a 24-query real-repository benchmark identified (benchmark findings #12/#13/#22/#24 — "What does veyra/codex depend on?", "What calls extract?"/"run?"). D9 refinement only; D1-D8/D10-D13/providers/ontology untouched; no new dependency; no LLM/SLM/embedding/fuzzy resolution.
+
+### II.1 Root cause
+
+`GraphReader.find_entities(name=..., qualified_name=...)` (`InMemoryGraphStore`, unchanged) does case-insensitive **substring** containment, per HLRD §34. `resolve_targets` (`codex.planner.retrieval`) unions both axes' results with equal weight. `plan_query` then rejects the whole plan as `PLAN_UNSUPPORTED` — before any traversal — whenever `len(target_entities) > max_nodes` (TAD §41).
+
+Reproduced directly against the real repositories: a target string that is also a repository's own name substring-matches **597** entities by `qualified_name` in `veyra` (every path under `src/veyra/...`) and **1,295** in `codex`, against only **2** by `name` in each — confirming the explosion is almost entirely a `qualified_name`-axis artifact of a short string coinciding with a directory name. A short, common *symbol* name ("extract", "run") instead produces **near-identical** counts on both axes (98/98, 92/92 for "extract"/"run" in `codex`; 13/13 for "classify" in `veyra`) — no such asymmetry, because in that case the over-match is genuine: many distinct real entities really do have (or substring-contain) that name. `DEFAULT_TOKEN_BUDGET = 4000` gives `max_nodes = min(100, 4000 // 50) = 80`, so both pathologies (repo name and common symbol name) legitimately exceed it and hit the same `PLAN_UNSUPPORTED` branch, with zero traversal ever attempted, zero evidence ever considered.
+
+### II.2 Exact fix
+
+Two independent, additive pieces, both in `codex.planner` (D9's own package):
+
+1. **`_resolve_one_target` (`codex.planner.retrieval`, new function `resolve_targets` now delegates to per target)**: `find_entities(qualified_name=target)`'s own result set is narrowed to only its *exact* (case-insensitive full-string-equal) matches when at least one exists; the full substring set is kept only when no exact match exists. The `find_entities(name=target)` axis is **never** narrowed — always the full substring set, exactly as before. This asymmetry is deliberate and load-bearing, not stylistic: an earlier version narrowed both axes uniformly and was reverted after it reproduced a real regression (§II.5) — SCIP-derived entities carry a trailing `().`/`ClassName#` decoration (`codex.provider.scip.mapping`) and therefore *never* produce a bare exact `name` match for a callable, so narrowing the `name` axis silently dropped real SCIP evidence (including the real test-caller edges for "Which tests call classify?"). The `qualified_name` axis has no equivalent cost: real symbol-name pathologies show no qualified-name/name asymmetry to begin with (confirmed in II.1), so narrowing that axis alone fixes the repository-name pathology with nothing to lose.
+
+2. **`plan_query`'s target-entity budget check (`codex.planner.planner`)**: when (after step 1) `len(target_entities) > max_nodes`, the previous unconditional `PLAN_UNSUPPORTED` now applies **only** when `is_exhaustive` or `max_nodes == 0`. Otherwise, `target_entities` is deterministically truncated to the first `max_nodes` entities in `resolve_targets`'s own established canonical-id sort order, a new pruning step (`"reduce target-entity set to budget (N -> M)"`) is appended to the *existing* `pruning_steps`/`BudgetTrace` record (TAD §32's own "original estimate, pruned estimate, whether pruning occurred, reason" — no new field, no schema change), and planning continues normally (`bounded_traversal`, ranking, etc. — all unmodified) from the truncated seed set. `PlanStatus` gains no new value; the plan settles into the existing `OK`/`PRUNED` outcome exactly as any other pruning step would.
+
+No change to `GraphReader`/`InMemoryGraphStore.find_entities`, `bounded_traversal`, `rank_entities`, `collect_evidence`, `PlanStatus`, `RetrievalPlan`, `BudgetTrace`'s schema, or any D1-D8/D10-D13 module.
+
+### II.3 Why it preserves existing invariants
+
+- **HLRD §34 (deterministic substring lookup)**: `find_entities` itself is untouched; both axes still do plain substring matching. The refinement only changes which of `find_entities`'s own already-deterministic results `resolve_targets` keeps.
+- **EXHAUSTIVE (TAD §32, "cannot be pruned below required coverage")**: Tier 2 (truncation) is unconditionally skipped for `is_exhaustive`, byte-for-byte preserving today's `PLAN_UNSUPPORTED` behavior on that path (verified: `test_exhaustive_query_still_plan_unsupported_when_target_set_exceeds_budget`). Tier 1 (exact-match narrowing) is not EXHAUSTIVE-conditional, but narrowing to a genuine exact identity match discards nothing an EXHAUSTIVE query needed — the excluded entities were never anything but a substring coincidence, not real coverage (`test_exhaustive_query_also_benefits_from_clean_exact_match_narrowing`).
+- **Negative-query safety**: both tiers are no-ops on an already-empty target set (a genuinely nonexistent symbol still resolves to `[]`, still flags `negative_query_candidate=True`) — verified directly.
+- **Canonical-ID semantics**: untouched; nothing here computes, reinterprets, or converges canonical IDs — only *which already-computed* entities become traversal seeds.
+- **Ranking fidelity / MSS / token bounds**: `rank_entities`, `bounded_traversal`'s own edge/node ceilings, and MSS expansion are all downstream of the (now possibly smaller) seed set and are entirely unmodified — a smaller, more precise seed set changes *what* gets traversed, never *how*.
+- **Determinism**: exact-match narrowing is pure string-equality filtering on `find_entities`'s own already-sorted-and-deduplicated output; truncation uses the pre-existing `sorted(..., key=lambda e: e.canonical_id)` order `resolve_targets` already established — same seed set on every repeated call, verified directly (`test_truncation_is_deterministic_across_repeated_calls`).
+- **"Do not silently discard valid candidates merely to improve benchmark scores"**: every discarded qualified-name substring match, when an exact match exists, is discarded because a *stronger*, well-founded signal (this literally is the named entity) already supersedes it — not an arbitrary cut. Truncation is disclosed explicitly via `pruning_steps`/`reason`, never silent.
+
+### II.4 Before/after — all 24 benchmark queries
+
+Re-ran the unmodified `benchmark.py` harness (same real `veyra`/`codex` repository copies, same real SCIP indexes, same 24 queries, same D10 claim variants) before and after this fix.
+
+| # | Query | Repo | Before | After |
+|---|---|---|---|---|
+| 12 | "What does veyra depend on?" | veyra | `PLAN_UNSUPPORTED`, 0 entities | **`OK`, 3 entities, 1 `DEPENDS_ON` relationship** (real: `pytest`) |
+| 13 | "What does codex depend on?" | codex | `PLAN_UNSUPPORTED`, 0 entities | **`OK`, 9 entities, 7 `DEPENDS_ON` relationships** (real: `networkx`/`pydantic`/`GitPython`/`pytest`/`pytest-cov`/`ruff`/`mypy`) |
+| 22 | "What calls extract?" | codex | `PLAN_UNSUPPORTED`, 0 entities | **`PRUNED`, 80 entities, 58 relationships**, `CALL_RELATIONSHIP: COMPLETE`, explicit `"reduce target-entity set to budget (98 -> 80)"` |
+| 24 | "What calls run?" | codex | `PLAN_UNSUPPORTED`, 0 entities | **`PRUNED`, 80 entities, 103 relationships**, `CALL_RELATIONSHIP: COMPLETE`, explicit `"reduce target-entity set to budget (92 -> 80)"` |
+
+All other 20 queries (including the 3 D10 claim variants on "What calls classify?" — `STRONG_ANSWER`/`ABSTAIN`/`ABSTAIN`, unchanged) are **byte-identical** to the pre-fix baseline: same `plan_status`, `entity_count`, `relationship_count`, `coverage`, `negative_query_result`, `d10_final_decision`, and `intent`, confirmed by a field-by-field diff of the full `benchmark_results.json` before and after.
+
+### II.5 Regressions found and fixed during development (not present in the final diff)
+
+The first implementation narrowed **both** axes (`name` and `qualified_name`) on exact match. Re-running the benchmark immediately surfaced a real regression: "What calls classify?" / "Which tests call classify?" (veyra) dropped from 23 to 4 entities, losing every real test-caller edge (`test_classify_and_audit_persists_the_result()`, etc.) — because those edges were only reachable through SCIP's own `classify().`-named entity (a `qualified_name`/`name` pair that never equals bare `"classify"`), which the over-broad `name`-axis narrowing silently excluded. Diagnosed precisely (§II.1's per-axis match-count comparison) and fixed by restricting narrowing to the `qualified_name` axis only (§II.2). Re-verified: "Which tests call classify?" is back to 23 entities/21 relationships, byte-identical to the pre-fix baseline. This regression never reached the committed code — it is recorded here because it directly shaped the final, narrower design and the two axis-asymmetry unit tests it added.
+
+### II.6 Tests
+
+13 new tests in `tests/test_planner_target_resolution.py`, 100% coverage on both changed modules:
+
+- **Unit (`_resolve_one_target`/`resolve_targets`, 5 tests)**: repository-name collision narrows to the one exact `qualified_name` match; the `name` axis keeps full substring recall for SCIP-decorated entities (the exact regression from §II.5, now a permanent regression test); ambiguous targets (5 distinct entities sharing one exact name) all return, deterministically sorted; no exact match keeps the full substring set; an exact `name` match alone does not narrow the `qualified_name` axis.
+- **Integration, through `plan_query`/`execute_query` (3 tests)**: full reproduction of the repository-name-collision fix (`status=OK`, no truncation even needed, since Tier 1 alone resolves it); full reproduction of the common-short-name-over-budget fix (`status=PRUNED`, explicit pruning step, real evidence retrieved); deterministic truncation across three repeated calls.
+- **EXHAUSTIVE preservation (2 tests)**: an EXHAUSTIVE query over an oversized target set (no exact match available) still gets unconditional `PLAN_UNSUPPORTED`, `pruning_occurred=False`; an EXHAUSTIVE query with a clean exact match still succeeds (Tier 1 applies unconditionally, before the EXHAUSTIVE branch is even reached).
+- **Budget edge case (1 test)**: `max_nodes == 0` still gets `PLAN_UNSUPPORTED`, never "truncate to an empty seed set and continue."
+- **Negative-query safety (2 tests)**: a genuinely nonexistent symbol still resolves to an empty target set and flags `negative_query_candidate`; a repository-name-shaped target that doesn't exist in the graph at all still resolves to nothing.
+
+### II.7 Validation
+
+Fresh `.venv-work` run: **961/961 tests passing** (948 → 961: +13), **100% coverage** on both changed modules (`codex/planner/retrieval.py`, `codex/planner/planner.py`), 99% project-wide, `ruff check src/ tests/` clean, `mypy src/` clean (79 source files, unchanged count — no new modules). No new pip dependency. No ADR. No HLRD/TAD text modified. Real-repository benchmark re-run confirms §II.4's before/after table exactly, with zero diffs across two independent re-runs after the final fix (full determinism confirmed).
+
+**D1-D8/D10-D13/providers/ontology untouched** — only `codex.planner.retrieval` and `codex.planner.planner` (both already-existing D9 modules) were edited. No new `PlanStatus` value, no new `BudgetTrace`/`RetrievalPlan` field, no embeddings/fuzzy/semantic matching anywhere.
+
+**GO.** All four benchmark failures fixed with a narrow, contract-consistent refinement; zero regressions across the full test suite and the full 24-query benchmark; EXHAUSTIVE/negative-query/determinism/canonical-ID invariants all directly verified. Stopping here for review, per the directive's explicit closing instruction — no further phase started automatically.
