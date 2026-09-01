@@ -942,3 +942,225 @@ def test_name_normalized_add_entity_survives_full_plan_query_pipeline() -> None:
         plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
     )
     assert package.entities != []
+
+
+# --- GAP-1 fix (D13 independent-validation finding): qualified_name's
+# file/directory-path segment must never participate in target-string
+# matching -- only the symbol-path portion after the last "::" may.
+# Reproduced independently on `pytest-dev/pytest` ("approx" -> approx.py,
+# "fail" -> failure_demo.py) and `psf/requests` ("models" -> models.py). ----
+
+
+def test_qualified_name_file_path_does_not_pollute_target_seeds() -> None:
+    """Requirement 1: entities that merely live in a file whose path
+    contains the target string, but whose own name/symbol-path has no
+    real relationship to it, must never be resolved as candidates purely
+    from that file-path coincidence (reproduced on `pytest-dev/pytest`'s
+    `approx.py`: `_is_bool`/`_recursive_sequence_map` live in the same
+    file as the real `approx` function but have nothing to do with it)."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-approx",
+            name="approx",
+            qualified_name="src/_pytest/approx.py::approx",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-1",
+            name="_is_bool",
+            qualified_name="src/_pytest/approx.py::_is_bool",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-2",
+            name="_recursive_sequence_map",
+            qualified_name="src/_pytest/approx.py::_recursive_sequence_map",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    assert {e.canonical_id for e in resolved} == {"real-approx"}
+
+
+def test_no_real_symbol_named_target_and_file_path_only_collision_returns_empty() -> None:
+    """Requirement 2, the sharper GAP-1 case: when *no* entity's name
+    genuinely matches the target at all, and the only "matches" are
+    file-path coincidences (`models.py`), resolution must return nothing
+    -- not a confident-looking non-empty candidate set (reproduced on
+    `psf/requests`'s `models.py`, where no symbol literally named
+    "models" exists anywhere in the repository)."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-1",
+            name="prepare_body",
+            qualified_name="src/requests/models.py::PreparedRequest.prepare_body",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated-2",
+            name="iter_content",
+            qualified_name="src/requests/models.py::Response.iter_content",
+        )
+    )
+    resolved = resolve_targets(store, ["models"])
+    assert resolved == []
+
+
+def test_qualified_name_file_path_prefix_word_does_not_pollute_target_seeds() -> None:
+    """Requirement 3: a file merely named with the target as a *prefix*
+    word (`failure_demo.py` for target `"fail"`) must not sweep in
+    unrelated symbols either (reproduced on `pytest-dev/pytest`'s
+    `doc/en/example/assertion/failure_demo.py` for target `"fail"`)."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-fail",
+            name="fail",
+            qualified_name="src/_pytest/outcomes.py::fail",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated",
+            name="otherfunc_multi",
+            qualified_name="doc/en/example/assertion/failure_demo.py::otherfunc_multi",
+        )
+    )
+    resolved = resolve_targets(store, ["fail"])
+    assert {e.canonical_id for e in resolved} == {"real-fail"}
+
+
+def test_exact_symbol_match_still_resolves_via_qualified_name_symbol_path() -> None:
+    """Requirement 4: a genuine exact match on the *symbol* portion of
+    `qualified_name` is still tier-0 exact identity after the GAP-1 fix
+    -- `_symbol_path` narrows what participates in matching, it does not
+    remove genuine matches."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="exact",
+            name="approx",
+            qualified_name="src/_pytest/approx.py::approx",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    assert [e.canonical_id for e in resolved] == ["exact"]
+
+
+def test_boundary_aligned_symbol_name_collision_still_discovered_after_gap1_fix() -> None:
+    """Requirement 5: a genuine boundary-aligned identifier collision
+    within the symbol-path portion of `qualified_name` (not the file
+    path) -- e.g. `check_password_with_timing_attack_mitigation` for
+    target `check_password`, the real django/django shape -- remains
+    discoverable exactly as D9 intends."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="exact",
+            name="check_password",
+            qualified_name="src/pkg/auth.py::check_password",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="boundary",
+            name="check_password_with_timing_attack_mitigation",
+            qualified_name="src/pkg/auth.py::check_password_with_timing_attack_mitigation",
+        )
+    )
+    resolved = resolve_targets(store, ["check_password"])
+    assert {e.canonical_id for e in resolved} == {"exact", "boundary"}
+
+
+def test_buried_substring_in_symbol_path_still_rejected_after_gap1_fix() -> None:
+    """Requirement 6: a buried, mid-identifier substring collision within
+    the symbol-path portion itself (not the file path) is still
+    correctly excluded once a real exact match exists -- the original D9
+    `ClassAB`/`SubclassableObject` case, now with a real
+    `<file>::<symbol>`-shaped `qualified_name`."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="exact", name="ClassAB", qualified_name="pkg/a.py::ClassAB")
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="buried",
+            name="SubclassableObject",
+            qualified_name="pkg/mro.py::SubclassableObject",
+        )
+    )
+    resolved = resolve_targets(store, ["ClassAB"])
+    assert {e.canonical_id for e in resolved} == {"exact"}
+
+
+def test_scip_decorated_symbol_path_matching_unaffected_by_gap1_fix() -> None:
+    """Requirement 7: SCIP-decorated symbol paths (the `ClassName.method`
+    convention living in `qualified_name`'s post-`::` portion) continue
+    to match exactly as before -- `_symbol_path` only strips the
+    file-path prefix, never the symbol's own decoration."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="a",
+            name="AdapterA#extract().",
+            qualified_name="pkg/a.py::AdapterA.extract",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="b",
+            name="AdapterB#extract().",
+            qualified_name="pkg/b.py::AdapterB.extract",
+        )
+    )
+    resolved = resolve_targets(store, ["extract"])
+    assert {e.canonical_id for e in resolved} == {"a", "b"}
+
+
+def test_file_path_separator_never_treated_as_symbol_name_boundary() -> None:
+    """Requirement 8: a target string that only occurs immediately after
+    a `/` inside the *file-path* portion of `qualified_name` (the exact
+    shape that made `"/"` count as a valid boundary for `"approx"` in
+    `"src/_pytest/approx.py::_is_bool"` before this fix) must not be
+    treated as a boundary-aligned match at all -- the file-path segment
+    is excluded from matching entirely, not merely reclassified as
+    buried."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="exact", name="widget", qualified_name="pkg/widget.py::widget")
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="filepath-only",
+            name="_helper",
+            qualified_name="src/widget/module.py::_helper",
+        )
+    )
+    resolved = resolve_targets(store, ["widget"])
+    assert {e.canonical_id for e in resolved} == {"exact"}
+
+
+def test_gap1_fix_deterministic_across_repeated_calls() -> None:
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-approx",
+            name="approx",
+            qualified_name="src/_pytest/approx.py::approx",
+        )
+    )
+    for i in range(20):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"unrelated-{i}",
+                name=f"helper_{i}",
+                qualified_name=f"src/_pytest/approx.py::helper_{i}",
+            )
+        )
+    runs = [resolve_targets(store, ["approx"]) for _ in range(3)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert ids[0] == ids[1] == ids[2] == ["real-approx"]

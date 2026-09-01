@@ -68,6 +68,29 @@ def _has_boundary_aligned_occurrence(text: str, target: str) -> bool:
         start = idx + 1
 
 
+def _symbol_path(qualified_name: str) -> str:
+    """The portion of `qualified_name` identifying the symbol itself, as
+    opposed to the file/directory path it lives under (GAP-1 fix,
+    "qualified-name file-path substring causes unrelated-symbol seed
+    explosion" -- D13 independent-validation finding). `qualified_name`'s
+    established format across every provider this project has is
+    `<file-path>::<symbol-path>` -- confirmed for `AstCallsAdapter`
+    (`"src/_pytest/approx.py::approx"`) and for SCIP-sourced entities too
+    (`_resolve_one_target`'s own regression test constructs
+    `"pkg/a.py::AdapterA.extract"` as the `qualified_name` for a
+    SCIP-decorated `"AdapterA#extract()."` entity's `name`) -- so the
+    substring after the *last* `"::"` is always the symbol's own path,
+    never a directory/file segment. A `qualified_name` with no `"::"` at
+    all (a bare module/file-level identity with no separate symbol
+    suffix, as several of this module's own pre-existing tests
+    construct) is returned unchanged -- there is no file-path segment to
+    strip from it in that shape, and narrowing it would silently drop
+    real matches the pre-GAP-1 substring/boundary logic already relied
+    on for those entities.
+    """
+    return qualified_name.rpartition("::")[2] if "::" in qualified_name else qualified_name
+
+
 def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
     """Deterministic 3-way classification of how `entity` relates to the
     query's target strings (D9 candidate-prioritization refinement,
@@ -77,26 +100,40 @@ def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
     resolving as a candidate for `"ClassAB"` only because `"Subclassable"`
     happens to literally contain the letters `"classab"` mid-word).
 
-    0 = literal identity: `entity.name` or `entity.qualified_name` is
-        exactly (case-insensitively) equal to one of `targets`.
+    0 = literal identity: `entity.name` or `entity.qualified_name`'s own
+        symbol path (`_symbol_path`) is exactly (case-insensitively)
+        equal to one of `targets`.
     1 = boundary-aligned match: not identity, but at least one target
-        occurs in `entity.name` or `entity.qualified_name` at a boundary
-        (`_has_boundary_aligned_occurrence`) -- includes SCIP-decorated
-        symbols (`"add()."`, `"AdapterA#extract()."`) *and* real word-
-        initial collisions (`"AddHelperVariant0"`, `"InterfaceAB"`,
-        `"TestClass1"`) that HLRD §34 discovery must keep finding.
+        occurs in `entity.name` or `entity.qualified_name`'s symbol path
+        at a boundary (`_has_boundary_aligned_occurrence`) -- includes
+        SCIP-decorated symbols (`"add()."`, `"AdapterA#extract()."`)
+        *and* real word-initial collisions (`"AddHelperVariant0"`,
+        `"InterfaceAB"`, `"TestClass1"`) that HLRD §34 discovery must
+        keep finding.
     2 = incidental/buried: every occurrence of every target in this
-        entity's `name`/`qualified_name` is buried mid-identifier.
+        entity's `name`/`qualified_name` symbol path is buried
+        mid-identifier -- **or occurs only in the file/directory-path
+        segment `qualified_name` carries ahead of its symbol path**
+        (GAP-1: a target that merely names the file a symbol happens to
+        live in, e.g. `"approx"` matching `"src/_pytest/approx.py"` in
+        `"src/_pytest/approx.py::_is_bool"`, is not evidence that symbol
+        relates to the target at all).
+
+    Only the symbol-path portion of `qualified_name` (`_symbol_path`)
+    ever participates in this classification -- the file/directory-path
+    segment, and any `/` separator within it, is never treated as a
+    match or a match boundary, by construction (it is sliced off before
+    any comparison runs, not filtered after the fact).
     """
     name_lower = entity.name.lower()
-    qn_lower = entity.qualified_name.lower()
+    qn_symbol_lower = _symbol_path(entity.qualified_name).lower()
     best = 2
     for target in targets:
-        if name_lower == target or qn_lower == target:
+        if name_lower == target or qn_symbol_lower == target:
             return 0
         if best > 1 and (
             _has_boundary_aligned_occurrence(entity.name, target)
-            or _has_boundary_aligned_occurrence(entity.qualified_name, target)
+            or _has_boundary_aligned_occurrence(_symbol_path(entity.qualified_name), target)
         ):
             best = 1
     return best
@@ -145,8 +182,39 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     retrieval module to learn a specific provider's naming convention,
     exactly the kind of new architectural coupling this refinement must
     not introduce.
+
+    **GAP-1 fix** (D13 independent-validation finding, "qualified-name
+    file-path substring causes unrelated-symbol seed explosion" --
+    real-repository confirmation: `pytest-dev/pytest`'s `approx.py`,
+    where `find_entities(qualified_name="approx")`'s raw substring search
+    matched every symbol in that file, including `_is_bool`/
+    `_recursive_sequence_map`, whose own names have nothing to do with
+    `"approx"` -- and `psf/requests`'s `models.py`, where the same
+    mechanism produced a confident-looking non-empty candidate set for
+    `"models"` even though no symbol literally named `"models"` exists
+    anywhere in the repository). `qualified_name`'s established format
+    across every provider is `<file-path>::<symbol-path>`
+    (`_symbol_path`) -- the `qualified_name` axis's raw substring result
+    is narrowed, immediately after the store lookup, to only the entities
+    where `target` genuinely occurs in that *symbol*-path portion, not
+    merely somewhere in the file/directory-path prefix. This is a
+    distinct axis-narrowing from the exact-match one two paragraphs up
+    (that one prefers a full-string exact match when one exists; this one
+    removes candidates that were never really about the target symbol at
+    all) -- both apply to the same `qualified_name` axis, never to the
+    `name` axis, and neither touches `GraphReader.find_entities` itself.
+    A `qualified_name` with no `"::"` at all keeps today's behavior
+    entirely (`_symbol_path`'s own documented fallback) -- this fix is
+    scoped exactly to the `<file-path>::<symbol-path>` shape it was
+    written for.
     """
-    by_qualified_name = {e.canonical_id: e for e in graph.find_entities(qualified_name=target)}
+    raw_by_qualified_name = graph.find_entities(qualified_name=target)
+    target_lower = target.lower()
+    by_qualified_name = {
+        e.canonical_id: e
+        for e in raw_by_qualified_name
+        if target_lower in _symbol_path(e.qualified_name).lower()
+    }
     exact_qualified_name = {
         canonical_id: entity
         for canonical_id, entity in by_qualified_name.items()
