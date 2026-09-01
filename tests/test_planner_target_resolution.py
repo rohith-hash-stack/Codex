@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from codex.graph.memory_store import InMemoryGraphStore
 from codex.graph.version import GraphVersion
-from codex.ontology.entities import BaseEntityType, RepositorySymbol
+from codex.ontology.entities import BaseEntityType, RepositorySymbol, SourceLocation
 from codex.ontology.relationships import RelationshipType
 from codex.planner.cache import PlanCache
 from codex.planner.models import PlanStatus
@@ -34,6 +34,7 @@ from codex.planner.planner import execute_query, plan_query
 from codex.planner.retrieval import resolve_targets
 from codex.provider.capability import Capability
 from codex.query_understanding.models import CompletenessLevel, Intent, QueryContract
+from codex.resolution.entity_resolver import resolve_entities
 from planner_fixtures import build_graph
 
 
@@ -574,6 +575,152 @@ def test_extreme_collision_full_plan_query_pipeline_keeps_exact_matches() -> Non
     assert "add" in surviving_names
     surviving_exact_ids = {cid for cid in plan.target_entity_ids if cid.startswith("zzz_real_add_")}
     assert len(surviving_exact_ids) == 7
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert package.entities != []
+
+
+# --- Symbol Name Merge Normalization + Finding 2, composed: the exact real
+# `callSite1.py::add()` scenario end to end -----------------------------------
+
+
+def test_name_normalized_add_entity_survives_finding_2_budget_truncation() -> None:
+    """The real `sourcegraph/scip-python` audit's exact scenario, chained
+    through *both* fixes: `AstCallsAdapter`'s bare `add` and `SCIPAdapter`'s
+    decorated `add().` raw entities are first converged through the real,
+    unmodified `codex.resolution.entity_resolver.resolve_entities` (giving
+    the merged entity `name == "add"`, per this directive's fix), then
+    seeded into a graph alongside ~1,930 unrelated substring-colliding
+    decoys and 6 further same-file-shaped-but-different-location `add`-
+    named entities (mirroring the real audit's 7-exact-entity count),
+    and finally resolved through `plan_query`'s real budget truncation
+    (Finding 2, unmodified). Before this directive's fix, the merged
+    entity's `name` would have been `add().` (or `add`, arbitrarily,
+    depending on canonical-id hash order) -- an entity whose bare `name`
+    is deterministically `add` is what Finding 2's exact-match preference
+    needs to keep it inside the 80-node budget, and this proves the whole
+    real chain now delivers that."""
+    ast_add = _entity(
+        canonical_id="raw-ast-add",
+        name="add",
+        qualified_name="src/callSite1.py::add",
+    )
+    ast_add = ast_add.model_copy(
+        update={
+            "source_location": SourceLocation(
+                file_path="src/callSite1.py", start_line=3, end_line=3
+            ),
+            "provider_ids": {"ast_calls": "add"},
+        }
+    )
+    scip_add = _entity(
+        canonical_id="raw-scip-add",
+        name="add().",
+        qualified_name="`mod`/add().",
+    )
+    scip_add = scip_add.model_copy(
+        update={
+            "source_location": SourceLocation(
+                file_path="src/callSite1.py", start_line=3, end_line=3
+            ),
+            "provider_ids": {"scip": "add()."},
+        }
+    )
+    resolved = resolve_entities([ast_add, scip_add])
+    assert len(resolved.entities) == 1
+    merged_add = resolved.entities[0]
+    assert merged_add.name == "add"  # this directive's fix
+
+    store = _store()
+    store.upsert_entity(merged_add)
+    # 6 further real, distinct "add" functions elsewhere (matching the
+    # real audit's other 6 exact matches: 2 other real fixture functions,
+    # 4 vendored typeshed stubs) -- all bare-named, all genuinely distinct.
+    for i in range(6):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"other-real-add-{i}",
+                name="add",
+                qualified_name=f"src/other_{i}.py::add",
+            )
+        )
+    # ~1,930 unrelated substring-colliding decoys (the real vendored-stub-
+    # tree scale), canonical_ids chosen to sort ahead of the real entries.
+    for i in range(1930):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"aaa_decoy_{i:05d}",
+                name=f"AddHelperVariant{i}",
+                qualified_name=f"vendor/stubs/pkg{i}/add_something.pyi",
+            )
+        )
+
+    resolved_targets = resolve_targets(store, ["add"])
+    assert len(resolved_targets) == 1937
+    truncated = resolved_targets[:80]
+    assert merged_add.canonical_id in {e.canonical_id for e in truncated}
+
+
+def test_name_normalized_add_entity_survives_full_plan_query_pipeline() -> None:
+    """Same scenario as above, through the real, unmodified
+    `plan_query`/`execute_query` pipeline (not just `resolve_targets`
+    directly) -- the converged, name-normalized `add` entity's
+    `canonical_id` is present in `plan.target_entity_ids` after budget
+    truncation, `PlanStatus` is `PRUNED` (not `PLAN_UNSUPPORTED`), and
+    `execute_query` returns real, non-empty results built from it."""
+    ast_add = _entity(
+        canonical_id="raw-ast-add", name="add", qualified_name="src/callSite1.py::add"
+    )
+    ast_add = ast_add.model_copy(
+        update={
+            "source_location": SourceLocation(
+                file_path="src/callSite1.py", start_line=3, end_line=3
+            ),
+            "provider_ids": {"ast_calls": "add"},
+        }
+    )
+    scip_add = _entity(canonical_id="raw-scip-add", name="add().", qualified_name="`mod`/add().")
+    scip_add = scip_add.model_copy(
+        update={
+            "source_location": SourceLocation(
+                file_path="src/callSite1.py", start_line=3, end_line=3
+            ),
+            "provider_ids": {"scip": "add()."},
+        }
+    )
+    resolved = resolve_entities([ast_add, scip_add])
+    merged_add = resolved.entities[0]
+    assert merged_add.name == "add"
+
+    result, registry, evidence_store, repository = build_graph(entity_paths=())
+    result.graph_store.upsert_entity(merged_add)
+    for i in range(6):
+        result.graph_store.upsert_entity(
+            _entity(
+                canonical_id=f"other-real-add-{i}",
+                name="add",
+                qualified_name=f"src/other_{i}.py::add",
+            )
+        )
+    for i in range(1930):
+        result.graph_store.upsert_entity(
+            _entity(
+                canonical_id=f"aaa_decoy_{i:05d}",
+                name=f"AddHelperVariant{i}",
+                qualified_name=f"vendor/stubs/pkg{i}/add_something.pyi",
+            )
+        )
+
+    plan = plan_query(
+        query_contract=make_contract(targets=["add"], token_budget=4000),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.status is PlanStatus.PRUNED
+    assert merged_add.canonical_id in plan.target_entity_ids
     package = execute_query(
         plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
     )

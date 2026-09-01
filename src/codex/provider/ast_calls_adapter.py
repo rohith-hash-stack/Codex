@@ -687,6 +687,17 @@ class AstCallsAdapter:
                 base_type=record.base_type,
                 roles=[],
                 source_location=_location(record),
+                # This adapter's own raw name, recorded under its own
+                # provider key (Symbol Identity & Name Normalization
+                # investigation) -- preserved through cross-provider
+                # entity-resolution merges (`codex.resolution.
+                # entity_resolver._merge_pair`'s existing `provider_ids`
+                # dict-union) even on the rare occasion this provider's
+                # own name loses `_choose_symbol_name`'s tie-break, so it
+                # is never silently discarded, only not the one shown as
+                # `RepositorySymbol.name`. Never normalized/stripped --
+                # exactly this provider's own computed value.
+                provider_ids={self.provider_name: name},
             )
             return canonical_id
 

@@ -171,6 +171,94 @@ relative path, a SCIP descriptor path, or this adapter's own `<path>::
 <name>` scheme) so a synthesized id can never coincide with a real
 provider-computed one by accident."""
 
+_SYMBOL_DESCRIPTOR_PUNCTUATION: Final = ("().", "#")
+"""Structural, syntax-shape markers a *decorated* symbol name may carry
+-- never a provider name or identifier. Deliberately generic ("symbol-
+descriptor punctuation"), not "SCIP's syntax": none of `().`/`#` is a
+character Python's own identifier grammar permits, so this is a safe,
+provider-agnostic structural test ("does this string look like a bare
+identifier"), not knowledge of any one provider's naming convention --
+`_choose_symbol_name`'s own docstring explains why this stays a
+structural check, never `if provider == "scip"`."""
+
+
+def _looks_decorated(name: str) -> bool:
+    """Whether `name` carries recognizable symbol-descriptor punctuation
+    (`_SYMBOL_DESCRIPTOR_PUNCTUATION`) rather than reading as a bare
+    identifier. Used only by `_choose_symbol_name`'s undecorated-name
+    preference -- never by matching/convergence, which stays keyed on
+    `(repository_id, repository_revision, base_type, file_path,
+    start_line)` exactly as before, completely unaffected by this."""
+    return any(marker in name for marker in _SYMBOL_DESCRIPTOR_PUNCTUATION)
+
+
+def _choose_symbol_name(base: RepositorySymbol, other: RepositorySymbol) -> str:
+    """Merge-time `name` selection for a converging pair, symbol-level
+    entities only (Symbol Identity & Name Normalization investigation,
+    `docs/architecture-conformance-audit.md` -- the real `sourcegraph/
+    scip-python` audit's `add`/`add().` case).
+
+    `RepositorySymbol.name` is not part of canonical identity (HLRD §18
+    never lists it among the fields "identity may incorporate" -- only
+    `qualified_name`, `source_location`, `provider_ids`, `language`,
+    `entity type` are) and this function never touches `canonical_id`/
+    `qualified_name`/the convergence key itself: those keep the exact
+    `_merge_pair` behavior they already had (`qualified_name` is still
+    `base`'s, via `model_copy`'s untouched default). This only decides
+    which raw provider's *display* string `name` becomes.
+
+    Before this function existed, `name` silently inherited whichever
+    raw entity happened to be `base` -- itself decided by comparing two
+    unrelated SHA-256 `canonical_id` digests (`resolve_entities`'s own
+    stable sort). That comparison is fully deterministic (same inputs,
+    same winner, every run) but was never a *meaningful* rule: measured
+    directly against the real `scip-python` audit's 407 genuine AST/SCIP
+    symbol convergences, the split was 208/199 -- indistinguishable from
+    chance, confirming there was no actual SCIP-favoring (or AST-
+    favoring) design intent behind it, only which hash digest happened
+    to sort first.
+
+    The explicit rule this function applies instead, for symbol-level
+    entities (`FUNCTION`/`METHOD`/`CLASS`) only:
+
+    1. If `base.name == other.name`, nothing to decide -- return it.
+    2. If exactly one of the two raw names is decorated with recognizable
+       symbol-descriptor punctuation (`_looks_decorated`) and the other
+       is not, the *undecorated* one wins -- a bare identifier is a
+       strictly more usable search/display string than one carrying a
+       provider's own internal encoding, and preferring it costs nothing
+       (identity is untouched either way).
+    3. If both are bare, both are decorated, or (a base type outside
+       `FUNCTION`/`METHOD`/`CLASS`, e.g. FILE/DIRECTORY, or a source
+       type mismatch this module's own invariants otherwise rule out)
+       the check cannot confidently distinguish them, the existing
+       deterministic canonical-ID tie-break is preserved exactly:
+       `base`'s name, unchanged from before this function existed. This
+       is not a fallback bug -- for FILE/DIRECTORY convergence (where
+       both providers' names are already expected to agree, per this
+       module's own longstanding assumption) and for genuinely
+       ambiguous symbol cases alike, today's behavior is correct as-is
+       and must not change.
+
+    Never a provider-specific condition (`if provider == "scip"`):
+    `_looks_decorated` is a purely structural test on the string itself,
+    not a lookup of which adapter produced it -- a future provider whose
+    own `name` field happens to carry unrelated punctuation gets the
+    exact same treatment, and a future provider that emits clean bare
+    names benefits automatically, with no code change here.
+    """
+    if base.base_type not in _SYMBOL_LOCATION_BASE_TYPES:
+        return base.name
+    if base.name == other.name:
+        return base.name
+    base_decorated = _looks_decorated(base.name)
+    other_decorated = _looks_decorated(other.name)
+    if base_decorated and not other_decorated:
+        return other.name
+    if other_decorated and not base_decorated:
+        return base.name
+    return base.name
+
 
 class MatchReason(StrEnum):
     """Why two provider-reported entities were merged (directive Phase B §9, §11)."""
@@ -312,9 +400,18 @@ def _merge_pair(base: RepositorySymbol, other: RepositorySymbol) -> RepositorySy
       entity -- see the D5 closure audit, §J -- so this tie-break is
       currently never exercised by real data, only documented for
       determinism).
-    - ``language``/``name``/``qualified_name``: first non-empty/`base`'s
-      value wins; these are expected to already agree when entities
+    - ``language``/``qualified_name``: first non-empty/`base`'s value
+      wins, exactly as always -- untouched by this function's `name`
+      change below; these are expected to already agree when entities
       converge (they're part of, or derived from, the same identity key).
+    - ``name``: `base`'s value wins **except** for symbol-level entities
+      (`FUNCTION`/`METHOD`/`CLASS`) where exactly one raw name is bare
+      and the other carries recognizable symbol-descriptor punctuation
+      (`_choose_symbol_name`) -- the bare one wins instead, regardless of
+      which side is `base`. `canonical_id`/`qualified_name`/the
+      convergence key are never touched by this: `name` is not part of
+      canonical identity (HLRD §18) and this is a pure display/search-
+      string choice. FILE/DIRECTORY `name` selection is unaffected.
     """
     merged_roles = list(base.roles)
     for role in other.roles:
@@ -339,6 +436,7 @@ def _merge_pair(base: RepositorySymbol, other: RepositorySymbol) -> RepositorySy
             "lifecycle_status": lifecycle,
             "source_location": source_location,
             "language": base.language or other.language,
+            "name": _choose_symbol_name(base, other),
         }
     )
 

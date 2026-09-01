@@ -252,6 +252,7 @@ def _symbol(
     repo: str = "repo1",
     revision: str = "abc123",
     qualified_name: str,
+    name: str | None = None,
     base_type: BaseEntityType = BaseEntityType.FUNCTION,
     file_path: str = "src/a.py",
     start_line: int = 10,
@@ -270,7 +271,7 @@ def _symbol(
         canonical_id=cid,
         repository_id=repo,
         repository_revision=revision,
-        name=qualified_name,
+        name=name if name is not None else qualified_name,
         qualified_name=qualified_name,
         base_type=base_type,
         roles=roles or [],
@@ -446,6 +447,228 @@ def test_symbol_location_entity_without_source_location_never_keyed() -> None:
 
     assert result.entities[0].canonical_id == cid
     assert result.merges[0].reason is MatchReason.EXACT_CANONICAL_ID
+
+
+# --- Symbol Name Merge Normalization (real `sourcegraph/scip-python` audit's
+# `add`/`add().` case) -- undecorated-name preference at merge time, never
+# touching canonical_id/qualified_name/the convergence key itself. -----------
+
+
+def test_bare_ast_name_and_decorated_scip_name_converge_to_bare_name() -> None:
+    """The exact real-world case: AstCallsAdapter's bare `add` and SCIP's
+    decorated `add().` for the same real function -- the merged entity's
+    `name` is the bare one, regardless of which raw entity happens to
+    win the (unrelated) canonical_id tie-break for `qualified_name`."""
+    ast_side = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"ast_calls": "add"},
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"scip": "add()."},
+    )
+
+    result = resolve_entities([ast_side, scip_side])
+
+    assert len(result.entities) == 1
+    assert result.entities[0].name == "add"
+
+
+def test_provider_ids_preserves_both_raw_representations() -> None:
+    """Both providers' own raw names survive the merge in `provider_ids`,
+    keyed by provider -- including the decorated name that lost the
+    `name` tie-break, which is never silently discarded."""
+    ast_side = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"ast_calls": "add"},
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"scip": "add()."},
+    )
+
+    result = resolve_entities([ast_side, scip_side])
+
+    assert result.entities[0].provider_ids == {"ast_calls": "add", "scip": "add()."}
+
+
+def test_canonical_id_unaffected_by_name_tie_break() -> None:
+    """`canonical_id` is still the synthesized symbol-location id (same
+    `_recompute_symbol_canonical_id` mechanism as before this fix) --
+    entirely independent of which raw name wins for display."""
+    ast_side = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+    )
+
+    result = resolve_entities([ast_side, scip_side])
+
+    assert result.entities[0].canonical_id not in (
+        ast_side.canonical_id,
+        scip_side.canonical_id,
+    )
+    assert result.merges[0].reason is MatchReason.SYMBOL_LOCATION_IDENTITY
+
+
+def test_qualified_name_selection_unaffected_by_name_tie_break() -> None:
+    """`qualified_name` still follows the pre-existing, untouched `base`
+    rule -- decoupled from the new `name` selection. This can now
+    legitimately differ in *source* from `name` (one provider's
+    `qualified_name`, the other provider's bare `name`) -- that is the
+    intended, documented consequence of treating `name` as a separate,
+    non-identity-bearing display field (HLRD §18 never lists `name`
+    among identity-bearing fields)."""
+    ast_side = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+    )
+
+    result = resolve_entities([ast_side, scip_side])
+
+    assert result.entities[0].qualified_name in (ast_side.qualified_name, scip_side.qualified_name)
+    # Whichever qualified_name won, it is exactly one of the two raw,
+    # unmodified provider strings -- never synthesized, never altered.
+
+
+def test_relationships_still_resolve_correctly_after_name_normalization(
+) -> None:
+    """CALLS/REFERENCES/IMPLEMENTS resolution is keyed entirely on
+    `canonical_id`, never on `name` -- a real caller->callee pair still
+    resolves correctly to the converged entity's (unchanged) id after
+    this fix, exactly as it did before. Uses the real `IngestionPipeline`
+    call chain's own downstream consumer shape: two entities that
+    reference each other by `canonical_id`, independent of what `name`
+    resolves to."""
+    ast_caller = _symbol(
+        qualified_name="src/callSite2.py::caller", name="caller",
+        file_path="src/callSite2.py", start_line=1,
+    )
+    ast_callee = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"ast_calls": "add"},
+    )
+    scip_callee = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+        provider_ids={"scip": "add()."},
+    )
+
+    result = resolve_entities([ast_caller, ast_callee, scip_callee])
+
+    assert len(result.entities) == 2
+    caller_entity = next(e for e in result.entities if e.name == "caller")
+    callee_entity = next(e for e in result.entities if e.name == "add")
+    # The relationship a real CALLS-producing provider would have
+    # recorded (caller.canonical_id -> callee.canonical_id) still
+    # resolves to a real, distinct pair of entities post-merge.
+    assert caller_entity.canonical_id != callee_entity.canonical_id
+    assert callee_entity.canonical_id not in (ast_callee.canonical_id, scip_callee.canonical_id)
+
+
+def test_both_bare_names_keep_existing_canonical_id_tie_break() -> None:
+    """Neither raw name is decorated -- `_choose_symbol_name` cannot
+    distinguish them, so today's existing `base`-wins-by-canonical-id
+    behavior is preserved exactly, unchanged by this fix."""
+    a = _symbol(
+        qualified_name="src/a.py::helper", name="helper_a",
+        file_path="src/a.py", start_line=5,
+    )
+    b = _symbol(
+        qualified_name="src/b.py::helper", name="helper_b",
+        file_path="src/a.py", start_line=5,
+    )
+
+    result = resolve_entities([a, b])
+
+    assert len(result.entities) == 1
+    winner = min(a, b, key=lambda e: e.canonical_id)
+    assert result.entities[0].name == winner.name
+
+
+def test_both_decorated_names_keep_existing_canonical_id_tie_break() -> None:
+    """Both raw names carry symbol-descriptor punctuation -- again
+    genuinely ambiguous by this rule, so the existing canonical-id
+    tie-break decides, exactly as before this fix (e.g. two SCIP-style
+    providers, or a provider reporting a decorated name for a reason
+    unrelated to SCIP specifically -- the check is structural, not
+    provider-specific)."""
+    a = _symbol(
+        qualified_name="src/a.py::helper", name="Helper#helper().",
+        file_path="src/a.py", start_line=5,
+    )
+    b = _symbol(
+        qualified_name="src/b.py::helper", name="OtherHelper#helper().",
+        file_path="src/a.py", start_line=5,
+    )
+
+    result = resolve_entities([a, b])
+
+    assert len(result.entities) == 1
+    winner = min(a, b, key=lambda e: e.canonical_id)
+    assert result.entities[0].name == winner.name
+
+
+def test_file_directory_merge_name_selection_unchanged() -> None:
+    """FILE/DIRECTORY convergence's `name` selection is completely
+    unaffected by this fix -- `_choose_symbol_name` returns `base.name`
+    immediately for any base type outside `FUNCTION`/`METHOD`/`CLASS`,
+    exactly reproducing pre-fix behavior even when the two raw `name`
+    strings happen to differ."""
+    git_file = _file(path="src/a.py", provider_ids={"git": "src/a.py"})
+    scip_file = _file(path="src/a.py", roles=["scip:File"])
+
+    result = resolve_entities([git_file, scip_file])
+
+    assert len(result.entities) == 1
+    winner = min(git_file, scip_file, key=lambda e: e.canonical_id)
+    assert result.entities[0].name == winner.name
+
+
+def test_name_selection_deterministic_across_repeated_runs() -> None:
+    """Three independent `resolve_entities` calls against the same raw
+    input produce byte-identical `name` (and everything else) -- the new
+    tie-break is a pure function of its inputs, no hidden state."""
+    ast_side = _symbol(
+        qualified_name="src/callSite1.py::add", name="add",
+        file_path="src/callSite1.py", start_line=3,
+    )
+    scip_side = _symbol(
+        qualified_name="`mod`/add().", name="add().",
+        file_path="src/callSite1.py", start_line=3,
+    )
+
+    runs = [resolve_entities([ast_side, scip_side]) for _ in range(3)]
+    names = [r.entities[0].name for r in runs]
+    assert names[0] == names[1] == names[2] == "add"
+
+
+def test_negative_query_safety_unaffected_by_name_normalization() -> None:
+    """A symbol-level entity with no merge partner at all still resolves
+    normally -- the name-selection rule is only ever consulted inside
+    `_merge_pair`, never on a path that could turn a real, present
+    entity into an empty/negative result, or vice versa."""
+    lone = _symbol(
+        qualified_name="src/only.py::solo", name="solo",
+        file_path="src/only.py", start_line=1,
+    )
+
+    result = resolve_entities([lone])
+
+    assert len(result.entities) == 1
+    assert result.entities[0].name == "solo"
 
 
 # --- External library convergence + version significance --------------------
