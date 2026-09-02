@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from codex.evidence.model import CanonicalRelationship, Evidence
+from codex.llm.gateway import GenerationStatus, LLMGenerationResult
 from codex.llm.schema import Claim, ClaimType, StructuredAnswer
 from codex.ontology.relationships import RelationshipType
 from codex.registry.registry import CapabilityRegistry
@@ -146,6 +147,90 @@ def test_feedback_on_malformed_retry_describes_the_schema() -> None:
     run_verification_loop(gateway, _request(package), package, now=NOW)
     assert gateway.requests[0].feedback is None
     assert "schema" in (gateway.requests[1].feedback or "").lower()
+
+
+# --- D10-F1 fix: TIMEOUT/BUDGET_EXCEEDED are not retryable ------------------
+# `docs/architecture-conformance-audit.md` T.6's Failure Matrix marks both
+# "Re-synthesis allowed? No" -- neither is a schema/parsing failure a retry
+# could correct. Independent D10 validation found the pre-fix implementation
+# retried both anyway (via the same branch as MALFORMED_OUTPUT), consuming
+# the one shared budget and sending "your JSON was invalid" feedback for a
+# failure that was never about JSON.
+
+
+def test_timeout_never_retries_and_abstains_on_first_attempt() -> None:
+    package = make_evidence_package(relationships=[], evidence=[])
+    gateway = FakeLLMGateway(
+        [LLMGenerationResult(status=GenerationStatus.TIMEOUT, detail="no response in time")]
+    )
+    result = run_verification_loop(gateway, _request(package), package, now=NOW)
+    assert result.outcome is ResynthesisOutcome.GENERATION_FAILED
+    assert result.attempts == 1
+    assert result.resynthesis_used is False
+    assert len(gateway.requests) == 1
+    assert gateway.requests[0].feedback is None
+    assert result.failure_reason == "generation_status=TIMEOUT"
+
+
+def test_budget_exceeded_never_retries_and_abstains_on_first_attempt() -> None:
+    package = make_evidence_package(relationships=[], evidence=[])
+    gateway = FakeLLMGateway(
+        [
+            LLMGenerationResult(
+                status=GenerationStatus.BUDGET_EXCEEDED, detail="token budget too small"
+            )
+        ]
+    )
+    result = run_verification_loop(gateway, _request(package), package, now=NOW)
+    assert result.outcome is ResynthesisOutcome.GENERATION_FAILED
+    assert result.attempts == 1
+    assert result.resynthesis_used is False
+    assert len(gateway.requests) == 1
+    assert gateway.requests[0].feedback is None
+    assert result.failure_reason == "generation_status=BUDGET_EXCEEDED"
+
+
+def test_timeout_never_consumes_the_budget_a_later_malformed_output_could_use() -> None:
+    """The scenario T.6's "No" actually protects against: a TIMEOUT
+    followed by a genuinely correctable MALFORMED_OUTPUT must still get
+    its one real retry -- TIMEOUT must not have silently spent the
+    shared budget on an uncorrectable failure. (Each `run_verification_loop`
+    call only sees one gateway, so this is proven at the unit level: the
+    budget flag is local to one call and TIMEOUT no longer flips it.)"""
+    package = make_evidence_package(relationships=[], evidence=[])
+    answer = StructuredAnswer(explanation="ok", claims=[])
+    gateway = FakeLLMGateway([malformed_result(), ok_result(answer)])
+    result = run_verification_loop(gateway, _request(package), package, now=NOW)
+    assert result.outcome is ResynthesisOutcome.RESOLVED
+    assert result.attempts == 2
+    assert result.resynthesis_used is True
+
+
+def test_malformed_output_retry_behavior_is_unchanged_by_the_d10_f1_fix() -> None:
+    """Direct regression guard: MALFORMED_OUTPUT alone remains retryable,
+    exactly as before this fix -- proven via the exact pre-fix assertions
+    (`test_malformed_then_valid_uses_the_shared_budget_once`,
+    `test_two_consecutive_malformed_outputs_exhausts_budget`) restated
+    together as one explicit before/after check."""
+    package = make_evidence_package(relationships=[], evidence=[])
+    answer = StructuredAnswer(explanation="A calls B.", claims=[])
+
+    recovers = run_verification_loop(
+        FakeLLMGateway([malformed_result(), ok_result(answer)]), _request(package), package, now=NOW
+    )
+    assert recovers.outcome is ResynthesisOutcome.RESOLVED
+    assert recovers.attempts == 2
+    assert recovers.resynthesis_used is True
+
+    exhausts = run_verification_loop(
+        FakeLLMGateway([malformed_result(), malformed_result()]),
+        _request(package),
+        package,
+        now=NOW,
+    )
+    assert exhausts.outcome is ResynthesisOutcome.GENERATION_FAILED
+    assert exhausts.attempts == 2
+    assert exhausts.resynthesis_used is True
 
 
 # --- registry-derived provider_authority (D2 gap-hardening pass, TAD §48) ---

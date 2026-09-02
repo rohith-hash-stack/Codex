@@ -6,6 +6,14 @@ Decision 2, explicitly approved): malformed/invalid structured output
 counter, never two independent budgets. Once spent, the loop returns
 whatever it has -- no further LLM generation, no recursive/unbounded
 retry, no third attempt.
+
+**Only `GenerationStatus.MALFORMED_OUTPUT` is retryable** (D10-F1 fix,
+independent-validation finding): `docs/architecture-conformance-audit.md`
+T.6's Failure Matrix explicitly marks `TIMEOUT` and `BUDGET_EXCEEDED` as
+"Re-synthesis allowed? No" -- neither is a schema/parsing problem a
+retry could correct, and both terminate on the first attempt without
+consuming the shared budget or sending `_MALFORMED_FEEDBACK` (text
+about invalid JSON, which would be misleading for either failure).
 """
 
 from __future__ import annotations
@@ -103,7 +111,16 @@ def run_verification_loop(
         generation = gateway.generate(current_request)
 
         if generation.status is not GenerationStatus.OK or generation.answer is None:
-            if resynthesis_available:
+            # D10-F1 fix: only a schema/parsing failure is "correctable" by
+            # asking the model to try again -- TIMEOUT and BUDGET_EXCEEDED
+            # are infrastructure/resource failures a retry cannot fix, and
+            # `docs/architecture-conformance-audit.md` T.6's Failure Matrix
+            # explicitly says neither may consume re-synthesis ("Re-synthesis
+            # allowed? No" for both). Retrying them wasted the one shared
+            # attempt on an uncorrectable failure and sent `_MALFORMED_FEEDBACK`
+            # ("your JSON was invalid") for a failure that was never about
+            # JSON at all.
+            if generation.status is GenerationStatus.MALFORMED_OUTPUT and resynthesis_available:
                 resynthesis_available = False
                 current_request = current_request.model_copy(
                     update={"feedback": _MALFORMED_FEEDBACK}
