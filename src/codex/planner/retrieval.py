@@ -127,6 +127,50 @@ def _symbol_path(qualified_name: str) -> str:
     return qualified_name
 
 
+def _bare_scip_symbol(symbol_path: str) -> str:
+    """Strip exactly one trailing SCIP descriptor terminator from an
+    already-lowercased `_symbol_path` result (or raw `RepositorySymbol.
+    name`), for tier-0 exact-identity comparison only (GAP-8 fix, first
+    post-freeze improvement cycle: "SCIP descriptor decoration prevents
+    bare-name tier-0 matching").
+
+    SCIP's own descriptor grammar (confirmed against the complete real
+    `django/django` SCIP index, 65,033 entities -- the same investigation
+    `_symbol_path`'s own docstring cites for the GAP-6 fix) always
+    terminates a type/class descriptor with a trailing `"#"`, and a
+    term/method descriptor with a trailing `"."` (preceded by `"()"` for
+    a method, bare for a variable/module-level term) -- never both,
+    never anywhere but the very end. `AstCallsAdapter`'s bare Python
+    identifiers (`_symbol_path`'s `"::"`-split shape) and the "no shape
+    matched" fallback never end in either character -- no valid Python
+    identifier can -- so this is a safe, purely structural strip with no
+    need to first ask which provider reported the entity, and it is a
+    no-op (returns its input unchanged) for every non-SCIP shape.
+
+    Strips **exactly one** trailing terminator, never walks further into
+    the string: a top-level class descriptor `"command#"` becomes
+    `"command"` (now matches a bare `"command"` target), but
+    `"command#help."` (the `help` attribute *of* a `Command` class)
+    becomes only `"command#help"` -- still not equal to a bare
+    `"command"` target, and correctly so, since it names a different
+    symbol (an attribute), not the class itself. A nested descriptor
+    chain (`"outer#inner_test().nested#"`) is likewise left with its
+    inner `"#"`/`"()."` intact, so it can never collide with a bare
+    top-level target either.
+
+    Comparison-only: never mutates a stored entity's own `name`/
+    `qualified_name`/`canonical_id`, never used for ranking, and called
+    only from `_match_tier`'s tier-0 check below.
+    """
+    if symbol_path.endswith("#"):
+        return symbol_path[:-1]
+    if symbol_path.endswith("()."):
+        return symbol_path[:-3]
+    if symbol_path.endswith("."):
+        return symbol_path[:-1]
+    return symbol_path
+
+
 def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
     """Deterministic 3-way classification of how `entity` relates to the
     query's target strings (D9 candidate-prioritization refinement,
@@ -138,7 +182,12 @@ def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
 
     0 = literal identity: `entity.name` or `entity.qualified_name`'s own
         symbol path (`_symbol_path`) is exactly (case-insensitively)
-        equal to one of `targets`.
+        equal to one of `targets` -- **or becomes equal after stripping
+        exactly one trailing SCIP descriptor terminator**
+        (`_bare_scip_symbol`, GAP-8 fix): a SCIP class entity whose own
+        `name`/symbol-path is literally `"Storage#"` now reaches tier 0
+        for a bare `"Storage"` query, exactly as an `AstCallsAdapter`
+        entity's already-bare name always did.
     1 = boundary-aligned match: not identity, but at least one target
         occurs in `entity.name` or `entity.qualified_name`'s symbol path
         at a boundary (`_has_boundary_aligned_occurrence`) -- includes
@@ -163,9 +212,16 @@ def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
     """
     name_lower = entity.name.lower()
     qn_symbol_lower = _symbol_path(entity.qualified_name).lower()
+    bare_name_lower = _bare_scip_symbol(name_lower)
+    bare_qn_symbol_lower = _bare_scip_symbol(qn_symbol_lower)
     best = 2
     for target in targets:
-        if name_lower == target or qn_symbol_lower == target:
+        if (
+            name_lower == target
+            or qn_symbol_lower == target
+            or bare_name_lower == target
+            or bare_qn_symbol_lower == target
+        ):
             return 0
         if best > 1 and (
             _has_boundary_aligned_occurrence(entity.name, target)
@@ -285,11 +341,18 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     # entity IMPLEMENTS queries resolve is SCIP-only (`AstCallsAdapter`
     # never emits class-level entities) and therefore *always* carries
     # SCIP's own `#` class-descriptor suffix (`"ClassAB#"`, never bare
-    # `"ClassAB"`) -- a byte-exact tier-0 match essentially never exists
-    # for these queries at all, only tier-1 ones. Gating on tier-0-only
-    # would make this refinement inert for the exact real-world case it
-    # was written for; gating on "not buried" fixes that without changing
-    # what counts as buried.
+    # `"ClassAB"`) -- at the time this refinement was written, a byte-exact
+    # tier-0 match essentially never existed for these queries at all, only
+    # tier-1 ones (the GAP-8 fix, `_bare_scip_symbol`, later taught
+    # `_match_tier` to treat a *clean, single-segment* decorated symbol
+    # like `"ClassAB#"` as tier-0 too -- a nested or attribute-suffixed
+    # descriptor like `"ClassAB#help."` still only reaches tier-1 here,
+    # so this gate's own "tier 0 or 1, not tier-0-only" reasoning remains
+    # necessary and correct, just less load-bearing for the single-segment
+    # case than it was before that fix). Gating on tier-0-only would make
+    # this refinement inert for the exact real-world case it was written
+    # for; gating on "not buried" fixes that without changing what counts
+    # as buried.
     target_set = {target.lower()}
     if any(_match_tier(entity, target_set) <= 1 for entity in combined.values()):
         combined = {
@@ -336,6 +399,25 @@ def resolve_targets(graph: GraphReader, targets: list[str]) -> list[RepositorySy
     to match a bare query target ("add") here either -- doing so would
     require this provider-agnostic module to learn SCIP's own naming
     convention, out of scope for this refinement.
+
+    **GAP-8 fix** (first post-freeze improvement cycle: "SCIP descriptor
+    decoration prevents bare-name tier-0 matching and can cause relevant
+    IMPLEMENTS candidates to be lost during the fixed 80-node
+    truncation"): the refusal above was correct for this sort key as
+    first written, but this sort key is now the literal `_match_tier`
+    classification (see "Candidate prioritization" below) -- and
+    `_match_tier` itself now *does* recognize a SCIP-decorated symbol as
+    tier-0-identical to its bare form (`_bare_scip_symbol`, one trailing
+    `"#"`/`"()."`/`"."` terminator stripped, comparison-only). This
+    narrows, not reverses, the earlier refusal: no field is renamed or
+    added to `RepositorySymbol`, no alias/normalization table is
+    introduced, and `_resolve_one_target`'s own separate `qualified_name`-
+    axis exact/substring split (the raw `find_entities()` lookup two
+    paragraphs above) is completely untouched -- only `_match_tier`'s own
+    equality check gained a second, decoration-tolerant comparison,
+    scoped to real SCIP-shaped descriptor strings only (never an
+    `AstCallsAdapter` `<file>::<symbol>` shape, whose bare Python
+    identifiers never end in a SCIP terminator to begin with).
 
     **Candidate prioritization / buried-match narrowing** (D9 refinement,
     post-Finding-3 external-repository readiness audit's "candidate-
