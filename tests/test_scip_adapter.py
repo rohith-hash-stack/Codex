@@ -1096,3 +1096,191 @@ def test_gap10_deterministic_repeated_resolution() -> None:
     first = _resolve_symbol(object_symbol, **kwargs)
     second = _resolve_symbol(object_symbol, **kwargs)
     assert first == second
+
+
+# ---------------------------------------------------------------------------
+# GAP-12 fix: module-identity `:` (Meta) descriptor symbols, previously
+# silently dropped by `infer_base_type`'s descriptor-suffix fallback
+# ---------------------------------------------------------------------------
+#
+# Confirmed root cause: `:` is `scip.proto`'s own `Descriptor.Suffix.Meta`
+# punctuation -- a real, documented SCIP descriptor kind, not malformed
+# data. scip-python emits exactly one such symbol per source file, always
+# shaped `<dotted-module>/__init__:` -- the module's own self-identity,
+# distinct from its FILE entity and from any class/function/variable
+# defined inside it. `infer_base_type` never enumerated this suffix, so
+# every such symbol resolved to `None` -> no entity -> every reference to
+# it silently discarded (confirmed: 31,411 real occurrences lost across 5
+# repositories, `docs/python-fidelity-gap-register.md`).
+
+
+def _module_identity_reference_index() -> bytes:
+    """`pkg/a.py` defines `Helper#` and, via a plain (non-Definition)
+    Occurrence, references `pkg/b.py`'s own module identity -- the real
+    GAP-12 shape: `pkg.b`'s `__init__:` symbol has a Definition Occurrence
+    and SymbolInformation in `pkg/b.py` itself, and is *also* referenced
+    from `pkg/a.py` (e.g. `import pkg.b`)."""
+    module_b_symbol = "scip-python python testrepo rev1 `pkg.b`/__init__:"
+    helper_symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#"
+
+    module_b_def = occurrence(module_b_symbol, roles=1, range_=(0, 0, 0))
+    module_b_sym_info = symbol_information(module_b_symbol, kind=0)
+    doc_b = document("pkg/b.py", occurrences=(module_b_def,), symbols=(module_b_sym_info,))
+
+    helper_def = occurrence(helper_symbol, roles=1, range_=(0, 0, 6))
+    helper_sym_info = symbol_information(helper_symbol, kind=7)
+    module_b_reference = occurrence(module_b_symbol, roles=0, range_=(1, 0, 5))
+    doc_a = document(
+        "pkg/a.py",
+        occurrences=(helper_def, module_b_reference),
+        symbols=(helper_sym_info,),
+    )
+    return scip_index(documents=(doc_a, doc_b))
+
+
+def test_gap12_module_identity_symbol_recovers_as_module_entity(tmp_path: Path) -> None:
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_module_identity_reference_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.b`/__init__:"]
+    assert len(matches) == 1
+    entity = matches[0]
+    assert entity.base_type is BaseEntityType.MODULE
+    assert entity.base_type is not BaseEntityType.FILE
+
+
+def test_gap12_module_identity_reference_evidence_preserved(tmp_path: Path) -> None:
+    """The real fact this gap is about -- `pkg.a` references `pkg.b`'s
+    own module identity -- must be preserved, not silently discarded."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_module_identity_reference_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    module_entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.b`/__init__:")
+    references = [
+        e
+        for e in normalized.evidence
+        if e.predicate is RelationshipType.REFERENCES and e.object == module_entity.canonical_id
+    ]
+    assert len(references) == 1
+
+
+def test_gap12_recovered_entity_gets_its_own_deterministic_canonical_id() -> None:
+    from codex.provider.scip_adapter import _resolve_symbol
+
+    symbol = "scip-python python testrepo rev1 `pkg.b`/__init__:"
+    kwargs = dict(
+        repository_id="repo1",
+        revision="rev1",
+        locally_defined=frozenset({symbol}),
+        kind_by_symbol={},
+        indexed_relative_paths=frozenset(),
+    )
+    first = _resolve_symbol(symbol, **kwargs)
+    second = _resolve_symbol(symbol, **kwargs)
+    assert first is not None
+    assert first.base_type is BaseEntityType.MODULE
+    assert first == second
+
+
+def test_gap12_distinct_module_identities_do_not_collapse() -> None:
+    """Two different real modules' own `__init__:` symbols must resolve
+    to two different canonical IDs -- never collapse onto one shared
+    identity the way pre-GAP-9/10 same-repo phantoms once did."""
+    from codex.provider.scip_adapter import _resolve_symbol
+
+    symbol_a = "scip-python python testrepo rev1 `pkg.a`/__init__:"
+    symbol_b = "scip-python python testrepo rev1 `pkg.b`/__init__:"
+    kwargs = dict(
+        repository_id="repo1",
+        revision="rev1",
+        locally_defined=frozenset({symbol_a, symbol_b}),
+        kind_by_symbol={},
+        indexed_relative_paths=frozenset(),
+    )
+    resolved_a = _resolve_symbol(symbol_a, **kwargs)
+    resolved_b = _resolve_symbol(symbol_b, **kwargs)
+    assert resolved_a is not None
+    assert resolved_b is not None
+    assert resolved_a.canonical_id != resolved_b.canonical_id
+
+
+def test_gap12_module_identity_symbol_becomes_a_candidate(tmp_path: Path) -> None:
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_module_identity_reference_index())
+    registry = CapabilityRegistry()
+    registry.register(SCIPAdapter(), ProviderScoreProfile(evidence_quality=0.9, cost_factor=0.9))
+    pipeline = IngestionPipeline(registry, InMemoryEvidenceStore())
+    result = pipeline.run(make_repository(tmp_path))
+
+    from codex.planner.retrieval import resolve_targets
+
+    candidates = resolve_targets(result.graph_store, ["__init__"])
+    module_candidates = [c for c in candidates if c.base_type is BaseEntityType.MODULE]
+    assert len(module_candidates) == 1
+    assert module_candidates[0].qualified_name == "`pkg.b`/__init__:"
+
+
+def test_gap12_genuinely_external_module_identity_still_external_library(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: a module-identity symbol from a genuinely
+    external package (own version, not this ingestion's revision) is
+    unaffected by this fix -- still resolves as EXTERNAL_LIBRARY, never
+    fabricated as a local MODULE entity."""
+    external_module_symbol = "scip-python python otherpkg 2.0.0 `otherpkg.sub`/__init__:"
+    referencing_symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#"
+    helper_def = occurrence(referencing_symbol, roles=1, range_=(0, 0, 6))
+    helper_sym_info = symbol_information(referencing_symbol, kind=7)
+    external_reference = occurrence(external_module_symbol, roles=0, range_=(1, 0, 5))
+    doc = document(
+        "pkg/a.py",
+        occurrences=(helper_def, external_reference),
+        symbols=(helper_sym_info,),
+    )
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`otherpkg.sub`/__init__:"]
+    assert matches == []
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "python:otherpkg@2.0.0"
+
+
+def test_gap12_existing_file_class_method_variable_descriptors_unchanged() -> None:
+    """This fix adds exactly one new branch (`:` -> MODULE) to
+    `infer_base_type`'s descriptor-suffix fallback -- every other
+    suffix's classification must be byte-identical to before."""
+    from codex.provider.scip.mapping import infer_base_type
+
+    assert (
+        infer_base_type(kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/Foo#")
+        == BaseEntityType.CLASS
+    )
+    assert (
+        infer_base_type(kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/Foo#bar().")
+        == BaseEntityType.METHOD
+    )
+    assert (
+        infer_base_type(kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/bar().")
+        == BaseEntityType.FUNCTION
+    )
+    assert (
+        infer_base_type(kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/Foo#field.")
+        == BaseEntityType.VARIABLE
+    )
+    assert (
+        infer_base_type(kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/") == BaseEntityType.FILE
+    )
+    assert (
+        infer_base_type(
+            kind=0, symbol="scip-ts npm p 1.0.0 src/`a.ts`/Foo#`<constructor>`().(message)"
+        )
+        is None
+    )
