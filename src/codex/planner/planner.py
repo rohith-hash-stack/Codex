@@ -22,6 +22,7 @@ from codex.coverage.engine import (
     classify_capability_coverage,
     evaluate_negative_query_coverage,
 )
+from codex.evidence.model import CanonicalRelationship
 from codex.evidence.store import EvidenceStore
 from codex.graph.store import GraphReader
 from codex.graph.version import GraphVersion
@@ -98,6 +99,59 @@ class GraphVersionMismatchError(ValueError):
     refuses rather than silently reading a different snapshot -- "no
     livelock" (TAD §55) means failing fast and deterministically, not
     retrying or blocking."""
+
+
+def _prioritize_relationship_types_by_evidence(
+    relationship_types: list[RelationshipType],
+    observed_relationships: list[CanonicalRelationship],
+) -> list[RelationshipType]:
+    """GAP-11 fix: when the truncation step below has to narrow an
+    over-budget query down to a single relationship type, choose the
+    type with real evidence in the traversal already computed -- not
+    blindly `relationship_types[0]` (`_relationship_types_for_intent`'s
+    own alphabetical `sorted(types, key=lambda t: t.value)`, an
+    incidental artifact of that function's determinism requirement, never
+    intended as a relevance ordering).
+
+    Root cause (Python fidelity audit, `docs/python-fidelity-gap-
+    register.md`): real `scip-python` output *never* sets the SCIP
+    `Import` occurrence-role bit (confirmed: 0 of 972,111 real
+    occurrences across 5 repositories), so `RelationshipType.IMPORTS` is
+    permanently empty for Python repositories -- and `"IMPORTS" <
+    "REFERENCES"` alphabetically, so `FIND_REFERENCES` queries
+    deterministically kept the one type guaranteed to have zero results
+    (measured: django `QuerySet` 38->0, click `Command` 95->0). The same
+    class of bug latently affects every other multi-relationship-type
+    intent (`FIND_CALLERS`, `TRACE_EXECUTION`, `FIND_TESTS`,
+    `FIND_IMPACT`, `ARCHITECTURE_ANALYSIS`) -- today's alphabetical order
+    merely happens to put a populated type first for those, an
+    incidental accident of spelling, not a designed guarantee.
+
+    Stable-partitions by "has any real evidence in the already-computed
+    traversal" (a type with 1 edge and a type with 100 edges are treated
+    alike -- both simply "has evidence"): every type with at least one
+    observed edge keeps its original relative order and sorts ahead of
+    every type with zero observed edges, which also keeps its own
+    original relative order. This is deliberately **not** a full sort by
+    raw edge count -- an earlier draft of this fix did that and broke
+    `FIND_CALLERS` on real data (pytest `What calls approx?`: `CALLS` has
+    13 real edges in the traversal, `REFERENCES` has 82; ranking by
+    magnitude alone would silently swap a "what *calls* X" answer for a
+    generic-reference one, exactly the kind of relevance regression
+    `bounded_traversal`'s own docstring already warns `REFERENCES` risks
+    when treated as more than supplementary context). Preserving relative
+    order within each evidence bucket keeps every intent's *existing*
+    prioritization among types that both have real data (`_relationship_
+    types_for_intent`'s alphabetical order remains the tie-break there,
+    unchanged) -- this fix only demotes a type once it is *provably*
+    contributing nothing, which is the one and only failure mode GAP-11
+    actually is. Uses only the traversal result `bounded_traversal`
+    already produced this call -- no extra graph query, no redesign of
+    traversal or budget logic, no per-language/per-repository
+    special-casing.
+    """
+    has_evidence: set[RelationshipType] = {rel.predicate for rel in observed_relationships}
+    return sorted(relationship_types, key=lambda t: t not in has_evidence)
 
 
 def plan_query(
@@ -235,7 +289,9 @@ def plan_query(
                 key=key,
             )
         if len(effective_relationship_types) > 1:
-            effective_relationship_types = effective_relationship_types[:1]
+            effective_relationship_types = _prioritize_relationship_types_by_evidence(
+                effective_relationship_types, traversal.relationships
+            )[:1]
             pruning_steps.append("remove optional relationship types")
             traversal = bounded_traversal(
                 graph,
