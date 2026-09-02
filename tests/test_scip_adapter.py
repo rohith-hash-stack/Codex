@@ -1636,3 +1636,494 @@ def test_gap13_gap12_module_identity_unchanged(tmp_path: Path) -> None:
     entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/__init__:")
     assert entity.base_type is BaseEntityType.MODULE
     assert "scip:redefinition-family" not in entity.roles
+
+
+# ---------------------------------------------------------------------------
+# GAP-14 fix: `_redefinition_family_locations` now anchors on the earliest
+# *Definition-role* occurrence, not unconditionally on the earliest
+# occurrence of any role.
+#
+# Confirmed root cause (real django/click/pytest/requests data,
+# `docs/python-fidelity-gap-register.md`): a same-file `ReadAccess`
+# reference to a redefined symbol can legally appear *before* that
+# symbol's own textual definition (e.g. an earlier sibling method calling
+# `self.foo(...)` before `foo` is itself defined lower in the class).
+# GAP-13's original fix anchored the window walk on `ordered[0]`
+# unconditionally; when that occurrence is such an early reference rather
+# than the real Definition-role occurrence, the very next gap (reference
+# -> real first definition) almost always exceeds the window and the walk
+# breaks immediately, so the true family is never reached -- SCIP stays
+# anchored on the pre-GAP-13 lone-Definition-occurrence location (the
+# first overload stub), and AST/SCIP never converge, exactly like an
+# unfixed GAP-13 case.
+# ---------------------------------------------------------------------------
+
+
+def _overload_family_with_leading_reference_index(
+    *, leading_lines: tuple[int, ...] = (1,), third_line: int = 10
+) -> bytes:
+    """Same real shape as `_overload_family_index` (Definition at line 4,
+    ReadAccess stub at line 7, ReadAccess impl at `third_line`), plus one
+    or more extra ReadAccess occurrences of the *same* symbol at
+    `leading_lines` -- all strictly before the Definition-role occurrence
+    -- reproducing requests' `Response.iter_content` (referenced at line
+    859 from `iter_lines`, defined at 907) and django's `Field.choices`
+    (referenced 5 times at lines 261-368, defined at 584)."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = [occurrence(symbol, roles=8, range_=(line, 4, 11)) for line in leading_lines]
+    occs += [
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),
+        occurrence(symbol, roles=8, range_=(third_line, 4, 11)),
+    ]
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(3))
+    doc = document("pkg/a.py", occurrences=tuple(occs), symbols=sym_infos)
+    return scip_index(documents=(doc,))
+
+
+def test_gap14_reference_before_single_definition_is_unaffected(tmp_path: Path) -> None:
+    """(1): a symbol with only one real textual definition (no
+    redefinition family -- `symbol_info_count` <= 1) plus an earlier
+    ReadAccess reference must be completely unaffected by this fix: no
+    family signal exists, so `_collect_definitions` falls back to the
+    lone Definition occurrence's own location, exactly as before GAP-13
+    ever existed."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(symbol, roles=8, range_=(1, 4, 11)),  # earlier reference
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),  # the one real definition
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=(symbol_information(symbol, kind=0),))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 4
+    assert "scip:redefinition-family" not in entity.roles
+
+
+def test_gap14_reference_before_overload_family_still_recovers_last_location(
+    tmp_path: Path,
+) -> None:
+    """(2): the core GAP-14 claim. A single early ReadAccess reference,
+    strictly before the real `@overload` family (Definition at line 4,
+    stub at 7, implementation at 10), must not prevent recovery of the
+    real implementation's location -- reproduces requests'
+    `Response.iter_content` and django's `Field.choices` exactly."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _overload_family_with_leading_reference_index(leading_lines=(1,))
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 10
+    assert "scip:redefinition-family" in entity.roles
+
+
+def test_gap14_multiple_earlier_references_before_family_still_recovers(
+    tmp_path: Path,
+) -> None:
+    """(3): several early references (django's `Field.choices` has 5)
+    must all be ignored equally -- the anchor is the earliest
+    Definition-role occurrence regardless of how many references
+    precede it."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _overload_family_with_leading_reference_index(leading_lines=(1, 2, 3, 3, 3))
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 10
+    assert "scip:redefinition-family" in entity.roles
+
+
+def test_gap14_reference_between_overload_members_still_recovers(tmp_path: Path) -> None:
+    """(4): a reference that lands textually *between* two real family
+    members (still within the window of its predecessor) must not break
+    the chain -- it is simply folded in like any other occurrence on the
+    way to the true last definition, exactly as the pre-GAP-14 walk
+    already did once correctly anchored."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),  # Definition (first stub)
+        occurrence(symbol, roles=8, range_=(6, 4, 11)),  # unrelated in-between reference
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),  # second stub
+        occurrence(symbol, roles=8, range_=(10, 4, 11)),  # real implementation
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(3))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 10
+    assert "scip:redefinition-family" in entity.roles
+
+
+def test_gap14_reference_far_after_family_never_extends_past_it(tmp_path: Path) -> None:
+    """(5): combined with an early reference (so the anchor fix is
+    actually exercised), a later reference far outside the window must
+    still never be picked up as part of the family -- the recovered
+    location stays at the true last definition, not the far-away
+    reference. Matches GAP-13's own already-established far-away
+    safety check, now proven robust to an early reference too."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(symbol, roles=8, range_=(1, 4, 11)),  # early, unrelated reference
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),  # Definition (first stub)
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),  # real implementation
+        occurrence(symbol, roles=8, range_=(500, 4, 11)),  # far outside the window
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(2))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 7
+    assert "scip:redefinition-family" in entity.roles
+
+
+def test_gap14_mixed_before_inside_after_references(tmp_path: Path) -> None:
+    """(6): references before, between, and (far) after the real family
+    all in one index -- the recovered location must still land exactly
+    on the true last definition."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(symbol, roles=8, range_=(1, 4, 11)),  # before
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),  # Definition (first stub)
+        occurrence(symbol, roles=8, range_=(6, 4, 11)),  # between
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),  # second stub
+        occurrence(symbol, roles=8, range_=(10, 4, 11)),  # real implementation
+        occurrence(symbol, roles=8, range_=(400, 4, 11)),  # far after
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(3))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 10
+    assert "scip:redefinition-family" in entity.roles
+
+
+def test_gap14_ast_and_scip_converge_despite_early_reference(tmp_path: Path) -> None:
+    """(7): the core GAP-14 fix proven at the identity-resolution layer,
+    not just at `_collect_definitions` -- SCIP's recovered entity (now
+    immune to the early reference) and AstCallsAdapter's independently-
+    derived entity for the same real method converge onto one canonical
+    entity via `entity_resolver.resolve_entities`'s existing, untouched
+    exact-line identity key. Mirrors GAP-13's own
+    `test_gap13_ast_and_scip_converge_on_overload_family`."""
+    from codex.ontology.entities import RepositorySymbol, build_canonical_id
+    from codex.ontology.entities import SourceLocation as _SourceLocation
+    from codex.resolution.entity_resolver import resolve_entities
+
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _overload_family_with_leading_reference_index(leading_lines=(1,), third_line=10)
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+    scip_entity = next(
+        e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."
+    )
+    assert scip_entity.source_location is not None
+    assert scip_entity.source_location.start_line == 10
+
+    ast_entity = RepositorySymbol(
+        canonical_id=build_canonical_id(
+            repository_id="repo1",
+            repository_revision="rev1",
+            qualified_name="pkg/a.py::Helper.compute",
+            base_type=BaseEntityType.METHOD,
+        ),
+        repository_id="repo1",
+        repository_revision="rev1",
+        name="compute",
+        qualified_name="pkg/a.py::Helper.compute",
+        base_type=BaseEntityType.METHOD,
+        provider_ids={"ast_calls": "compute"},
+        source_location=_SourceLocation(file_path="pkg/a.py", start_line=10, end_line=10),
+    )
+
+    resolved = resolve_entities([scip_entity, ast_entity]).entities
+    matching = [e for e in resolved if e.source_location and e.source_location.start_line == 10]
+    canonical_ids = {e.canonical_id for e in matching}
+    assert len(canonical_ids) == 1, "SCIP and AST identities must converge to one canonical_id"
+
+
+def test_gap14_evidence_signatures_and_locations_preserved(tmp_path: Path) -> None:
+    """(8): the recovered entity still carries a real, deterministic
+    source location and its provenance role, and repeated normalization
+    is byte-identical -- no evidence/signature/location is lost or
+    fabricated by ignoring the early reference."""
+    data = _overload_family_with_leading_reference_index(leading_lines=(1, 2))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(data)
+    adapter = SCIPAdapter()
+
+    first_normalized = adapter.normalize(
+        adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    )
+    second_normalized = adapter.normalize(
+        adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    )
+    first_entity = next(
+        e for e in first_normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."
+    )
+    second_entity = next(
+        e for e in second_normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."
+    )
+    assert first_entity.canonical_id == second_entity.canonical_id
+    assert first_entity.source_location == second_entity.source_location
+    assert first_entity.source_location is not None
+    assert first_entity.source_location.file_path == "pkg/a.py"
+    assert first_entity.source_location.start_line == 10
+    assert sorted(first_entity.roles) == sorted(second_entity.roles)
+
+
+def test_gap14_implements_relationship_continuity_despite_early_reference(
+    tmp_path: Path,
+) -> None:
+    """(9): an `IMPLEMENTS` relationship naming the redefined symbol as
+    object still resolves to the recovered (early-reference-immune)
+    entity, exactly as GAP-13's own
+    `test_gap13_implements_evidence_uses_the_recovered_entity` requires --
+    now proven robust to an early reference to that object symbol too."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    subject_symbol = "scip-python python testrepo rev1 `pkg.a`/Impl#"
+    rel = relationship(symbol, is_implementation=True)
+    subject_def = occurrence(subject_symbol, roles=1, range_=(0, 0, 4))
+    subject_info = symbol_information(subject_symbol, kind=7, relationships=(rel,))
+    occs = (
+        occurrence(symbol, roles=8, range_=(1, 4, 11)),  # early, unrelated reference
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),
+        occurrence(symbol, roles=8, range_=(10, 4, 11)),
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(3))
+    doc = document(
+        "pkg/a.py", occurrences=(subject_def, *occs), symbols=(subject_info, *sym_infos)
+    )
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    implements = [e for e in normalized.evidence if e.predicate is RelationshipType.IMPLEMENTS]
+    assert len(implements) == 1
+    object_entity = next(e for e in normalized.entities if e.canonical_id == implements[0].object)
+    assert object_entity.qualified_name == "`pkg.a`/Helper#compute()."
+    assert object_entity.source_location is not None
+    assert object_entity.source_location.start_line == 10
+
+
+def test_gap14_distinct_symbols_across_modules_remain_distinct(tmp_path: Path) -> None:
+    """(10): two different modules, each with their own early-reference-
+    preceded redefinition family for a same-named method, must never
+    collapse into one entity."""
+    docs = []
+    for module in ("a", "b"):
+        symbol = f"scip-python python testrepo rev1 `pkg.{module}`/Helper#compute()."
+        occs = (
+            occurrence(symbol, roles=8, range_=(1, 4, 11)),
+            occurrence(symbol, roles=1, range_=(4, 4, 11)),
+            occurrence(symbol, roles=8, range_=(7, 4, 11)),
+            occurrence(symbol, roles=8, range_=(10, 4, 11)),
+        )
+        sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(3))
+        docs.append(document(f"pkg/{module}.py", occurrences=occs, symbols=sym_infos))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=tuple(docs)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = {
+        e.qualified_name: e for e in normalized.entities if "Helper#compute" in e.qualified_name
+    }
+    assert len(matches) == 2
+    ids = {e.canonical_id for e in matches.values()}
+    assert len(ids) == 2
+    for e in matches.values():
+        assert e.source_location is not None
+        assert e.source_location.start_line == 10
+
+
+def test_gap14_distinct_symbols_across_classes_remain_distinct(tmp_path: Path) -> None:
+    """(11): two different classes in the same module, each with their
+    own early-reference-preceded redefinition family for a same-named
+    method, must never collapse into one entity."""
+    occs = []
+    sym_infos = []
+    for cls in ("Helper", "Other"):
+        symbol = f"scip-python python testrepo rev1 `pkg.a`/{cls}#compute()."
+        occs += [
+            occurrence(symbol, roles=8, range_=(1, 4, 11)),
+            occurrence(symbol, roles=1, range_=(4, 4, 11)),
+            occurrence(symbol, roles=8, range_=(7, 4, 11)),
+            occurrence(symbol, roles=8, range_=(10, 4, 11)),
+        ]
+        sym_infos += [symbol_information(symbol, kind=0) for _ in range(3)]
+    doc = document("pkg/a.py", occurrences=tuple(occs), symbols=tuple(sym_infos))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    helper = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    other = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Other#compute().")
+    assert helper.canonical_id != other.canonical_id
+
+
+def test_gap14_local_symbols_remain_distinct_and_unaffected(tmp_path: Path) -> None:
+    """(12): a local (function-scoped) symbol, however many times it is
+    referenced before its own definition, never becomes an entity at
+    all -- `is_local_symbol` excludes it before this fix's own logic
+    ever runs, exactly as before."""
+    local_symbol = "local 3"
+    real_symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(local_symbol, roles=8, range_=(1, 4, 11)),
+        occurrence(local_symbol, roles=1, range_=(2, 4, 11)),
+        occurrence(real_symbol, roles=8, range_=(3, 4, 11)),
+        occurrence(real_symbol, roles=1, range_=(4, 4, 11)),
+        occurrence(real_symbol, roles=8, range_=(7, 4, 11)),
+        occurrence(real_symbol, roles=8, range_=(10, 4, 11)),
+    )
+    sym_infos = tuple(symbol_information(real_symbol, kind=0) for _ in range(3))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    assert all("local" not in e.qualified_name for e in normalized.entities)
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 10
+
+
+def test_gap14_external_symbol_referenced_before_local_definition_not_fabricated(
+    tmp_path: Path,
+) -> None:
+    """(13): a genuinely external symbol, referenced (ReadAccess only,
+    never Defined -- the real shape for an external symbol) *before* an
+    unrelated local redefinition family appears later in the same
+    document, must still resolve as EXTERNAL_LIBRARY, never fabricated
+    as local just because it happened to be seen early."""
+    external_symbol = "scip-python python otherpkg 2.0.0 `otherpkg.sub`/Base#compute()."
+    local_symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    occs = (
+        occurrence(external_symbol, roles=8, range_=(1, 4, 11)),
+        occurrence(external_symbol, roles=8, range_=(2, 4, 11)),
+        occurrence(local_symbol, roles=1, range_=(4, 4, 11)),
+        occurrence(local_symbol, roles=8, range_=(7, 4, 11)),
+        occurrence(local_symbol, roles=8, range_=(10, 4, 11)),
+    )
+    sym_infos = tuple(symbol_information(local_symbol, kind=0) for _ in range(3))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if "otherpkg.sub" in e.qualified_name]
+    assert matches == []
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "python:otherpkg@2.0.0"
+    local_entity = next(
+        e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."
+    )
+    assert local_entity.source_location is not None
+    assert local_entity.source_location.start_line == 10
+
+
+def test_gap14_non_overloaded_function_with_early_reference_byte_equivalent(
+    tmp_path: Path,
+) -> None:
+    """(14): a plain, non-redefined function referenced before its own
+    definition (completely ordinary, legal Python -- e.g. a module-
+    level helper called from an earlier-defined function) must produce
+    byte-identical output whether or not this fix exists, because the
+    family signal (`symbol_info_count` > 1) never fires for it."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/helper()."
+    occs = (
+        occurrence(symbol, roles=8, range_=(1, 4, 10)),
+        occurrence(symbol, roles=1, range_=(5, 0, 10)),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=(symbol_information(symbol, kind=0),))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/helper().")
+    assert entity.source_location is not None
+    assert entity.source_location.start_line == 5
+    assert "scip:redefinition-family" not in entity.roles
+
+
+def test_gap14_parameter_descriptor_with_repeated_references_unaffected(tmp_path: Path) -> None:
+    """Parameter descriptors (trailing `)`) are excluded before this
+    fix's own logic runs (matching GAP-13's own established behavior) --
+    a parameter name referenced many times, including before any
+    Definition-role occurrence, never becomes an entity and never
+    affects the enclosing function's own recovery."""
+    param_symbol = "scip-python python testrepo rev1 `pkg.a`/helper().(value)"
+    fn_symbol = "scip-python python testrepo rev1 `pkg.a`/helper()."
+    occs = (
+        occurrence(param_symbol, roles=8, range_=(1, 4, 9)),
+        occurrence(param_symbol, roles=8, range_=(2, 4, 9)),
+        occurrence(param_symbol, roles=1, range_=(5, 15, 20)),
+        occurrence(fn_symbol, roles=1, range_=(5, 0, 10)),
+        occurrence(fn_symbol, roles=8, range_=(8, 0, 10)),
+        occurrence(fn_symbol, roles=8, range_=(12, 0, 10)),
+    )
+    sym_infos = (
+        symbol_information(param_symbol, kind=0),
+        symbol_information(param_symbol, kind=0),
+        symbol_information(fn_symbol, kind=0),
+        symbol_information(fn_symbol, kind=0),
+        symbol_information(fn_symbol, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    assert all(not e.qualified_name.endswith(")") for e in normalized.entities)
+    fn_entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/helper().")
+    assert fn_entity.source_location is not None
+    assert fn_entity.source_location.start_line == 12
+    assert "scip:redefinition-family" in fn_entity.roles
