@@ -80,6 +80,7 @@ the same canonical id) everywhere it's mentioned in a given run.
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
@@ -157,6 +158,28 @@ class _DefinitionRecord:
     `_OVERLOAD_FAMILY_LINE_WINDOW`), not directly from the symbol's own
     Definition-role Occurrence. Lets `normalize()` tag the resulting
     entity's `roles` so this provenance stays auditable."""
+    nested_qualifier: str | None = None
+    """FND-1 fix: the enclosing scope's own descriptor path, used by
+    `normalize()` to enrich this record's identity so each real entity
+    gets its own canonical_id instead of collapsing. Only meaningful
+    together with `is_nested_disambiguation_representative`; may itself
+    be `None` even for such a representative (a genuinely top-level
+    class member disambiguated from its nested, same-named siblings
+    uses its own plain descriptor, not a `<locals>` qualifier -- see
+    `_NestedIdentity`'s own docstring)."""
+    is_nested_disambiguation_representative: bool = False
+    """FND-1 fix: True for a symbol confirmed to have more than one
+    real Definition-role Occurrence with genuinely different nearest-
+    enclosing scopes (see `_nested_symbol_disambiguation`) -- i.e. the
+    SCIP descriptor is itself ambiguous between two or more distinct
+    real Python entities (e.g. two same-named nested closures in
+    sibling methods, or one nested closure colliding with an unrelated
+    top-level sibling of the same name). Tells `normalize()` to resolve
+    this record directly (with `nested_qualifier` applied, even when it
+    is `None`) rather than through the shared closure that otherwise
+    deliberately skips every symbol in this ambiguous state for
+    references/relationships, which carry no position to disambiguate
+    with."""
 
 
 @dataclass(frozen=True)
@@ -186,7 +209,9 @@ def _build_kind_by_symbol(index: ScipIndex) -> dict[str, int]:
     return kinds
 
 
-def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], ScipRange]:
+def _redefinition_family_locations(
+    index: ScipIndex, *, ambiguous_symbols: frozenset[tuple[str, str]] = frozenset()
+) -> dict[tuple[str, str], ScipRange]:
     """GAP-13 fix (anchor corrected by GAP-14): for each ``(document,
     symbol)`` with more than one ``SymbolInformation`` entry recorded
     within that same document -- the real, verified signal for "this
@@ -265,6 +290,15 @@ def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], Sc
         for symbol, occs in occurrences_by_symbol.items():
             if symbol_info_counts.get(symbol, 0) <= 1:
                 continue
+            if (doc.relative_path, symbol) in ambiguous_symbols:
+                # FND-1 fix: this symbol has multiple *real* Definition-role
+                # occurrences with genuinely different enclosing scopes --
+                # not one redefined symbol, but several distinct real
+                # entities sharing one descriptor. Recovering a single
+                # "family" location for it would silently pick one and
+                # discard the others; leave it entirely to
+                # `_nested_symbol_disambiguation` instead.
+                continue
             if not any(occ.symbol_roles & _DEFINITION_ROLE for occ in occs):
                 continue  # never cluster a group with no real Definition anchor
             ordered = sorted(
@@ -301,14 +335,311 @@ def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], Sc
     return result
 
 
-def _collect_definitions(index: ScipIndex) -> list[_DefinitionRecord]:
+@dataclass(frozen=True)
+class _NestedIdentity:
+    qualifier_descriptor: str | None
+    """The nearest enclosing function/method's own descriptor path --
+    the additional identity dimension distinguishing this real entity
+    from its same-descriptor siblings. ``None`` when this occurrence's
+    own nearest enclosing real symbol is a *class* (a Namespace/Type
+    descriptor, trailing ``#``) rather than a function/method -- i.e.
+    this occurrence is itself a genuinely top-level class member, not
+    actually nested inside anything, and merely happens to share its
+    bare name with one or more real nested siblings elsewhere in the
+    class (confirmed real: django's `Signal.asend` -- a genuine,
+    ordinary top-level method -- shares its name with two unrelated
+    closures nested inside `Signal.send` and `Signal.
+    asend_and_wrap_exception` respectively). Using its own plain,
+    unqualified descriptor already gives it an identity distinct from
+    its `<locals>`-qualified siblings, without mislabeling a real
+    top-level method as a nested one."""
+    range: ScipRange
+    """This entity's own representative source location (the last
+    occurrence within its own enclosing scope, mirroring the same
+    "last textual definition wins" convention `_redefinition_family_
+    locations` already uses within a single scope)."""
+
+
+def _read_line_indentations(repo_root: Path, relative_path: str) -> tuple[int, ...] | None:
+    """The real leading-whitespace count for each line of ``relative_path``
+    within ``repo_root``, indexed by 0-based line number -- the true,
+    structural signal for Python nesting, read directly from the same
+    source file `scip-python` indexed. A narrow, deliberate exception to
+    this adapter's general "SCIP-index-only, never touch source" design,
+    justified by a confirmed real-data false-negative: a bare SCIP
+    occurrence *column* is not a reliable proxy for true indentation,
+    because different Python keyword prefixes shift a definition's own
+    identifier column by different amounts even at identical real nesting
+    depth. Confirmed via django's `Signal` class: `send` is declared
+    `def send(self, sender, **named):` (identifier column 8) while its
+    ordinary top-level sibling `asend` is declared
+    `async def asend(self, sender, **named):` (identifier column 14,
+    six columns further right purely because of the extra `async `
+    keyword) -- both are real top-level `Signal` methods at the *same*
+    true nesting depth, but a raw-column comparison alone (8 < 14) reads
+    `send` as `asend`'s "enclosing container." True source indentation
+    has no such artifact: both lines have zero leading whitespace.
+
+    Returns ``None`` when the source file cannot be read (missing,
+    moved, permission error, not valid UTF-8 text) -- callers fall back
+    to the less reliable raw-column comparison rather than fabricating
+    an indentation value with no real signal behind it.
+    """
+    try:
+        text = (repo_root / relative_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    indentations = []
+    for line in text.splitlines():
+        stripped = line.lstrip(" \t")
+        indentations.append(len(line) - len(stripped))
+    return tuple(indentations)
+
+
+def _effective_indent(line: int, character: int, indentations: tuple[int, ...] | None) -> int:
+    """The best available indentation signal for a source position: the
+    real leading-whitespace count from ``indentations`` (see
+    `_read_line_indentations`) when available for this line, else the
+    SCIP occurrence's own identifier-token column as a fallback -- used
+    only when the real source file isn't accessible (e.g. a handcrafted
+    test fixture with no file on disk, or a `.scip` index whose source
+    tree has since moved), matching this module's existing "never
+    fabricate, degrade to the next-best deterministic signal" pattern.
+    """
+    if indentations is not None and 0 <= line < len(indentations):
+        return indentations[line]
+    return character
+
+
+def _nested_symbol_disambiguation(
+    index: ScipIndex,
+    repo_root: Path | None = None,
+) -> dict[tuple[str, str, int, int], _NestedIdentity]:
+    """FND-1 fix: detect symbols whose SCIP descriptor is genuinely
+    ambiguous -- shared by two or more distinct real Python entities
+    because the descriptor grammar has no room to encode enclosing-
+    *function* scope for a symbol nested inside a function/method body
+    (a nested closure, a locally-defined class, etc: SCIP's descriptor
+    grammar encodes an enclosing *class*, never an enclosing function --
+    confirmed against `scip.proto`; see `codex.provider.scip.mapping`).
+
+    The reliable signal, confirmed against real django/flask/click data
+    (`docs/python-fidelity-gap-register.md`, FND-1): more than one
+    *real Definition-role Occurrence* for the exact same descriptor
+    string -- not merely more than one `SymbolInformation` entry (that
+    alone is `_redefinition_family_locations`'s own signal: a
+    `@typing.overload`/`@property` family, or a wire-format quirk
+    emitting two Definition occurrences on the identical position for
+    one real declaration, both of which get a single, shared nearest-
+    enclosing scope here and are therefore *not* split). Two or more
+    Definition-role occurrences with *different* nearest-enclosing
+    scopes is the confirmed, specific signature of real distinct
+    entities: e.g. two same-named nested closures in sibling methods
+    (django's ``AbstractBaseUser.check_password``'s and
+    ``.acheck_password``'s own, separate ``setter`` closures; django's
+    ``Library#dec()``, five distinct closures nested in five different
+    methods; click's ``Group#decorator()``, flask's ``App#decorator()``
+    /``Blueprint#decorator()``/``Scaffold#decorator()``, three or four
+    distinct closures each).
+
+    The "nearest enclosing scope" for a given occurrence is computed as
+    the closest *preceding* Definition-role occurrence, in the same
+    document, of any other non-local, non-Parameter symbol whose own
+    *indentation* is strictly less than this occurrence's own -- i.e.
+    an outer scope, in a language where nesting is exactly indentation,
+    is always less indented than what it contains. Indentation is read
+    from the real source file on disk when available (`repo_root`,
+    `_read_line_indentations`) -- required for correctness, not merely a
+    refinement: a raw SCIP occurrence *column* is not a safe proxy for
+    it, since different keyword prefixes (`def `, `async def `, `class `)
+    shift a definition's own identifier column by different amounts even
+    at identical true nesting depth (confirmed by a real false-negative
+    during this fix's own validation -- django's `Signal.asend`, an
+    ordinary top-level `async def` method, was first found merging with
+    an unrelated `asend` closure nested in `Signal.send`, a plain `def`
+    sibling six columns to its left purely from the shorter keyword,
+    with nothing else at a shallower indentation in between). When the
+    real source file isn't available, this falls back to the raw column
+    (`_effective_indent`), matching the previous, less reliable
+    behavior. This is a structural fact about symbol nesting in the
+    source (which real declared entity's body textually contains this
+    occurrence), not a bare line number used as an identity -- a platform-conditional
+    module-level redefinition (e.g. click's ``getchar``, defined once
+    under ``if WIN:`` and once under ``else:``, both directly at module
+    scope, same column) has *no* enclosing-scope difference between its
+    two definitions and is correctly left alone (confirmed: `getchar`
+    has exactly one real Definition-role occurrence in practice, so it
+    never even reaches this check).
+
+    Returns, for each distinct real entity found, a mapping keyed by
+    that entity's own *representative* occurrence position to a
+    `_NestedIdentity` -- deliberately keyed by position (not merely by
+    symbol) so `_collect_definitions` can distinguish "this exact
+    occurrence is the one representing its scope" from "this occurrence
+    is a redundant redefinition within the same scope, already
+    represented." Occurrences whose nearest enclosing scope cannot be
+    determined (no preceding real symbol in the document -- e.g. a
+    module-level ambiguous definition with no enclosing function) are
+    never guessed at from a bare position; they are simply excluded
+    (never fabricate an identity this function has no real signal for).
+    """
+    result: dict[tuple[str, str, int, int], _NestedIdentity] = {}
+    for doc in index.documents:
+        indentations = (
+            _read_line_indentations(repo_root, doc.relative_path) if repo_root is not None else None
+        )
+        containers: list[tuple[int, int, str, int]] = []
+        for occ in doc.occurrences:
+            if not (occ.symbol_roles & _DEFINITION_ROLE):
+                continue
+            if not occ.symbol or is_local_symbol(occ.symbol) or occ.symbol.endswith(")"):
+                continue
+            if occ.range is None:
+                continue
+            indent = _effective_indent(
+                occ.range.start_line, occ.range.start_character, indentations
+            )
+            containers.append((occ.range.start_line, occ.range.start_character, occ.symbol, indent))
+        containers.sort(key=lambda c: (c[0], c[1]))
+        container_positions = [(c[0], c[1]) for c in containers]
+
+        symbol_info_counts: dict[str, int] = {}
+        for info in doc.symbols:
+            symbol_info_counts[info.symbol] = symbol_info_counts.get(info.symbol, 0) + 1
+
+        def_occs_by_symbol: dict[str, list[ScipOccurrence]] = {}
+        for occ in doc.occurrences:
+            if not (occ.symbol_roles & _DEFINITION_ROLE):
+                continue
+            if not occ.symbol or is_local_symbol(occ.symbol) or occ.symbol.endswith(")"):
+                continue
+            def_occs_by_symbol.setdefault(occ.symbol, []).append(occ)
+
+        for symbol, occs in def_occs_by_symbol.items():
+            if symbol_info_counts.get(symbol, 0) <= 1 or len(occs) <= 1:
+                continue
+            ordered = sorted(
+                (o for o in occs if o.range is not None), key=lambda o: _range_sort_key(o.range)
+            )
+            if len(ordered) < 2:
+                continue
+
+            groups: dict[str | None, list[ScipOccurrence]] = {}
+            for occ in ordered:
+                nearest = _nearest_preceding_container(
+                    occ, containers, container_positions, indentations, own_symbol=symbol
+                )
+                groups.setdefault(nearest, []).append(occ)
+
+            distinct_real_scopes = {q for q in groups if q is not None}
+            if len(distinct_real_scopes) <= 1:
+                continue  # not a genuine cross-scope collision -- leave to
+                # `_redefinition_family_locations`'s own, unrelated signal
+
+            for qualifier_symbol, group_occs in groups.items():
+                if qualifier_symbol is None:
+                    continue  # no locatable enclosing scope -- never fabricate one
+                parsed_qualifier = parse_symbol(qualifier_symbol)
+                if parsed_qualifier is None:
+                    continue
+                # A Namespace/Type (class) qualifier means this occurrence is
+                # itself a genuinely top-level class member, not nested
+                # inside anything -- use its own plain descriptor, not a
+                # `<locals>` qualifier that would mislabel it (see
+                # `_NestedIdentity.qualifier_descriptor`'s own docstring).
+                is_class_qualifier = qualifier_symbol.endswith("#")
+                qualifier_descriptor = (
+                    None if is_class_qualifier else parsed_qualifier.descriptor_path
+                )
+                representative = max(group_occs, key=lambda o: _range_sort_key(o.range))
+                assert representative.range is not None
+                key = (
+                    doc.relative_path,
+                    symbol,
+                    representative.range.start_line,
+                    representative.range.start_character,
+                )
+                identity = _NestedIdentity(qualifier_descriptor, representative.range)
+                result[key] = identity
+    return result
+
+
+def _nearest_preceding_container(
+    occ: ScipOccurrence,
+    containers: list[tuple[int, int, str, int]],
+    container_positions: list[tuple[int, int]],
+    indentations: tuple[int, ...] | None,
+    *,
+    own_symbol: str,
+) -> str | None:
+    """The nearest, textually-preceding real symbol in ``containers``
+    whose own *indentation* is strictly less than ``occ``'s -- the
+    deterministic, position-based proxy for "the real Python entity
+    whose body textually contains this occurrence", used only to
+    disambiguate an already-confirmed-ambiguous symbol (see
+    ``_nested_symbol_disambiguation``).
+
+    The indentation constraint is required for correctness, not merely
+    a refinement: without it, a real top-level sibling that happens to
+    come later in the file than a same-named nested closure, with
+    nothing else at a shallower indentation in between, would look
+    like "the nearest preceding thing" and be silently folded into the
+    closure's own group -- since Python nesting *is* indentation, an
+    outer scope's own indentation is always less than what it contains.
+    Indentation is read from the real source file when available
+    (``indentations``, see ``_read_line_indentations``); a raw SCIP
+    occurrence column alone is not a safe substitute, since keyword
+    prefixes of different lengths (``def ``, ``async def ``, ``class ``)
+    shift a definition's own identifier column without changing its
+    true nesting depth.
+    """
+    assert occ.range is not None
+    pos = (occ.range.start_line, occ.range.start_character)
+    occ_indent = _effective_indent(occ.range.start_line, occ.range.start_character, indentations)
+    idx = bisect.bisect_left(container_positions, pos)
+    for i in range(idx - 1, -1, -1):
+        indent = containers[i][3]
+        if containers[i][2] != own_symbol and indent < occ_indent:
+            return containers[i][2]
+    return None
+
+
+def _collect_definitions(
+    index: ScipIndex, repo_root: Path | None = None
+) -> list[_DefinitionRecord]:
     kind_by_symbol = _build_kind_by_symbol(index)
-    family_locations = _redefinition_family_locations(index)
+    nested_identities = _nested_symbol_disambiguation(index, repo_root)
+    ambiguous_symbols = frozenset((path, symbol) for path, symbol, _, _ in nested_identities)
+    family_locations = _redefinition_family_locations(index, ambiguous_symbols=ambiguous_symbols)
     records = []
     for doc in index.documents:
         for occ in doc.occurrences:
             is_definition = occ.symbol_roles & _DEFINITION_ROLE
             if not (is_definition and occ.symbol and not is_local_symbol(occ.symbol)):
+                continue
+            if (doc.relative_path, occ.symbol) in ambiguous_symbols:
+                # FND-1 fix: this descriptor represents 2+ distinct real
+                # entities. Only the *representative* occurrence of each
+                # distinct enclosing scope becomes a record -- every other
+                # occurrence within that same scope is a redundant
+                # redefinition of the same real entity, already covered by
+                # its group's own representative (never emit duplicates).
+                assert occ.range is not None
+                identity = nested_identities.get(
+                    (doc.relative_path, occ.symbol, occ.range.start_line, occ.range.start_character)
+                )
+                if identity is None:
+                    continue
+                records.append(
+                    _DefinitionRecord(
+                        occ.symbol,
+                        kind_by_symbol.get(occ.symbol, 0),
+                        identity.range,
+                        doc.relative_path,
+                        nested_qualifier=identity.qualifier_descriptor,
+                        is_nested_disambiguation_representative=True,
+                    )
+                )
                 continue
             family_range = family_locations.get((doc.relative_path, occ.symbol))
             records.append(
@@ -473,6 +804,7 @@ def _resolve_symbol(
     locally_defined: frozenset[str],
     kind_by_symbol: dict[str, int],
     indexed_relative_paths: frozenset[str],
+    nested_qualifier: str | None = None,
 ) -> _ResolvedSymbol | None:
     """Resolve a SCIP symbol string to a canonical Codex identity.
 
@@ -483,6 +815,17 @@ def _resolve_symbol(
     resolves to the same base type -- and therefore the same
     ``canonical_id`` -- whether it's reached via SYMBOL_DEFINITION,
     SYMBOL_REFERENCE, IMPLEMENTATION, or TYPE_RELATIONSHIP.
+
+    ``nested_qualifier`` (FND-1 fix): when given, it is the enclosing
+    function/method's own descriptor path, as found by
+    ``_nested_symbol_disambiguation`` -- folded into ``qualified_name``
+    (Python's own ``<locals>`` convention for nested-scope qualnames)
+    *before* computing ``canonical_id``, so this call produces a
+    genuinely distinct identity from the same call without a qualifier.
+    Only ever passed for a symbol already confirmed to have multiple
+    real, differently-scoped Definition-role Occurrences -- for every
+    other symbol this parameter is never supplied and resolution is
+    byte-identical to before this fix.
     """
     if is_local_symbol(symbol):
         return None
@@ -499,6 +842,9 @@ def _resolve_symbol(
             if base_type is BaseEntityType.FILE
             else parsed.descriptor_path
         )
+        if nested_qualifier is not None:
+            bare_tail = qualified_name.rsplit("/", maxsplit=1)[-1]
+            qualified_name = f"{nested_qualifier.rstrip('.')}.<locals>.{bare_tail}"
         canonical_id = build_canonical_id(
             repository_id=repository_id,
             repository_revision=revision,
@@ -689,7 +1035,7 @@ class SCIPAdapter:
 
         if Capability.SYMBOL_DEFINITION in requested:
             try:
-                definitions = _collect_definitions(index)
+                definitions = _collect_definitions(index, repository.local_path)
                 successful.append(Capability.SYMBOL_DEFINITION.value)
             except Exception:  # noqa: BLE001 - isolate this capability, directive D5 §14
                 failed.append(Capability.SYMBOL_DEFINITION.value)
@@ -778,6 +1124,25 @@ class SCIPAdapter:
             "references": references,
             "implementations": implementations,
             "type_relationships": type_relationships,
+            # FND-1 fix: symbol strings confirmed to represent 2+ distinct
+            # real entities (see `_nested_symbol_disambiguation`). The
+            # shared `resolve()` below -- used for references and
+            # relationship endpoints, neither of which carries enough
+            # position information to say *which* of the real entities is
+            # meant (references are already a document-level aggregate;
+            # relationship facts carry no location at all in the wire
+            # format) -- skips these symbols entirely rather than
+            # guessing. Definitions are unaffected: `_collect_definitions`
+            # already gives each real entity its own `nested_qualifier`,
+            # resolved directly (not through this shared closure) so each
+            # gets its own correct, distinct identity.
+            "ambiguous_symbols": (
+                frozenset(
+                    d.symbol for d in definitions if d.is_nested_disambiguation_representative
+                )
+                if definitions is not None
+                else frozenset()
+            ),
         }
         return ExtractionResult(cohort=cohort, raw_reference=None, raw_payload=payload)
 
@@ -788,11 +1153,18 @@ class SCIPAdapter:
         locally_defined: frozenset[str] = payload["locally_defined"]
         kind_by_symbol: dict[str, int] = payload["kind_by_symbol"]
         indexed_relative_paths: frozenset[str] = payload["indexed_relative_paths"]
+        ambiguous_symbols: frozenset[str] = payload["ambiguous_symbols"]
 
         entities: dict[str, RepositorySymbol] = {}
         evidence: list[Evidence] = []
 
         def resolve(symbol: str) -> _ResolvedSymbol | None:
+            if symbol in ambiguous_symbols:
+                # FND-1 fix: never guess which of 2+ real entities a
+                # position-less reference/relationship endpoint means --
+                # skip rather than fabricate (directive D5 §9, §11's own
+                # "never fabricate" discipline, applied to this new case).
+                return None
             return _resolve_symbol(
                 symbol,
                 repository_id=repository_id,
@@ -842,7 +1214,28 @@ class SCIPAdapter:
         definitions = payload["definitions"]
         if definitions is not None:
             for definition in definitions:
-                resolved = resolve(definition.symbol)
+                if definition.is_nested_disambiguation_representative:
+                    # FND-1 fix: resolved directly (bypassing the shared
+                    # `resolve()` closure, which deliberately skips every
+                    # symbol in `ambiguous_symbols` for references/
+                    # relationships) so this specific, already-disambiguated
+                    # occurrence gets its own distinct identity instead of
+                    # being skipped too. `nested_qualifier` may itself be
+                    # `None` here (a genuinely top-level class member
+                    # disambiguated from nested siblings of the same name)
+                    # -- `_resolve_symbol` already treats that as "use the
+                    # plain descriptor," which is exactly what's wanted.
+                    resolved = _resolve_symbol(
+                        definition.symbol,
+                        repository_id=repository_id,
+                        revision=revision,
+                        locally_defined=locally_defined,
+                        kind_by_symbol=kind_by_symbol,
+                        indexed_relative_paths=indexed_relative_paths,
+                        nested_qualifier=definition.nested_qualifier,
+                    )
+                else:
+                    resolved = resolve(definition.symbol)
                 if resolved is None:
                     continue
                 kind_role = role_for_kind(definition.kind)
@@ -855,6 +1248,11 @@ class SCIPAdapter:
                     # kept auditable rather than silently indistinguishable
                     # from an ordinary single-defined symbol.
                     roles.append("scip:redefinition-family")
+                if definition.is_nested_disambiguation_representative:
+                    # FND-1 fix: this entity's identity was disambiguated
+                    # from same-descriptor siblings -- kept auditable, same
+                    # spirit as the redefinition-family tag above.
+                    roles.append("scip:nested-scope-disambiguated")
                 location = _location_from_range(definition.range, definition.relative_path)
                 ensure_entity(resolved, roles=roles, source_location=location)
 

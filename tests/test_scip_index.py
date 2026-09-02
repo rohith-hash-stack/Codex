@@ -179,6 +179,27 @@ def test_decode_symbol_information_missing_symbol_raises() -> None:
         decode_index(scip_index(documents=(doc,)))
 
 
+# FND-1 research finding (docs/resources.md): `SymbolInformation.enclosing_symbol`
+# (`scip.proto` field 8) exists specifically to disambiguate a symbol whose own
+# descriptor doesn't encode full lexical scope -- confirmed via direct wire-level
+# inspection that real scip-python@0.6.6 output never populates it, but the
+# decoder itself must still read it correctly for forward-compatibility.
+
+
+def test_decode_symbol_information_enclosing_symbol_present() -> None:
+    sym = symbol_information("Outer#inner().", kind=0) + string_field(8, "Outer#")
+    doc = document("f.py", symbols=(sym,))
+    idx = decode_index(scip_index(documents=(doc,)))
+    assert idx.documents[0].symbols[0].enclosing_symbol == "Outer#"
+
+
+def test_decode_symbol_information_enclosing_symbol_absent_defaults_empty() -> None:
+    sym = symbol_information("Outer#inner().", kind=0)
+    doc = document("f.py", symbols=(sym,))
+    idx = decode_index(scip_index(documents=(doc,)))
+    assert idx.documents[0].symbols[0].enclosing_symbol == ""
+
+
 def test_decode_relationship_missing_symbol_raises() -> None:
     # is_implementation=True but no symbol (field 1) at all.
     malformed_rel = bool_field(3, True)
