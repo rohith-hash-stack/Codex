@@ -187,18 +187,51 @@ def _build_kind_by_symbol(index: ScipIndex) -> dict[str, int]:
 
 
 def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], ScipRange]:
-    """GAP-13 fix: for each ``(document, symbol)`` with more than one
-    ``SymbolInformation`` entry recorded within that same document --
-    the real, verified signal for "this name has multiple textual
-    definitions in this file" (a ``@typing.overload`` family, or the
-    structurally identical ``@property``/``@x.setter`` pair; confirmed
-    against real data this signal does *not* fire for an ordinarily
-    single-defined, merely-frequently-referenced symbol -- see
+    """GAP-13 fix (anchor corrected by GAP-14): for each ``(document,
+    symbol)`` with more than one ``SymbolInformation`` entry recorded
+    within that same document -- the real, verified signal for "this
+    name has multiple textual definitions in this file" (a
+    ``@typing.overload`` family, or the structurally identical
+    ``@property``/``@x.setter`` pair; confirmed against real data this
+    signal does *not* fire for an ordinarily single-defined, merely-
+    frequently-referenced symbol -- see
     ``docs/python-fidelity-gap-register.md``) -- find the last
     occurrence in a textually-adjacent cluster (within
-    ``_OVERLOAD_FAMILY_LINE_WINDOW`` lines of its predecessor, starting
-    from the earliest -- confirmed always the Definition-role
-    Occurrence in practice).
+    ``_OVERLOAD_FAMILY_LINE_WINDOW`` lines of its predecessor).
+
+    GAP-14 fix: the chain now starts at the *earliest Definition-role*
+    occurrence, not unconditionally at the earliest occurrence of any
+    role. scip-python emits exactly one Definition-role Occurrence per
+    redefined symbol name (on the first textual definition), but a
+    perfectly legal, earlier same-file `ReadAccess` reference to the
+    same name (e.g. a sibling method calling ``self.foo(...)`` before
+    ``foo`` is itself textually defined lower in the same class -- real
+    data: requests' ``Response.iter_content``, referenced at line 859
+    from inside ``iter_lines``, defined at line 907; django's
+    ``Field.choices``, referenced 5 times from lines 261-368 before its
+    own ``@property``/``@choices.setter`` pair at 584/588) can sort
+    *before* that Definition-role occurrence. Anchoring on
+    ``ordered[0]`` unconditionally (the original GAP-13 fix) then
+    starts the window walk at that unrelated reference; the very next
+    gap (reference -> real first definition) is almost always far
+    larger than the window, so the walk breaks immediately and the true
+    family -- however tightly clustered -- is never reached, leaving
+    SCIP anchored on the old, pre-GAP-13 lone-Definition-occurrence
+    location (the first overload stub) instead of the recovered last
+    member. Confirmed via real-data audit: 53 such splits across
+    django/click/pytest/requests, all sharing this exact mechanism (see
+    GAP-14 in the gap register).
+
+    Starting from the earliest Definition-role occurrence instead is a
+    strict refinement, not a behavior change, for every case that
+    already worked: whenever ``ordered[0]`` already *was* the
+    Definition-role occurrence (no earlier reference exists -- true for
+    every one of GAP-13's own validated cases), the new anchor is
+    identical to the old one and the forward walk proceeds exactly as
+    before. Earlier references are simply never visited by the walk,
+    since it starts strictly after them in the sorted list -- "ignore
+    unrelated earlier references" falls out of the anchor choice alone,
+    with no separate exclusion logic needed.
 
     This mirrors ``AstCallsAdapter``'s own, already-existing,
     unconditional "last textual definition wins" convention (its
@@ -240,15 +273,30 @@ def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], Sc
             )
             if len(ordered) < 2:
                 continue
-            last = ordered[0].range
+            # GAP-14 fix: anchor on the earliest Definition-role occurrence,
+            # not unconditionally on ordered[0] -- an earlier same-file
+            # ReadAccess reference must never become the family anchor.
+            anchor_index = next(
+                (i for i, occ in enumerate(ordered) if occ.symbol_roles & _DEFINITION_ROLE),
+                0,  # defensive fallback: preserves prior behavior if the
+                # Definition-role occurrence itself lacked a range and was
+                # filtered out of `ordered` above -- never observed in real
+                # data (the guard just above already confirms one exists
+                # in the unfiltered `occs`), kept only so this can never
+                # raise on data this function hasn't seen before.
+            )
+            if anchor_index >= len(ordered) - 1:
+                continue  # anchor is the last occurrence -- nothing to extend
+            anchor = ordered[anchor_index]
+            last = anchor.range
             assert last is not None
-            for occ in ordered[1:]:
+            for occ in ordered[anchor_index + 1 :]:
                 assert occ.range is not None
                 if occ.range.start_line - last.start_line <= _OVERLOAD_FAMILY_LINE_WINDOW:
                     last = occ.range
                 else:
                     break
-            if last is not ordered[0].range:
+            if last is not anchor.range:
                 result[(doc.relative_path, symbol)] = last
     return result
 
