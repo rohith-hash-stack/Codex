@@ -157,3 +157,39 @@ def test_find_references_determinism() -> None:
     a = detect("What references authenticate?")
     b = detect("What references authenticate?")
     assert a == b
+
+
+# --- GAP-7 fix: "What implements X?" / "Who implements X?" -----------------
+
+
+def test_find_implementations_what_implements_x() -> None:
+    candidates = detect("What implements Storage?")
+    assert candidates[0].intent is Intent.FIND_IMPLEMENTATIONS
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("Storage",)
+
+
+def test_find_implementations_who_implements_x() -> None:
+    candidates = detect("Who implements Shape?")
+    assert candidates[0].intent is Intent.FIND_IMPLEMENTATIONS
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("Shape",)
+
+
+def test_find_implementations_both_phrase_shapes_agree() -> None:
+    """The pre-existing noun-phrase form ("implementations of X") and
+    the new natural-question form ("what implements X?") must resolve
+    to the identical intent/score for the same target -- two Tier-0
+    entry points into one, already-validated retrieval path, not two
+    different behaviors."""
+    noun_phrase = detect("implementations of ClassAB")
+    question = detect("What implements ClassAB?")
+    assert noun_phrase[0].intent is question[0].intent is Intent.FIND_IMPLEMENTATIONS
+    assert noun_phrase[0].score == question[0].score
+    assert noun_phrase[0].targets == question[0].targets == ("ClassAB",)
+
+
+def test_find_implementations_determinism() -> None:
+    a = detect("What implements Storage?")
+    b = detect("What implements Storage?")
+    assert a == b

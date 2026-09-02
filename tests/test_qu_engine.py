@@ -243,10 +243,25 @@ def test_find_implementations_relationship_types_are_implements_only() -> None:
     assert result.contract.relationship_types == [RelationshipType.IMPLEMENTS]
 
 
-def test_find_dependencies_relationship_types_are_depends_on_only() -> None:
-    result = understand_query(
-        "What does authenticate depend on", repository_id="repo1", now=NOW
+def test_find_implementations_natural_phrasing_resolves_identically_to_noun_phrase() -> None:
+    """GAP-7 fix: "What implements X?" produces the exact same contract
+    shape (intent, relationship_types, required_evidence) as the
+    pre-existing "implementations of X" noun-phrase form -- one
+    already-validated retrieval path, two Tier-0 entry points into it."""
+    noun_phrase = understand_query(
+        "Implementations of authenticate", repository_id="repo1", now=NOW
     )
+    question = understand_query("What implements authenticate?", repository_id="repo1", now=NOW)
+    assert noun_phrase.status is question.status is UnderstandingStatus.RESOLVED
+    assert noun_phrase.contract is not None and question.contract is not None
+    assert noun_phrase.contract.intent is question.contract.intent is Intent.FIND_IMPLEMENTATIONS
+    assert noun_phrase.contract.relationship_types == question.contract.relationship_types
+    assert noun_phrase.contract.required_evidence == question.contract.required_evidence
+    assert noun_phrase.contract.targets == question.contract.targets == ["authenticate"]
+
+
+def test_find_dependencies_relationship_types_are_depends_on_only() -> None:
+    result = understand_query("What does authenticate depend on", repository_id="repo1", now=NOW)
     assert result.contract is not None
     assert result.contract.intent is Intent.FIND_DEPENDENCIES
     from codex.ontology.relationships import RelationshipType
