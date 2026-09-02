@@ -16,7 +16,7 @@ import pytest
 from codex.evidence.model import CoverageStatus
 from codex.evidence.store import InMemoryEvidenceStore
 from codex.ingestion.pipeline import IngestionPipeline
-from codex.ontology.entities import BaseEntityType
+from codex.ontology.entities import BaseEntityType, build_canonical_id
 from codex.ontology.relationships import RelationshipType
 from codex.provider.capability import Capability
 from codex.provider.contract import EligibilityStatus, ProviderExtractionError, ProviderHealthStatus
@@ -659,3 +659,200 @@ def test_real_artifact_through_ingestion_pipeline(tmp_path: Path) -> None:
 
     assert result.committed_providers == ["scip"]
     assert len(result.graph_store.get_relationships()) > 0
+
+
+# ---------------------------------------------------------------------------
+# GAP-9 fix: `locally_defined` includes Definition-occurrence symbols too
+# ---------------------------------------------------------------------------
+#
+# Confirmed root cause (investigation branch
+# `investigate/gap9-scip-missing-large-classes`, `main`
+# @ 7bca8e428f767bf0e3335e2da7c0278fb85cf7fb): a real producer
+# (scip-python/pyright) can emit a genuine `Definition`-role Occurrence for
+# a large, heavily-typed top-level class while omitting that same symbol's
+# own SymbolInformation entry -- confirmed against real requests/flask/
+# pytest/click/django SCIP indexes, with two independent decoders agreeing
+# byte-for-byte that the raw `.scip` artifact itself lacks the entry (not a
+# Codex decoding bug). `locally_defined` used to be built exclusively from
+# `Document.symbols`, so such a symbol was routed through `_resolve_symbol`'s
+# "not defined anywhere in this index" external-library branch, which (a)
+# discarded its real identity/base_type and (b) collapsed it onto the same
+# canonical_id as every other repository-owned symbol hitting this same gap
+# (that branch's qualified_name is a pure function of repository+revision,
+# never of the symbol's own descriptor path).
+#
+# Requirement 7 ("existing AstCalls/Git/other provider behavior is
+# unchanged") has no dedicated test here: the fix touches only this one
+# frozenset construction inside `SCIPAdapter.extract()`, and `grep` confirms
+# no other module imports anything this diff touches -- proven instead by
+# the full regression suite (`tests/test_ast_calls_adapter.py`,
+# `tests/test_git_adapter.py`, etc.) passing unchanged, reported separately.
+
+
+def _missing_symbol_information_index(*symbols: str) -> bytes:
+    """A GAP-9 real-shape fixture: each `symbols` entry has a genuine
+    Definition-role Occurrence but *no* SymbolInformation entry of its
+    own -- only one of its members does, exactly matching the real shape
+    confirmed against requests' `Response#`/click's `Command#` (a large
+    top-level class's own SymbolInformation entry missing while its
+    members' entries are present). Each symbol gets its own document."""
+    docs = []
+    for i, symbol in enumerate(symbols):
+        definition = occurrence(symbol, roles=1, range_=(10, 0, 4))
+        member_symbol = symbol.rstrip("#") + "#member()."
+        member_info = symbol_information(member_symbol, kind=26)  # Method
+        docs.append(document(f"src/file{i}.ts", occurrences=(definition,), symbols=(member_info,)))
+    return scip_index(documents=tuple(docs))
+
+
+def test_gap9_definition_without_symbol_information_gets_local_identity(tmp_path: Path) -> None:
+    """Requirement 1: a Definition-role Occurrence with no matching
+    SymbolInformation entry resolves to its own local identity, not the
+    "not defined anywhere in this index" external-library fallback."""
+    symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Missing#"
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_missing_symbol_information_index(symbol))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entities = [e for e in normalized.entities if e.qualified_name == "src/`a.ts`/Missing#"]
+    assert len(entities) == 1
+    entity = entities[0]
+    assert entity.base_type is not BaseEntityType.EXTERNAL_LIBRARY
+    assert entity.source_location is not None
+    assert entity.source_location.file_path == "src/file0.ts"
+
+
+def test_gap9_descriptor_suffix_inference_classifies_missing_class_as_class(
+    tmp_path: Path,
+) -> None:
+    """Requirement 2: with no SymbolInformation entry (kind defaults to
+    UnspecifiedKind/0), `infer_base_type`'s existing, untouched
+    descriptor-suffix fallback correctly classifies the missing symbol
+    as CLASS purely from its own trailing `"#"`."""
+    symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Missing#"
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_missing_symbol_information_index(symbol))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "src/`a.ts`/Missing#")
+    assert entity.base_type is BaseEntityType.CLASS
+
+
+def test_gap9_missing_symbol_information_gets_own_canonical_id(tmp_path: Path) -> None:
+    """Requirement 3: the missing-SymbolInformation class gets its own
+    canonical_id, deterministically derived from its own descriptor
+    path -- never the package-level id every "not defined anywhere"
+    external-library symbol from the same repository/revision would
+    share."""
+    symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Missing#"
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_missing_symbol_information_index(symbol))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "src/`a.ts`/Missing#")
+    bogus_external_id = build_canonical_id(
+        repository_id="repo1",
+        repository_revision="external",
+        qualified_name="npm:pkg@1.0.0",
+        base_type=BaseEntityType.EXTERNAL_LIBRARY,
+    )
+    assert entity.canonical_id != bogus_external_id
+    assert entity.canonical_id == build_canonical_id(
+        repository_id="repo1",
+        repository_revision="rev1",
+        qualified_name="src/`a.ts`/Missing#",
+        base_type=BaseEntityType.CLASS,
+    )
+
+
+def test_gap9_two_missing_definitions_do_not_collapse_onto_one_canonical_id(
+    tmp_path: Path,
+) -> None:
+    """Requirement 4: the real click `Command#`/`Parameter#` shape --
+    two entirely distinct real classes, both missing their own
+    SymbolInformation entry, in the same repository+revision. Before
+    this fix both collapsed onto the exact same canonical_id (the
+    external-library branch's qualified_name never depends on the
+    symbol's own descriptor path)."""
+    sym_a = "scip-test npm pkg 1.0.0 src/`a.ts`/Foo#"
+    sym_b = "scip-test npm pkg 1.0.0 src/`b.ts`/Bar#"
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_missing_symbol_information_index(sym_a, sym_b))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    foo = next(e for e in normalized.entities if e.qualified_name == "src/`a.ts`/Foo#")
+    bar = next(e for e in normalized.entities if e.qualified_name == "src/`b.ts`/Bar#")
+    assert foo.canonical_id != bar.canonical_id
+    assert foo.base_type is BaseEntityType.CLASS
+    assert bar.base_type is BaseEntityType.CLASS
+    assert not any(e.base_type is BaseEntityType.EXTERNAL_LIBRARY for e in normalized.entities)
+
+
+def test_gap9_genuinely_external_symbol_without_definition_still_external_library(
+    tmp_path: Path,
+) -> None:
+    """Requirement 5: a symbol referenced but never defined anywhere in
+    the index (a genuine third-party import) is unaffected by this fix
+    and still resolves as EXTERNAL_LIBRARY -- proving the fix doesn't
+    overcorrect and misclassify real external references as local."""
+    local_symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Local#"
+    external_symbol = "scip-test npm other-pkg 2.0.0 src/`x.ts`/External#"
+    definition = occurrence(local_symbol, roles=1, range_=(0, 0, 5))
+    reference = occurrence(external_symbol, roles=0, range_=(1, 0, 8))
+    sym_info = symbol_information(local_symbol, kind=7)  # this one DOES have SymbolInformation
+    doc = document("src/a.ts", occurrences=(definition, reference), symbols=(sym_info,))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "npm:other-pkg@2.0.0"
+
+
+def test_gap9_existing_symbol_information_entities_unchanged(tmp_path: Path) -> None:
+    """Requirement 6: a symbol that already has both a Definition
+    Occurrence and its own SymbolInformation entry (today's already-
+    working case, `simple_class_index()`) is byte-for-byte unaffected by
+    this fix -- same base_type, qualified_name, and canonical_id as
+    before this change."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(simple_class_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entities = [e for e in normalized.entities if e.qualified_name == "src/`a.ts`/Foo#"]
+    assert len(entities) == 1
+    entity = entities[0]
+    assert entity.base_type is BaseEntityType.CLASS
+    assert entity.canonical_id == build_canonical_id(
+        repository_id="repo1",
+        repository_revision="rev1",
+        qualified_name="src/`a.ts`/Foo#",
+        base_type=BaseEntityType.CLASS,
+    )
+
+
+def test_gap9_locally_defined_ignores_capability_not_requested(tmp_path: Path) -> None:
+    """When SYMBOL_DEFINITION is not among the requested capabilities,
+    `definitions` stays `None` -- the fix's `(definitions or ())` guard
+    must not raise, and `locally_defined` falls back to exactly its
+    pre-fix, `Document.symbols`-only behavior."""
+    symbol = "scip-test npm pkg 1.0.0 src/`a.ts`/Missing#"
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_missing_symbol_information_index(symbol))
+    adapter = SCIPAdapter()
+    requested = adapter.supported_capabilities - {Capability.SYMBOL_DEFINITION}
+    result = adapter.extract(make_repository(tmp_path), requested)
+    normalized = adapter.normalize(result)
+
+    # No SYMBOL_DEFINITION requested -> no entities produced from
+    # `definitions` at all (it's None and never processed downstream),
+    # so "Missing#" never becomes any kind of entity -- this is
+    # pre-existing, unrelated behavior, only confirmed unaffected here.
+    assert not any(e.qualified_name == "src/`a.ts`/Missing#" for e in normalized.entities)
