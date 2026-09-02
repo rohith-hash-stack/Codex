@@ -81,6 +81,7 @@ the same canonical id) everywhere it's mentioned in a given run.
 from __future__ import annotations
 
 import bisect
+import re
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime
@@ -106,7 +107,13 @@ from codex.provider.contract import (
     ProviderHealthStatus,
     ValidationResult,
 )
-from codex.provider.scip.index import ScipIndex, ScipOccurrence, ScipRange, decode_index
+from codex.provider.scip.index import (
+    ScipDocument,
+    ScipIndex,
+    ScipOccurrence,
+    ScipRange,
+    decode_index,
+)
 from codex.provider.scip.mapping import (
     infer_base_type,
     is_local_symbol,
@@ -411,11 +418,297 @@ def _effective_indent(line: int, character: int, indentations: tuple[int, ...] |
     return character
 
 
+def _read_source_lines(repo_root: Path, relative_path: str) -> tuple[str, ...] | None:
+    """The real source file's own lines (FND-2 fix), read once per
+    document alongside `_read_line_indentations` -- used to verify that a
+    candidate *container* occurrence genuinely opens a scope (`def `,
+    `async def `, `class `) at its own position, including a redefined
+    container's *later* textual instances, which real scip-python output
+    tags `ReadAccess` rather than `Definition` (the same "only the first
+    textual instance gets a Definition-role occurrence" pattern GAP-13
+    established for functions, confirmed by this fix's own research to
+    apply to classes too) and which are therefore invisible to a
+    Definition-role-only container search. Returns ``None`` when the
+    source file cannot be read, matching this module's existing
+    degrade-rather-than-fabricate pattern -- callers fall back to
+    Definition-role occurrences only, unable to verify a ReadAccess-role
+    occurrence is really a scope-opening statement rather than an
+    ordinary reference.
+    """
+    try:
+        text = (repo_root / relative_path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    return tuple(text.splitlines())
+
+
+_SCOPE_KEYWORD_RE = re.compile(r"(?:^|\s)(?:async\s+def|def|class)\s*$")
+
+
+def _is_scope_opening_occurrence(lines: tuple[str, ...] | None, line: int, column: int) -> bool:
+    """Whether the token starting at ``column`` on ``lines[line]`` is
+    genuinely the declared name of a `def `/`async def `/`class `
+    statement -- used to admit a ReadAccess-role occurrence of a
+    function/class-typed symbol as a real container candidate (a later
+    textual redefinition) while rejecting an ordinary reference to that
+    same class/function name elsewhere on the *same* line (e.g. a type
+    annotation like `def f(x: SomeClass):`, where `SomeClass`'s own
+    occurrence sits on a line that itself starts with `def ` but is not
+    itself the declared name -- checking only "does the *line* start
+    with a scope keyword" would wrongly admit it; this checks that the
+    text immediately *preceding this occurrence's own column* ends in
+    the keyword, not merely that the line does somewhere). Returns
+    ``False`` (never assume) when the source is unavailable, the line is
+    out of range, or the column is out of bounds for that line."""
+    if lines is None or not (0 <= line < len(lines)):
+        return False
+    text = lines[line]
+    if not (0 <= column <= len(text)):
+        return False
+    return _SCOPE_KEYWORD_RE.search(text[:column]) is not None
+
+
+@dataclass(frozen=True)
+class _ScopeCandidate:
+    """One real, position-identified candidate enclosing scope: any
+    function/class-typed occurrence that genuinely opens a scope at its
+    own position (FND-2 fix) -- a strict superset of the FND-1-era
+    `containers` list, which only ever consumed Definition-role
+    occurrences and therefore never saw a redefined container's own
+    later textual instances (FND-2 failure mode (b))."""
+
+    line: int
+    column: int
+    symbol: str
+    indent: int
+
+
+def _strip_module_prefix(descriptor_path: str) -> str:
+    """Drop a SCIP descriptor path's leading backtick-quoted module
+    segment (e.g. `` `pkg.a`/Outer#method_a(). `` -> ``Outer#method_a().``),
+    matching the module boundary is always the *last* ``/`` in a local
+    descriptor path (class/function chains use ``#``/``().``, never
+    ``/``, confirmed against `scip.proto`). Used when chaining a second
+    or later container into a `<locals>`-joined qualifier -- the module
+    prefix must appear exactly once, at the very front of the whole
+    chain (matching Python's own qualname convention), never repeated
+    at each hop."""
+    if "/" in descriptor_path:
+        return descriptor_path.rsplit("/", maxsplit=1)[-1]
+    return descriptor_path
+
+
+def _build_scope_forest(
+    doc: ScipDocument, indentations: tuple[int, ...] | None, lines: tuple[str, ...] | None
+) -> tuple[
+    list[_ScopeCandidate],
+    list[tuple[int, int]],
+    list[int],
+    dict[int, str],
+    dict[int, str | None],
+]:
+    """Build this document's full containment tree of real enclosing
+    scopes, and resolve each one to a stable *identity* (FND-2 fix) --
+    the direct architectural analogue of CodeQL's `getEnclosingScope()`
+    (an edge to a specific parent scope *object*, never a re-matched
+    name string) and RepoGraph's node-identity `contains` edges, per
+    this fix's own research (`docs/resources.md`'s seventh finding).
+
+    Two passes over every function/class-typed, non-local, non-Parameter
+    occurrence in the document (Definition-role always; ReadAccess-role
+    only when verified, via `_is_scope_opening_occurrence`, to be a genuine
+    `def`/`class` statement -- FND-2's fix over FND-1's Definition-role-
+    only `containers` list):
+
+    1. **Containment**: sort all candidates by position; each candidate's
+       *parent* is the nearest textually-preceding candidate with
+       strictly smaller true indentation (unchanged from FND-1's own
+       proxy for "whose body textually contains this position" -- still
+       the deterministic, position-based signal this fix relies on).
+       Since a scope's own `def`/`class` line always textually precedes
+       everything nested inside it, a single forward pass over
+       position-sorted candidates is sufficient: no candidate's parent
+       can appear later in this same sorted list.
+
+    2. **Identity resolution**: each candidate is resolved to a *family
+       index* -- the index of the first candidate sharing both (a) the
+       identical descriptor string and (b) the identical *resolved*
+       parent family. Two real, differently-positioned redeclarations of
+       one shared real scope (same descriptor, same real enclosing
+       scope -- GAP-13/14's own "redefinition family" contract, now
+       generalized recursively to any depth rather than only the
+       top-level symbol being resolved) collapse to the SAME family
+       index; two candidates that share a descriptor string but do NOT
+       share a resolved parent (FND-2 failure mode (a) -- e.g. `index()`
+       redefined once per differently-named test method) resolve to
+       DIFFERENT family indices, even though their raw descriptor
+       strings are identical. This is exactly what the old
+       `_nearest_preceding_container` could not distinguish, since it
+       returned the raw string itself.
+
+    3. **Qualifier resolution**: for every family (at its own
+       representative candidate), determine whether *it itself* needs a
+       disambiguating qualifier -- i.e. whether its own descriptor
+       string is shared by 2+ distinct families (an ambiguous container,
+       FND-2 failure mode (a)/(b) recurring one level up: `index()` is
+       itself exactly such a case, and so is `mocked()` in pytest's
+       `TestPaste#mocked().DummyFile#read()`). When it is, that
+       family's own upstream qualifier is computed *recursively* from
+       its own resolved parent -- but only when the parent's own bare
+       descriptor is not *already* textually embedded as a prefix of
+       this family's own descriptor. Real scip-python output is
+       inconsistent about this (confirmed empirically, not assumed: a
+       nested closure's descriptor drops its own immediate non-method
+       function's name in some cases -- `index()` never appears in
+       `generate()`'s descriptor -- but keeps it in others -- `mocked()`
+       *does* appear literally inside `DummyFile#read()`'s own raw
+       descriptor, `TestPaste#mocked().DummyFile#read().`) -- rather
+       than trying to predict which case applies (which would require
+       reading scip-python's own source, against the clean-room policy),
+       a direct string-prefix check on the real descriptor decides it:
+       when the parent's name is already embedded, only the parent's
+       *own* upstream qualifier is prepended (never re-adding the
+       parent's own bare descriptor a second time); when it is not,
+       the parent's full resolved identity (its own qualifier plus its
+       own bare descriptor) is prepended. This single rule subsumes
+       FND-1's original `is_class_qualifier` special case (a class
+       container's own descriptor is *always* embedded as a literal
+       prefix of a member's descriptor, by SCIP's own descriptor
+       grammar) without needing to special-case it separately, and
+       reduces to FND-1's exact original, already-tested qualifier text
+       whenever no container in the chain is itself ambiguous.
+    """
+    candidates: list[_ScopeCandidate] = []
+    for occ in doc.occurrences:
+        if not occ.symbol or is_local_symbol(occ.symbol):
+            continue
+        if not (occ.symbol.endswith("().") or occ.symbol.endswith("#")):
+            continue  # only function/class-typed symbols open a scope
+        if occ.range is None:
+            continue
+        is_definition = bool(occ.symbol_roles & _DEFINITION_ROLE)
+        if not is_definition and not _is_scope_opening_occurrence(
+            lines, occ.range.start_line, occ.range.start_character
+        ):
+            continue
+        indent = _effective_indent(occ.range.start_line, occ.range.start_character, indentations)
+        candidates.append(
+            _ScopeCandidate(occ.range.start_line, occ.range.start_character, occ.symbol, indent)
+        )
+    candidates.sort(key=lambda c: (c.line, c.column))
+    positions = [(c.line, c.column) for c in candidates]
+
+    parent_of: list[int | None] = [None] * len(candidates)
+    for i, cand in enumerate(candidates):
+        idx = bisect.bisect_left(positions, (cand.line, cand.column))
+        for j in range(idx - 1, -1, -1):
+            if candidates[j].indent < cand.indent:
+                parent_of[i] = j
+                break
+
+    family_of: list[int] = [0] * len(candidates)
+    seen: dict[tuple[str, int | None], int] = {}
+    for i, cand in enumerate(candidates):
+        parent_idx = parent_of[i]
+        parent_family = family_of[parent_idx] if parent_idx is not None else None
+        key = (cand.symbol, parent_family)
+        rep = seen.get(key)
+        if rep is None:
+            rep = i
+            seen[key] = i
+        family_of[i] = rep
+
+    symbol_families: dict[str, set[int]] = {}
+    for i, cand in enumerate(candidates):
+        symbol_families.setdefault(cand.symbol, set()).add(family_of[i])
+
+    bare_descriptor: dict[int, str] = {}
+    upstream_qualifier: dict[int, str | None] = {}
+    for i, cand in enumerate(candidates):
+        if family_of[i] != i:
+            continue  # computed once, at each family's own representative
+        parsed = parse_symbol(cand.symbol)
+        descriptor_path = parsed.descriptor_path if parsed is not None else cand.symbol
+        bare_descriptor[i] = descriptor_path
+        if len(symbol_families[cand.symbol]) <= 1:
+            upstream_qualifier[i] = None
+            continue
+        parent_idx = parent_of[i]
+        if parent_idx is None:
+            upstream_qualifier[i] = None
+            continue
+        parent_family = family_of[parent_idx]
+        parent_bare = bare_descriptor[parent_family]
+        # A strict prefix (not equality): a self-referential nested
+        # closure sharing its exact descriptor with its own direct
+        # parent (confirmed real: pytest's `TestExceptionInfoFormatter.
+        # importasmod` fixture method defines a same-named closure
+        # directly inside itself) must NOT take the "already embedded"
+        # shortcut merely because the two descriptors happen to be
+        # identical -- that would silently discard the very
+        # disambiguation this family needs.
+        if descriptor_path != parent_bare and descriptor_path.startswith(parent_bare):
+            # the parent's own identity is already textually embedded in
+            # this family's own descriptor -- never re-add it, only
+            # prepend whatever qualifies the parent itself (if anything)
+            upstream_qualifier[i] = upstream_qualifier[parent_family]
+        else:
+            parent_upstream = upstream_qualifier[parent_family]
+            upstream_qualifier[i] = (
+                f"{parent_upstream.rstrip('.')}.<locals>.{_strip_module_prefix(parent_bare)}"
+                if parent_upstream is not None
+                else parent_bare
+            )
+
+    return candidates, positions, family_of, bare_descriptor, upstream_qualifier
+
+
+def _container_family_for(
+    candidates: list[_ScopeCandidate],
+    positions: list[tuple[int, int]],
+    family_of: list[int],
+    line: int,
+    column: int,
+    indent: int,
+) -> int | None:
+    """The resolved *family identity* (see `_build_scope_forest`) of the
+    nearest real enclosing scope for a position, or ``None`` when no
+    locatable enclosing scope exists (module-level, never fabricated).
+    Replaces FND-1's `_nearest_preceding_container` (which returned a
+    container's own descriptor *string*): returning the resolved family
+    index instead is what lets two same-descriptor containers in
+    genuinely different real scopes group separately (FND-2 fix).
+
+    Deliberately does *not* exclude candidates sharing the target
+    symbol's own descriptor (FND-1's original design did, via an
+    ``own_symbol`` parameter): the *nearest*-preceding-with-smaller-
+    indent search itself already finds a genuinely different, more
+    specific container first whenever one truly intervenes (confirmed:
+    e.g. django's `Signal.asend`, nested once in `Signal.send()` and
+    again in `Signal.send_robust()`, always finds the immediately
+    enclosing `send()`/`send_robust()` first -- both different
+    descriptors -- long before the search could ever reach back to an
+    earlier `asend()` occurrence). Excluding same-descriptor candidates
+    unconditionally instead broke a real, confirmed case this fix's own
+    validation found: pytest's `TestExceptionInfoFormatter.importasmod`
+    fixture method, which defines a *nested closure of the identical
+    name* directly inside itself (`def importasmod(self, ...): def
+    importasmod(source): ...`) -- there the closure's own true immediate
+    parent (the outer method) legitimately shares its exact descriptor,
+    and excluding it by name alone skipped straight past the real
+    container onto an unrelated outer class."""
+    idx = bisect.bisect_left(positions, (line, column))
+    for i in range(idx - 1, -1, -1):
+        if candidates[i].indent < indent:
+            return family_of[i]
+    return None
+
+
 def _nested_symbol_disambiguation(
     index: ScipIndex,
     repo_root: Path | None = None,
 ) -> dict[tuple[str, str, int, int], _NestedIdentity]:
-    """FND-1 fix: detect symbols whose SCIP descriptor is genuinely
+    """FND-1/FND-2 fix: detect symbols whose SCIP descriptor is genuinely
     ambiguous -- shared by two or more distinct real Python entities
     because the descriptor grammar has no room to encode enclosing-
     *function* scope for a symbol nested inside a function/method body
@@ -442,28 +735,47 @@ def _nested_symbol_disambiguation(
     /``Blueprint#decorator()``/``Scaffold#decorator()``, three or four
     distinct closures each).
 
-    The "nearest enclosing scope" for a given occurrence is computed as
-    the closest *preceding* Definition-role occurrence, in the same
-    document, of any other non-local, non-Parameter symbol whose own
-    *indentation* is strictly less than this occurrence's own -- i.e.
-    an outer scope, in a language where nesting is exactly indentation,
-    is always less indented than what it contains. Indentation is read
+    **FND-2 fix (this cycle):** "nearest enclosing scope" is no longer
+    identified by a container occurrence's own descriptor *string*
+    (FND-1's original design) -- that string is not always a reliable
+    proxy for "which real scope instance this is." Two confirmed real
+    failure shapes (`docs/python-fidelity-gap-register.md`'s FND-2 row):
+    a container itself genuinely nested in 2+ different real scopes
+    serializes to an *identical* descriptor in every instance (flask's
+    `index()`, redefined once per differently-named test method,
+    dropping its own enclosing test-method segment exactly as Finding 5
+    describes -- every nested child's lookup then returns the same
+    string regardless of which real `index()` it is actually inside);
+    and a container redefined *in place within one shared real scope*
+    (the ordinary GAP-13/14 pattern, which already converges correctly
+    for the container itself) carries a Definition-role SCIP occurrence
+    on only its *first* textual instance, so a Definition-role-only
+    container search skips straight past its later, un-marked
+    re-declarations onto an unrelated sibling.
+
+    The fix (`_build_scope_forest`, `_container_family_for` -- see their
+    own docstrings, and `docs/resources.md`'s seventh finding for the
+    CodeQL/RepoGraph precedent this follows): resolve every real
+    enclosing-scope candidate to its own recursively-collapsed *family
+    identity* first (same real scope, however many times redefined in
+    place, collapses to one identity; genuinely different real scopes
+    never collapse, even sharing one descriptor string), THEN group a
+    nested symbol's occurrences by their container's *resolved identity*
+    -- never by re-matching descriptor text. Indentation is still read
     from the real source file on disk when available (`repo_root`,
-    `_read_line_indentations`) -- required for correctness, not merely a
-    refinement: a raw SCIP occurrence *column* is not a safe proxy for
-    it, since different keyword prefixes (`def `, `async def `, `class `)
-    shift a definition's own identifier column by different amounts even
-    at identical true nesting depth (confirmed by a real false-negative
-    during this fix's own validation -- django's `Signal.asend`, an
-    ordinary top-level `async def` method, was first found merging with
-    an unrelated `asend` closure nested in `Signal.send`, a plain `def`
-    sibling six columns to its left purely from the shorter keyword,
-    with nothing else at a shallower indentation in between). When the
-    real source file isn't available, this falls back to the raw column
-    (`_effective_indent`), matching the previous, less reliable
-    behavior. This is a structural fact about symbol nesting in the
-    source (which real declared entity's body textually contains this
-    occurrence), not a bare line number used as an identity -- a platform-conditional
+    `_read_line_indentations`, unchanged from FND-1) -- a raw SCIP
+    occurrence *column* remains an unsafe proxy for it, since different
+    keyword prefixes (`def `, `async def `, `class `) shift a
+    definition's own identifier column by different amounts even at
+    identical true nesting depth (Finding 6). When the real source file
+    isn't available, this falls back to the raw column (`_effective_
+    indent`) for indentation, and to Definition-role-only container
+    candidates (unable to verify a ReadAccess-role occurrence is really
+    a scope-opening statement without reading the source) -- the same
+    degrade-rather-than-fabricate pattern as before. This is a
+    structural fact about symbol nesting in the source (which real
+    declared entity's body textually contains this occurrence), not a
+    bare line number used as an identity -- a platform-conditional
     module-level redefinition (e.g. click's ``getchar``, defined once
     under ``if WIN:`` and once under ``else:``, both directly at module
     scope, same column) has *no* enclosing-scope difference between its
@@ -488,20 +800,10 @@ def _nested_symbol_disambiguation(
         indentations = (
             _read_line_indentations(repo_root, doc.relative_path) if repo_root is not None else None
         )
-        containers: list[tuple[int, int, str, int]] = []
-        for occ in doc.occurrences:
-            if not (occ.symbol_roles & _DEFINITION_ROLE):
-                continue
-            if not occ.symbol or is_local_symbol(occ.symbol) or occ.symbol.endswith(")"):
-                continue
-            if occ.range is None:
-                continue
-            indent = _effective_indent(
-                occ.range.start_line, occ.range.start_character, indentations
-            )
-            containers.append((occ.range.start_line, occ.range.start_character, occ.symbol, indent))
-        containers.sort(key=lambda c: (c[0], c[1]))
-        container_positions = [(c[0], c[1]) for c in containers]
+        lines = _read_source_lines(repo_root, doc.relative_path) if repo_root is not None else None
+        candidates, positions, family_of, bare_descriptor, upstream_qualifier = _build_scope_forest(
+            doc, indentations, lines
+        )
 
         symbol_info_counts: dict[str, int] = {}
         for info in doc.symbols:
@@ -524,33 +826,67 @@ def _nested_symbol_disambiguation(
             if len(ordered) < 2:
                 continue
 
-            groups: dict[str | None, list[ScipOccurrence]] = {}
+            groups: dict[int | None, list[ScipOccurrence]] = {}
             for occ in ordered:
-                nearest = _nearest_preceding_container(
-                    occ, containers, container_positions, indentations, own_symbol=symbol
+                assert occ.range is not None
+                occ_indent = _effective_indent(
+                    occ.range.start_line, occ.range.start_character, indentations
                 )
-                groups.setdefault(nearest, []).append(occ)
+                family = _container_family_for(
+                    candidates,
+                    positions,
+                    family_of,
+                    occ.range.start_line,
+                    occ.range.start_character,
+                    occ_indent,
+                )
+                groups.setdefault(family, []).append(occ)
 
-            distinct_real_scopes = {q for q in groups if q is not None}
+            distinct_real_scopes = {f for f in groups if f is not None}
             if len(distinct_real_scopes) <= 1:
                 continue  # not a genuine cross-scope collision -- leave to
                 # `_redefinition_family_locations`'s own, unrelated signal
 
-            for qualifier_symbol, group_occs in groups.items():
-                if qualifier_symbol is None:
+            parsed_target = parse_symbol(symbol)
+            if parsed_target is None:
+                continue
+            target_descriptor = parsed_target.descriptor_path
+
+            for family, group_occs in groups.items():
+                if family is None:
                     continue  # no locatable enclosing scope -- never fabricate one
-                parsed_qualifier = parse_symbol(qualifier_symbol)
-                if parsed_qualifier is None:
-                    continue
-                # A Namespace/Type (class) qualifier means this occurrence is
-                # itself a genuinely top-level class member, not nested
-                # inside anything -- use its own plain descriptor, not a
-                # `<locals>` qualifier that would mislabel it (see
-                # `_NestedIdentity.qualifier_descriptor`'s own docstring).
-                is_class_qualifier = qualifier_symbol.endswith("#")
-                qualifier_descriptor = (
-                    None if is_class_qualifier else parsed_qualifier.descriptor_path
-                )
+                container_bare = bare_descriptor[family]
+                # When the container's own identity is already textually
+                # embedded as a prefix of this symbol's own raw descriptor
+                # (always true for a class container, by SCIP's own
+                # descriptor grammar; also true for some, but not all,
+                # function containers -- confirmed empirically, not
+                # assumed, see `_build_scope_forest`'s own docstring) it
+                # must never be re-added -- only whatever qualifies the
+                # container *itself* (if it is itself ambiguous) is
+                # prepended. Otherwise the container's own full resolved
+                # identity (its own qualifier plus its own bare
+                # descriptor) becomes this symbol's qualifier -- FND-1's
+                # original, already-tested behavior when the container
+                # itself needs no further disambiguation. A strict
+                # prefix, not equality: a symbol sharing its *exact*
+                # descriptor with its own resolved container (the
+                # self-referential nested-closure case, see
+                # `_build_scope_forest`'s own docstring) must still be
+                # qualified against that container's own bare
+                # descriptor, never treated as already-redundant.
+                if target_descriptor != container_bare and target_descriptor.startswith(
+                    container_bare
+                ):
+                    qualifier_descriptor = upstream_qualifier[family]
+                else:
+                    container_upstream = upstream_qualifier[family]
+                    qualifier_descriptor = (
+                        f"{container_upstream.rstrip('.')}.<locals>."
+                        f"{_strip_module_prefix(container_bare)}"
+                        if container_upstream is not None
+                        else container_bare
+                    )
                 representative = max(group_occs, key=lambda o: _range_sort_key(o.range))
                 assert representative.range is not None
                 key = (
@@ -562,46 +898,6 @@ def _nested_symbol_disambiguation(
                 identity = _NestedIdentity(qualifier_descriptor, representative.range)
                 result[key] = identity
     return result
-
-
-def _nearest_preceding_container(
-    occ: ScipOccurrence,
-    containers: list[tuple[int, int, str, int]],
-    container_positions: list[tuple[int, int]],
-    indentations: tuple[int, ...] | None,
-    *,
-    own_symbol: str,
-) -> str | None:
-    """The nearest, textually-preceding real symbol in ``containers``
-    whose own *indentation* is strictly less than ``occ``'s -- the
-    deterministic, position-based proxy for "the real Python entity
-    whose body textually contains this occurrence", used only to
-    disambiguate an already-confirmed-ambiguous symbol (see
-    ``_nested_symbol_disambiguation``).
-
-    The indentation constraint is required for correctness, not merely
-    a refinement: without it, a real top-level sibling that happens to
-    come later in the file than a same-named nested closure, with
-    nothing else at a shallower indentation in between, would look
-    like "the nearest preceding thing" and be silently folded into the
-    closure's own group -- since Python nesting *is* indentation, an
-    outer scope's own indentation is always less than what it contains.
-    Indentation is read from the real source file when available
-    (``indentations``, see ``_read_line_indentations``); a raw SCIP
-    occurrence column alone is not a safe substitute, since keyword
-    prefixes of different lengths (``def ``, ``async def ``, ``class ``)
-    shift a definition's own identifier column without changing its
-    true nesting depth.
-    """
-    assert occ.range is not None
-    pos = (occ.range.start_line, occ.range.start_character)
-    occ_indent = _effective_indent(occ.range.start_line, occ.range.start_character, indentations)
-    idx = bisect.bisect_left(container_positions, pos)
-    for i in range(idx - 1, -1, -1):
-        indent = containers[i][3]
-        if containers[i][2] != own_symbol and indent < occ_indent:
-            return containers[i][2]
-    return None
 
 
 def _collect_definitions(

@@ -2722,3 +2722,1112 @@ def test_fnd1_no_real_source_file_falls_back_to_raw_column(tmp_path: Path) -> No
     matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
     assert len(matches) == 2
     assert len({e.canonical_id for e in matches}) == 2
+
+
+# ---------------------------------------------------------------------------
+# FND-2 fix: recursive scope-identity-based container resolution
+# ---------------------------------------------------------------------------
+#
+# FND-2's root cause: `_nested_symbol_disambiguation` grouped nested-symbol
+# occurrences by their immediate container's *descriptor string*, not its
+# resolved semantic identity. Two confirmed real-data failure shapes:
+#
+#   (a) under-split -- the immediate container is itself cross-scope
+#       ambiguous (flask `TestStreaming#generate()/gen()`, pytest
+#       `TestPaste#mocked().DummyFile#read()`): occurrences nested in two
+#       genuinely different real scopes serialize to the identical
+#       descriptor string once scip-python collapses the enclosing-function
+#       segment, so descriptor-string grouping wrongly merges them.
+#
+#   (b) inconsistent split -- a container is redefined in-place within one
+#       shared real scope (django `Person#first_name` and 25+ similar
+#       cases), and only the *first* textual instance carries a
+#       Definition-role SCIP occurrence, so descriptor-string-only grouping
+#       (which the earlier FND-1 fix did not fully generalize to
+#       *containers*, only to the *target* symbols themselves) could see
+#       the redefinitions as belonging to different groups depending on
+#       which occurrence's raw descriptor happened to be sampled.
+#
+# The fix replaces string-keyed grouping with a position/identity-based
+# "scope forest" (`_build_scope_forest`): every real function/class-typed
+# occurrence in a document is resolved to a `_ScopeCandidate`, and
+# candidates that represent the *same real scope* (however many times it
+# is textually redefined) collapse to one recursively-computed "family"
+# index, while candidates that are genuinely different real scopes never
+# collapse merely because they share a descriptor string. This is the same
+# identity-not-string-matching precedent as CodeQL's `getEnclosingScope()`
+# (an edge to a specific parent scope *object*) and RepoGraph's node-
+# identity `contains` edges -- see `docs/resources.md`'s "Seventh material
+# finding" for the full research record.
+#
+# Every fixture below writes a real, matching Python source file to
+# `tmp_path` (not just synthetic `.scip` occurrences) so the true-
+# indentation/true-scope-opening read paths this fix depends on
+# (`_read_line_indentations`, `_is_scope_opening_occurrence`) are actually
+# exercised, following the established convention of
+# `test_fnd1_true_indentation_not_fooled_by_keyword_length`.
+
+
+def _write_source(tmp_path: Path, source: str) -> None:
+    (tmp_path / "pkg").mkdir(exist_ok=True)
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+
+def test_fnd2_flask_generate_ambiguous_container_splits_correctly(tmp_path: Path) -> None:
+    """(1) FND-2 flask `TestStreaming#generate()/gen()` reproduction: two
+    genuinely different real scopes (`test_a`'s `index()` closure and
+    `test_b`'s `index()` closure) each define their own nested `generate()`
+    closure. scip-python drops the enclosing-method segment for both
+    `index()` instances and both `generate()` instances, so all four
+    descriptors collide pairwise (`TestStreaming#index().` twice,
+    `TestStreaming#generate().` twice) -- FND-1's fix (targeting only the
+    *target* symbol's own descriptor collisions) still under-split these,
+    since the collision here is at the *container* level, one level up.
+    Must resolve to 4 distinct entities with 4 distinct canonical IDs and
+    qualified names chained through the correct grandparent."""
+    source = (
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            def generate():\n"
+        "                pass\n"
+        "            return generate\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            def generate():\n"
+        "                pass\n"
+        "            return generate\n"
+        "        return index\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+    generate_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#generate()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 19)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(2, 12, 17)),
+        occurrence(generate_sym, roles=1, range_=(3, 16, 24)),
+        occurrence(test_b, roles=1, range_=(8, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(9, 12, 17)),
+        occurrence(generate_sym, roles=1, range_=(10, 16, 24)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(generate_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(generate_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    index_matches = [e for e in normalized.entities if e.qualified_name.endswith("index().")]
+    generate_matches = [e for e in normalized.entities if e.qualified_name.endswith("generate().")]
+    assert len(index_matches) == 2
+    assert len(generate_matches) == 2
+    assert len({e.canonical_id for e in index_matches}) == 2
+    assert len({e.canonical_id for e in generate_matches}) == 2
+
+    index_qualified = {e.qualified_name for e in index_matches}
+    assert index_qualified == {
+        "`pkg.a`/TestStreaming#test_a().<locals>.TestStreaming#index().",
+        "`pkg.a`/TestStreaming#test_b().<locals>.TestStreaming#index().",
+    }
+    generate_qualified = {e.qualified_name for e in generate_matches}
+    assert generate_qualified == {
+        "`pkg.a`/TestStreaming#test_a().<locals>."
+        "TestStreaming#index().<locals>.TestStreaming#generate().",
+        "`pkg.a`/TestStreaming#test_b().<locals>."
+        "TestStreaming#index().<locals>.TestStreaming#generate().",
+    }
+    for e in index_matches + generate_matches:
+        assert "scip:nested-scope-disambiguated" in e.roles
+
+
+def test_fnd2_pytest_mocked_ambiguous_container_splits_correctly(tmp_path: Path) -> None:
+    """(2) FND-2 pytest `TestPaste#mocked().DummyFile#read()` reproduction:
+    a local class `DummyFile` defined inside two different `mocked()`
+    closures, each with its own `read()` method -- the local class itself
+    is the ambiguous container this time (not a nested function), and its
+    `read()` method must still split correctly through it."""
+    source = (
+        "class TestPaste:\n"
+        "    def test_a(self):\n"
+        "        def mocked():\n"
+        "            class DummyFile:\n"
+        "                def read(self):\n"
+        "                    pass\n"
+        "            return DummyFile\n"
+        "        return mocked\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def mocked():\n"
+        "            class DummyFile:\n"
+        "                def read(self):\n"
+        "                    pass\n"
+        "            return DummyFile\n"
+        "        return mocked\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestPaste#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestPaste#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestPaste#test_b()."
+    mocked_sym = "scip-python python testrepo rev1 `pkg.a`/TestPaste#mocked()."
+    dummy_sym = "scip-python python testrepo rev1 `pkg.a`/DummyFile#"
+    read_sym = "scip-python python testrepo rev1 `pkg.a`/DummyFile#read()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 15)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(mocked_sym, roles=1, range_=(2, 12, 18)),
+        occurrence(dummy_sym, roles=1, range_=(3, 18, 27)),
+        occurrence(read_sym, roles=1, range_=(4, 20, 24)),
+        occurrence(test_b, roles=1, range_=(9, 8, 14)),
+        occurrence(mocked_sym, roles=1, range_=(10, 12, 18)),
+        occurrence(dummy_sym, roles=1, range_=(11, 18, 27)),
+        occurrence(read_sym, roles=1, range_=(12, 20, 24)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(mocked_sym, kind=0),
+        symbol_information(dummy_sym, kind=7),
+        symbol_information(read_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(mocked_sym, kind=0),
+        symbol_information(dummy_sym, kind=7),
+        symbol_information(read_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    read_matches = [e for e in normalized.entities if e.qualified_name.endswith("read().")]
+    assert len(read_matches) == 2
+    assert len({e.canonical_id for e in read_matches}) == 2
+    read_qualified = {e.qualified_name for e in read_matches}
+    assert read_qualified == {
+        "`pkg.a`/TestPaste#test_a().<locals>."
+        "TestPaste#mocked().<locals>.DummyFile#read().",
+        "`pkg.a`/TestPaste#test_b().<locals>."
+        "TestPaste#mocked().<locals>.DummyFile#read().",
+    }
+
+
+def test_fnd2_django_person_first_name_redefined_container_converges(tmp_path: Path) -> None:
+    """(3) FND-2 django `Person#first_name` reproduction: `Person` is
+    redefined in-place inside one shared real scope (`outer()`), and --
+    matching real observed scip-python behavior -- only the *first*
+    textual instance carries a Definition-role occurrence for the class
+    itself, while `first_name` gets a fresh Definition-role occurrence at
+    *every* textual instance. Both `Person` instances must resolve to the
+    SAME real scope (one family), so `first_name`'s two occurrences must
+    converge to ONE entity, not split -- this is the "inconsistent split"
+    FND-2 shape, not the "under-split" shape."""
+    source = (
+        "def outer():\n"
+        "    class Person:\n"
+        "        first_name = 1\n"
+        "\n"
+        "    class Person:\n"
+        "        first_name = 2\n"
+        "    return Person\n"
+    )
+    _write_source(tmp_path, source)
+
+    outer_sym = "scip-python python testrepo rev1 `pkg.a`/outer()."
+    person_sym = "scip-python python testrepo rev1 `pkg.a`/Person#"
+    first_name_sym = "scip-python python testrepo rev1 `pkg.a`/Person#first_name."
+
+    occs = (
+        occurrence(outer_sym, roles=1, range_=(0, 4, 9)),
+        occurrence(person_sym, roles=1, range_=(1, 10, 16)),
+        occurrence(first_name_sym, roles=1, range_=(2, 8, 18)),
+        occurrence(person_sym, roles=8, range_=(4, 10, 16)),
+        occurrence(first_name_sym, roles=1, range_=(5, 8, 18)),
+    )
+    sym_infos = (
+        symbol_information(outer_sym, kind=0),
+        symbol_information(person_sym, kind=7),
+        symbol_information(first_name_sym, kind=0),
+        symbol_information(first_name_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("first_name.")]
+    assert len(matches) == 1
+    assert matches[0].qualified_name == "`pkg.a`/Person#first_name."
+
+
+def test_fnd2_all_known_variants_coexist_in_one_document(tmp_path: Path) -> None:
+    """(4) All currently known FND-2 variants -- ambiguous-container
+    under-split (flask-style) and redefined-container inconsistent-split
+    (django-style) -- must be handled correctly *simultaneously* within a
+    single document, without one variant's handling interfering with the
+    other's."""
+    source = (
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            pass\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            pass\n"
+        "        return index\n"
+        "\n"
+        "\n"
+        "def outer():\n"
+        "    class Person:\n"
+        "        first_name = 1\n"
+        "\n"
+        "    class Person:\n"
+        "        first_name = 2\n"
+        "    return Person\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+    outer_sym = "scip-python python testrepo rev1 `pkg.a`/outer()."
+    person_sym = "scip-python python testrepo rev1 `pkg.a`/Person#"
+    first_name_sym = "scip-python python testrepo rev1 `pkg.a`/Person#first_name."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 19)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(2, 12, 17)),
+        occurrence(test_b, roles=1, range_=(6, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(7, 12, 17)),
+        occurrence(outer_sym, roles=1, range_=(12, 4, 9)),
+        occurrence(person_sym, roles=1, range_=(13, 10, 16)),
+        occurrence(first_name_sym, roles=1, range_=(14, 8, 18)),
+        occurrence(person_sym, roles=8, range_=(16, 10, 16)),
+        occurrence(first_name_sym, roles=1, range_=(17, 8, 18)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(outer_sym, kind=0),
+        symbol_information(person_sym, kind=7),
+        symbol_information(first_name_sym, kind=0),
+        symbol_information(first_name_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    index_matches = [e for e in normalized.entities if e.qualified_name.endswith("index().")]
+    first_name_matches = [
+        e for e in normalized.entities if e.qualified_name.endswith("first_name.")
+    ]
+    assert len(index_matches) == 2
+    assert len({e.canonical_id for e in index_matches}) == 2
+    assert len(first_name_matches) == 1
+
+
+def test_fnd2_nested_functions_in_different_parent_methods(tmp_path: Path) -> None:
+    """(5) Nested functions of the same name inside different parent
+    methods (one level of nesting, no intermediate ambiguous container)
+    must resolve as distinct entities -- baseline case FND-1 already
+    covered, kept here as an FND-2-fix regression lock since the
+    container-resolution machinery was fully rewritten."""
+    source = (
+        "class Widget:\n"
+        "    def method_a(self):\n"
+        "        def helper():\n"
+        "            pass\n"
+        "        return helper\n"
+        "\n"
+        "    def method_b(self):\n"
+        "        def helper():\n"
+        "            pass\n"
+        "        return helper\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Widget#"
+    method_a = "scip-python python testrepo rev1 `pkg.a`/Widget#method_a()."
+    method_b = "scip-python python testrepo rev1 `pkg.a`/Widget#method_b()."
+    helper = "scip-python python testrepo rev1 `pkg.a`/Widget#helper()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 12)),
+        occurrence(method_a, roles=1, range_=(1, 8, 16)),
+        occurrence(helper, roles=1, range_=(2, 12, 18)),
+        occurrence(method_b, roles=1, range_=(6, 8, 16)),
+        occurrence(helper, roles=1, range_=(7, 12, 18)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(method_a, kind=0),
+        symbol_information(helper, kind=0),
+        symbol_information(method_b, kind=0),
+        symbol_information(helper, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+    assert {e.qualified_name for e in matches} == {
+        "`pkg.a`/Widget#method_a().<locals>.Widget#helper().",
+        "`pkg.a`/Widget#method_b().<locals>.Widget#helper().",
+    }
+
+
+def test_fnd2_local_classes_in_different_functions(tmp_path: Path) -> None:
+    """(6) Same-named local classes defined inside different top-level
+    functions must resolve as distinct entities, with their own methods
+    correctly chained through the resolved (not string-matched) local
+    class."""
+    source = (
+        "def make_a():\n"
+        "    class Box:\n"
+        "        def value(self):\n"
+        "            pass\n"
+        "    return Box\n"
+        "\n"
+        "\n"
+        "def make_b():\n"
+        "    class Box:\n"
+        "        def value(self):\n"
+        "            pass\n"
+        "    return Box\n"
+    )
+    _write_source(tmp_path, source)
+
+    make_a = "scip-python python testrepo rev1 `pkg.a`/make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/make_b()."
+    box = "scip-python python testrepo rev1 `pkg.a`/Box#"
+    value = "scip-python python testrepo rev1 `pkg.a`/Box#value()."
+
+    occs = (
+        occurrence(make_a, roles=1, range_=(0, 4, 10)),
+        occurrence(box, roles=1, range_=(1, 10, 13)),
+        occurrence(value, roles=1, range_=(2, 12, 17)),
+        occurrence(make_b, roles=1, range_=(7, 4, 10)),
+        occurrence(box, roles=1, range_=(8, 10, 13)),
+        occurrence(value, roles=1, range_=(9, 12, 17)),
+    )
+    sym_infos = (
+        symbol_information(make_a, kind=0),
+        symbol_information(box, kind=7),
+        symbol_information(value, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(box, kind=7),
+        symbol_information(value, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    box_matches = [e for e in normalized.entities if e.qualified_name.endswith("Box#")]
+    value_matches = [e for e in normalized.entities if e.qualified_name.endswith("value().")]
+    assert len(box_matches) == 2
+    assert len({e.canonical_id for e in box_matches}) == 2
+    assert len(value_matches) == 2
+    assert len({e.canonical_id for e in value_matches}) == 2
+    assert {e.qualified_name for e in value_matches} == {
+        "`pkg.a`/make_a().<locals>.Box#value().",
+        "`pkg.a`/make_b().<locals>.Box#value().",
+    }
+
+
+def test_fnd2_three_levels_of_nesting(tmp_path: Path) -> None:
+    """(7) Multiple nested levels (3+ deep): a target symbol nested inside
+    an ambiguous grandparent AND an ambiguous great-grandparent must still
+    chain correctly through every resolved level, not just the immediate
+    parent."""
+    source = (
+        "class Outer:\n"
+        "    def make_a(self):\n"
+        "        def level_b():\n"
+        "            def level_c():\n"
+        "                def target():\n"
+        "                    pass\n"
+        "                return target\n"
+        "            return level_c\n"
+        "        return level_b\n"
+        "\n"
+        "    def make_b(self):\n"
+        "        def level_b():\n"
+        "            def level_c():\n"
+        "                def target():\n"
+        "                    pass\n"
+        "                return target\n"
+        "            return level_c\n"
+        "        return level_b\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Outer#"
+    make_a = "scip-python python testrepo rev1 `pkg.a`/Outer#make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/Outer#make_b()."
+    level_b = "scip-python python testrepo rev1 `pkg.a`/Outer#level_b()."
+    level_c = "scip-python python testrepo rev1 `pkg.a`/Outer#level_c()."
+    target = "scip-python python testrepo rev1 `pkg.a`/Outer#target()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 11)),
+        occurrence(make_a, roles=1, range_=(1, 8, 14)),
+        occurrence(level_b, roles=1, range_=(2, 12, 19)),
+        occurrence(level_c, roles=1, range_=(3, 16, 23)),
+        occurrence(target, roles=1, range_=(4, 20, 26)),
+        occurrence(make_b, roles=1, range_=(10, 8, 14)),
+        occurrence(level_b, roles=1, range_=(11, 12, 19)),
+        occurrence(level_c, roles=1, range_=(12, 16, 23)),
+        occurrence(target, roles=1, range_=(13, 20, 26)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(make_a, kind=0),
+        symbol_information(level_b, kind=0),
+        symbol_information(level_c, kind=0),
+        symbol_information(target, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(level_b, kind=0),
+        symbol_information(level_c, kind=0),
+        symbol_information(target, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    target_matches = [e for e in normalized.entities if e.qualified_name.endswith("target().")]
+    assert len(target_matches) == 2
+    assert len({e.canonical_id for e in target_matches}) == 2
+    assert {e.qualified_name for e in target_matches} == {
+        "`pkg.a`/Outer#make_a().<locals>.Outer#level_b().<locals>."
+        "Outer#level_c().<locals>.Outer#target().",
+        "`pkg.a`/Outer#make_b().<locals>.Outer#level_b().<locals>."
+        "Outer#level_c().<locals>.Outer#target().",
+    }
+
+
+def test_fnd2_same_nested_name_three_distinct_scopes(tmp_path: Path) -> None:
+    """(8) The same nested name appearing in three (not merely two)
+    distinct scopes must resolve to three distinct entities -- rules out
+    an implementation that only ever considers a binary "same or
+    different" comparison instead of true per-family identity."""
+    source = (
+        "def make_a():\n"
+        "    def helper():\n"
+        "        pass\n"
+        "    return helper\n"
+        "\n"
+        "\n"
+        "def make_b():\n"
+        "    def helper():\n"
+        "        pass\n"
+        "    return helper\n"
+        "\n"
+        "\n"
+        "def make_c():\n"
+        "    def helper():\n"
+        "        pass\n"
+        "    return helper\n"
+    )
+    _write_source(tmp_path, source)
+
+    make_a = "scip-python python testrepo rev1 `pkg.a`/make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/make_b()."
+    make_c = "scip-python python testrepo rev1 `pkg.a`/make_c()."
+    helper = "scip-python python testrepo rev1 `pkg.a`/helper()."
+
+    occs = (
+        occurrence(make_a, roles=1, range_=(0, 4, 10)),
+        occurrence(helper, roles=1, range_=(1, 8, 14)),
+        occurrence(make_b, roles=1, range_=(6, 4, 10)),
+        occurrence(helper, roles=1, range_=(7, 8, 14)),
+        occurrence(make_c, roles=1, range_=(12, 4, 10)),
+        occurrence(helper, roles=1, range_=(13, 8, 14)),
+    )
+    sym_infos = (
+        symbol_information(make_a, kind=0),
+        symbol_information(helper, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(helper, kind=0),
+        symbol_information(make_c, kind=0),
+        symbol_information(helper, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 3
+    assert len({e.canonical_id for e in matches}) == 3
+    assert {e.qualified_name for e in matches} == {
+        "`pkg.a`/make_a().<locals>.helper().",
+        "`pkg.a`/make_b().<locals>.helper().",
+        "`pkg.a`/make_c().<locals>.helper().",
+    }
+
+
+def test_fnd2_ambiguous_immediate_container_is_resolved_not_string_matched(tmp_path: Path) -> None:
+    """(9) The defining FND-2 shape in isolation: the *immediate* container
+    of the target symbol is itself ambiguous (two real scopes share its
+    descriptor). This is exactly `test_fnd2_flask_generate_...` reduced to
+    its minimal two-entity shape, kept as a separate targeted case per the
+    directive's explicit category list."""
+    source = (
+        "class Outer:\n"
+        "    def make_a(self):\n"
+        "        def container():\n"
+        "            def target():\n"
+        "                pass\n"
+        "            return target\n"
+        "        return container\n"
+        "\n"
+        "    def make_b(self):\n"
+        "        def container():\n"
+        "            def target():\n"
+        "                pass\n"
+        "            return target\n"
+        "        return container\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Outer#"
+    make_a = "scip-python python testrepo rev1 `pkg.a`/Outer#make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/Outer#make_b()."
+    container = "scip-python python testrepo rev1 `pkg.a`/Outer#container()."
+    target = "scip-python python testrepo rev1 `pkg.a`/Outer#target()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 11)),
+        occurrence(make_a, roles=1, range_=(1, 8, 14)),
+        occurrence(container, roles=1, range_=(2, 12, 21)),
+        occurrence(target, roles=1, range_=(3, 16, 22)),
+        occurrence(make_b, roles=1, range_=(8, 8, 14)),
+        occurrence(container, roles=1, range_=(9, 12, 21)),
+        occurrence(target, roles=1, range_=(10, 16, 22)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(make_a, kind=0),
+        symbol_information(container, kind=0),
+        symbol_information(target, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(container, kind=0),
+        symbol_information(target, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    target_matches = [e for e in normalized.entities if e.qualified_name.endswith("target().")]
+    assert len(target_matches) == 2
+    assert len({e.canonical_id for e in target_matches}) == 2
+
+
+def test_fnd2_redefined_container_missing_later_definition_occurrence(tmp_path: Path) -> None:
+    """(10) A container class redefined in-place where the *second*
+    instance carries only a ReadAccess-role (not Definition-role)
+    occurrence -- matching real observed scip-python output -- must still
+    be recognized as a genuine scope-opening candidate (via
+    `_is_scope_opening_occurrence`'s verified-ReadAccess path) so that
+    children nested under the second instance still resolve to the SAME
+    family as children under the first, converging correctly. This is
+    `test_fnd2_django_person_first_name_...` with the assertion focused
+    specifically on the second (ReadAccess) instance's own children."""
+    source = (
+        "def outer():\n"
+        "    class Config:\n"
+        "        debug = 1\n"
+        "\n"
+        "    class Config:\n"
+        "        debug = 2\n"
+        "    return Config\n"
+    )
+    _write_source(tmp_path, source)
+
+    outer_sym = "scip-python python testrepo rev1 `pkg.a`/outer()."
+    config_sym = "scip-python python testrepo rev1 `pkg.a`/Config#"
+    debug_sym = "scip-python python testrepo rev1 `pkg.a`/Config#debug."
+
+    occs = (
+        occurrence(outer_sym, roles=1, range_=(0, 4, 9)),
+        occurrence(config_sym, roles=1, range_=(1, 10, 16)),
+        occurrence(debug_sym, roles=1, range_=(2, 8, 13)),
+        occurrence(config_sym, roles=8, range_=(4, 10, 16)),
+        occurrence(debug_sym, roles=1, range_=(5, 8, 13)),
+    )
+    sym_infos = (
+        symbol_information(outer_sym, kind=0),
+        symbol_information(config_sym, kind=7),
+        symbol_information(debug_sym, kind=0),
+        symbol_information(debug_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("debug.")]
+    assert len(matches) == 1
+    # Matches the existing GAP-13/14 convention (`_redefinition_family_locations`):
+    # the *last* member of a same-scope textual-redefinition cluster is the
+    # representative location, not the first -- unchanged by this fix.
+    assert matches[0].source_location is not None
+    assert matches[0].source_location.start_line == 5
+
+
+def test_fnd2_ast_scip_convergence_matches_independent_oracle(tmp_path: Path) -> None:
+    """(11) AST<->SCIP convergence: for the flask-style ambiguous-container
+    fixture, independently compute true lexical nesting straight from the
+    real source file via Python's own `ast` module (never calling
+    `_nested_symbol_disambiguation` or any of its helpers) and confirm the
+    two `generate` functions' true parent-chain identities (by source
+    position, not by name) disagree with each other -- i.e. the source
+    genuinely contains two distinct scopes -- matching Codex's own
+    resolution into two distinct canonical entities. This is the same
+    independence discipline as the audit's own oracle: an AST-only ground
+    truth, checked against Codex's output, not against Codex's own logic."""
+    import ast
+
+    source = (
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            def generate():\n"
+        "                pass\n"
+        "            return generate\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            def generate():\n"
+        "                pass\n"
+        "            return generate\n"
+        "        return index\n"
+    )
+    _write_source(tmp_path, source)
+
+    tree = ast.parse(source)
+    generate_defs = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "generate"
+    ]
+    assert len(generate_defs) == 2
+
+    def ancestry(target: ast.AST) -> tuple[str, ...]:
+        chain: list[str] = []
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                if child is target and isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                    chain.append(node.name)
+                    chain.extend(ancestry(node))
+        return tuple(chain)
+
+    ancestries = {ancestry(node) for node in generate_defs}
+    assert len(ancestries) == 2  # independent oracle: two genuinely distinct scopes
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+    generate_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#generate()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 19)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(2, 12, 17)),
+        occurrence(generate_sym, roles=1, range_=(3, 16, 24)),
+        occurrence(test_b, roles=1, range_=(8, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(9, 12, 17)),
+        occurrence(generate_sym, roles=1, range_=(10, 16, 24)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(generate_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(generate_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    generate_matches = [e for e in normalized.entities if e.qualified_name.endswith("generate().")]
+    assert len({e.canonical_id for e in generate_matches}) == len(ancestries)
+
+
+def test_fnd2_gap13_gap14_legitimate_redefinitions_still_converge(tmp_path: Path) -> None:
+    """(12) Regression: legitimate GAP-13/14 same-scope redefinitions
+    (`@typing.overload` chains, `@property`/`.setter` pairs) at module or
+    class level -- not inside any ambiguous container -- must still
+    converge to one entity after the full container-resolution rewrite."""
+    source = (
+        "class Widget:\n"
+        "    @property\n"
+        "    def value(self):\n"
+        "        return self._value\n"
+        "\n"
+        "    @value.setter\n"
+        "    def value(self, val):\n"
+        "        self._value = val\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Widget#"
+    value = "scip-python python testrepo rev1 `pkg.a`/Widget#value()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 12)),
+        occurrence(value, roles=1, range_=(2, 8, 13)),
+        occurrence(value, roles=1, range_=(6, 8, 13)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(value, kind=0),
+        symbol_information(value, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("value().")]
+    assert len(matches) == 1
+    assert "scip:redefinition-family" in matches[0].roles
+
+
+def test_fnd2_fnd1_behavior_unchanged_true_indentation(tmp_path: Path) -> None:
+    """(13) Regression: FND-1's true-indentation-not-fooled-by-keyword-
+    length behavior (`async def` vs `def` column-length skew) must be
+    unchanged by the FND-2 container-resolution rewrite. Reuses the exact
+    shape of `test_fnd1_true_indentation_not_fooled_by_keyword_length`."""
+    source = (
+        "class Outer:\n"
+        "    def method_a(self):\n"
+        "        def helper():\n"
+        "            pass\n"
+        "        return helper\n"
+        "\n"
+        "    async def helper(self):\n"
+        "        pass\n"
+    )
+    _write_source(tmp_path, source)
+
+    outer_class = "scip-python python testrepo rev1 `pkg.a`/Outer#"
+    method_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    helper = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    occs = (
+        occurrence(outer_class, roles=1, range_=(0, 6, 11)),
+        occurrence(method_a, roles=1, range_=(1, 8, 16)),
+        occurrence(helper, roles=1, range_=(2, 12, 18)),
+        occurrence(helper, roles=1, range_=(6, 14, 20)),
+    )
+    sym_infos = (
+        symbol_information(outer_class, kind=7),
+        symbol_information(method_a, kind=0),
+        symbol_information(helper, kind=0),
+        symbol_information(helper, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+    top_level = next(e for e in matches if e.qualified_name == "`pkg.a`/Outer#helper().")
+    nested = next(e for e in matches if e.qualified_name != "`pkg.a`/Outer#helper().")
+    assert top_level.source_location is not None and top_level.source_location.start_line == 6
+    assert nested.qualified_name == "`pkg.a`/Outer#method_a().<locals>.Outer#helper()."
+
+
+def test_fnd2_self_referential_closure_same_name_as_parent(tmp_path: Path) -> None:
+    """FND-2, third confirmed shape found mid-cycle during exhaustive
+    re-sweeping (pytest's `TestExceptionInfoFormatter.importasmod`): a
+    method defines a nested closure of its *own exact name* directly
+    inside itself. Both share the identical SCIP descriptor
+    (`Foo#bar().`), so a naive `.startswith()` "already embedded" check
+    (without a strict `!=` guard) would collapse both to the same
+    qualified name even after they are correctly split into separate
+    families. Must remain two distinct entities with distinct,
+    non-colliding qualified names."""
+    source = (
+        "class Foo:\n"
+        "    def bar(self):\n"
+        "        def bar():\n"
+        "            pass\n"
+        "        return bar\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Foo#"
+    bar = "scip-python python testrepo rev1 `pkg.a`/Foo#bar()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 9)),
+        occurrence(bar, roles=1, range_=(1, 8, 11)),
+        occurrence(bar, roles=1, range_=(2, 12, 15)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(bar, kind=0),
+        symbol_information(bar, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("bar().")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+    assert len({e.qualified_name for e in matches}) == 2
+    method = next(
+        e for e in matches if e.source_location is not None and e.source_location.start_line == 1
+    )
+    closure = next(
+        e for e in matches if e.source_location is not None and e.source_location.start_line == 2
+    )
+    assert method.qualified_name == "`pkg.a`/Foo#bar()."
+    assert closure.qualified_name == "`pkg.a`/Foo#bar().<locals>.Foo#bar()."
+
+
+def test_fnd2_deterministic_canonical_ids_across_repeated_ingestion(tmp_path: Path) -> None:
+    """(14) Deterministic canonical IDs: re-ingesting the identical
+    ambiguous-container fixture twice must produce identical canonical
+    IDs for corresponding entities each time -- no dependence on
+    iteration/dict/set ordering anywhere in the new scope-forest or
+    family-resolution machinery."""
+    source = (
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            pass\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            pass\n"
+        "        return index\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 19)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(2, 12, 17)),
+        occurrence(test_b, roles=1, range_=(6, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(7, 12, 17)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    data = scip_index(documents=(doc,))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(data)
+
+    adapter = SCIPAdapter()
+    caps = adapter.supported_capabilities
+    first = adapter.normalize(adapter.extract(make_repository(tmp_path), caps))
+    second = adapter.normalize(adapter.extract(make_repository(tmp_path), caps))
+
+    first_map = {
+        e.qualified_name: e.canonical_id
+        for e in first.entities
+        if e.qualified_name.endswith("index().")
+    }
+    second_map = {
+        e.qualified_name: e.canonical_id
+        for e in second.entities
+        if e.qualified_name.endswith("index().")
+    }
+    assert len(first_map) == 2
+    assert first_map == second_map
+
+
+def test_fnd2_evidence_and_relationships_preserved_for_split_entities(tmp_path: Path) -> None:
+    """(15) Evidence and relationships must still be produced and correctly
+    attributed to the right (split) entity after the container-resolution
+    rewrite. `index()` itself is ambiguous (two split entities) so a
+    reference *to* it is deliberately skipped by the existing shared
+    `resolve()` closure (which never resolves references/relationships for
+    any symbol in `ambiguous_symbols`, since a reference alone cannot say
+    which split instance it means -- unchanged, pre-existing behavior).
+    What must survive this fix is a reference *from inside* one of the
+    split scopes to an unambiguous target (the enclosing class itself)."""
+    source = (
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            return TestStreaming\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            return TestStreaming\n"
+        "        return index\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 19)),
+        occurrence(test_a, roles=1, range_=(1, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(2, 12, 17)),
+        occurrence(cls, roles=8, range_=(3, 19, 32)),
+        occurrence(test_b, roles=1, range_=(6, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(7, 12, 17)),
+        occurrence(cls, roles=8, range_=(8, 19, 32)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    index_matches = [e for e in normalized.entities if e.qualified_name.endswith("index().")]
+    assert len(index_matches) == 2
+    assert len(normalized.evidence) > 0
+    ref_predicates = {ev.predicate for ev in normalized.evidence}
+    assert RelationshipType.REFERENCES in ref_predicates
+
+
+def test_fnd2_external_unresolved_symbols_unaffected(tmp_path: Path) -> None:
+    """(16) External/unresolved symbols (no local Definition occurrence,
+    outside the indexed project) must remain unaffected by the new scope-
+    forest machinery -- they never enter `_build_scope_forest`'s candidate
+    collection (which only considers occurrences from indexed documents),
+    and referencing one from inside an otherwise-ambiguous nested scope
+    must not perturb that scope's own disambiguation."""
+    source = (
+        "import external_pkg\n"
+        "\n"
+        "\n"
+        "class TestStreaming:\n"
+        "    def test_a(self):\n"
+        "        def index():\n"
+        "            external_pkg.call()\n"
+        "        return index\n"
+        "\n"
+        "    def test_b(self):\n"
+        "        def index():\n"
+        "            external_pkg.call()\n"
+        "        return index\n"
+    )
+    _write_source(tmp_path, source)
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#"
+    test_a = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#test_b()."
+    index_sym = "scip-python python testrepo rev1 `pkg.a`/TestStreaming#index()."
+    external_sym = "scip-python python external_pkg 1.0.0 `external_pkg`/call()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(3, 6, 19)),
+        occurrence(test_a, roles=1, range_=(4, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(5, 12, 17)),
+        occurrence(external_sym, roles=2, range_=(6, 12, 30)),
+        occurrence(test_b, roles=1, range_=(9, 8, 14)),
+        occurrence(index_sym, roles=1, range_=(10, 12, 17)),
+        occurrence(external_sym, roles=2, range_=(11, 12, 30)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(test_a, kind=0),
+        symbol_information(index_sym, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(index_sym, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    index_matches = [e for e in normalized.entities if e.qualified_name.endswith("index().")]
+    assert len(index_matches) == 2
+    assert len({e.canonical_id for e in index_matches}) == 2
+    assert not any(e.qualified_name.endswith("call().") for e in normalized.entities)
