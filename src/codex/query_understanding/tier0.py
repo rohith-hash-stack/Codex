@@ -94,6 +94,21 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
         re.compile(r"\b(?:find\s+)?implementations?\s+of\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
+    # GAP-7 fix: the natural-phrasing form ("What implements X?"/"Who
+    # implements X?"), alongside the pre-existing "implementations of X"
+    # noun-phrase form above -- same intent, same score. No new evidence
+    # mapping needed: FIND_IMPLEMENTATIONS is already fully wired
+    # (`_REQUIRED_EVIDENCE[FIND_IMPLEMENTATIONS] = {IMPLEMENTATION}`,
+    # `_BASE_DEPTH_BY_INTENT[FIND_IMPLEMENTATIONS] = 1`, already a member
+    # of `_NEGATIVE_QUERY_INTENTS`) -- this rule only teaches Tier-0 a
+    # second phrase shape for an intent that already has a full,
+    # previously-validated retrieval path (GAP-6/GAP-8's own real-data
+    # measurements all query this exact intent).
+    _Rule(
+        Intent.FIND_IMPLEMENTATIONS,
+        re.compile(r"\b(?:what|who)\s+implements?\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
     _Rule(
         Intent.FIND_IMPACT,
         re.compile(r"\bimpact\s+of\s+(?:changing\s+)?([\w.]+)", re.I),
