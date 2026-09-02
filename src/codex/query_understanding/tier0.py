@@ -94,6 +94,21 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
         re.compile(r"\b(?:find\s+)?implementations?\s+of\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
+    # GAP-5 fix (`docs/architecture-conformance-audit.md` §KK.8): natural
+    # reference-query phrasing -- "What references X?"/"Who references
+    # X?" and the pre-existing noun-phrase form "references to X" both
+    # map to the new `Intent.FIND_REFERENCES` (see `models.Intent`'s own
+    # docstring for why no existing intent is an honest fit).
+    _Rule(
+        Intent.FIND_REFERENCES,
+        re.compile(r"\b(?:what|who)\s+references?\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    _Rule(
+        Intent.FIND_REFERENCES,
+        re.compile(r"\breferences?\s+to\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
     _Rule(
         Intent.FIND_IMPACT,
         re.compile(r"\bimpact\s+of\s+(?:changing\s+)?([\w.]+)", re.I),

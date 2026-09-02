@@ -50,6 +50,7 @@ _BASE_DEPTH_BY_INTENT: dict[Intent, int] = {
     Intent.FIND_IMPLEMENTATIONS: 1,
     Intent.FIND_TESTS: 1,
     Intent.FIND_DEPENDENCIES: 1,
+    Intent.FIND_REFERENCES: 1,  # GAP-5 fix: same single-hop shape as its siblings above.
     Intent.TRACE_EXECUTION: 2,
     Intent.FIND_IMPACT: 2,
     Intent.ARCHITECTURE_ANALYSIS: 2,
@@ -69,6 +70,11 @@ _NEGATIVE_QUERY_INTENTS: frozenset[Intent] = frozenset(
         Intent.FIND_DEPENDENCIES,
         Intent.FIND_IMPACT,
         Intent.TRACE_EXECUTION,
+        # GAP-5 fix: "What references X?" is exactly the same "does X
+        # relate to Y" shape as its relationship-seeking siblings above
+        # -- a genuinely empty result is a legitimate negative-query
+        # candidate, not silently excluded.
+        Intent.FIND_REFERENCES,
     }
 )
 """Relationship-seeking intents where an empty result is a candidate for

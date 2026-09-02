@@ -110,3 +110,50 @@ def test_short_target_treated_as_noise() -> None:
     candidates = detect("Who calls a?")
     assert candidates[0].intent is Intent.FIND_CALLERS
     assert candidates[0].targets == ()
+
+
+# --- GAP-5 fix: "What references X?" / "Who references X?" -----------------
+
+
+def test_find_references_what_references_x() -> None:
+    candidates = detect("What references authenticate?")
+    assert candidates[0].intent is Intent.FIND_REFERENCES
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("authenticate",)
+
+
+def test_find_references_who_references_x() -> None:
+    candidates = detect("Who references PaymentProcessor?")
+    assert candidates[0].intent is Intent.FIND_REFERENCES
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("PaymentProcessor",)
+
+
+def test_find_references_noun_phrase_form() -> None:
+    """The pre-existing "references to X" noun-phrase shape, matching
+    "implementations of X"'s own established convention."""
+    candidates = detect("references to UserModel")
+    assert candidates[0].intent is Intent.FIND_REFERENCES
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("UserModel",)
+
+
+def test_find_references_does_not_collapse_with_find_callers() -> None:
+    """Adversarial check, matching this file's own "distinct intent"
+    discipline: a query naming both "references" and "calls" structure
+    must not have FIND_REFERENCES accidentally win over a genuine
+    FIND_CALLERS match, or vice versa -- each pattern only fires on its
+    own distinct phrase shape."""
+    calls_candidates = detect("Who calls authenticate?")
+    assert calls_candidates[0].intent is Intent.FIND_CALLERS
+    assert all(c.intent is not Intent.FIND_REFERENCES for c in calls_candidates)
+
+    references_candidates = detect("What references authenticate?")
+    assert references_candidates[0].intent is Intent.FIND_REFERENCES
+    assert all(c.intent is not Intent.FIND_CALLERS for c in references_candidates)
+
+
+def test_find_references_determinism() -> None:
+    a = detect("What references authenticate?")
+    b = detect("What references authenticate?")
+    assert a == b

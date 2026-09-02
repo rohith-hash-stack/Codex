@@ -39,6 +39,21 @@ class Intent(StrEnum):
     HISTORY_ANALYSIS = "HISTORY_ANALYSIS"
     ARCHITECTURE_ANALYSIS = "ARCHITECTURE_ANALYSIS"
     CODE_LOOKUP = "CODE_LOOKUP"
+    FIND_REFERENCES = "FIND_REFERENCES"
+    """GAP-5 fix (`docs/architecture-conformance-audit.md` §KK.8):
+    "What references X?"/"Who references X?" has no honest home among
+    the other eight intents -- CODE_LOOKUP's own required evidence is
+    `SYMBOL_DEFINITION` only (a lookup, not a relationship search), and
+    every other intent's evidence set is scoped to a narrower relation
+    (calls, implements, depends-on, ...) that would silently answer a
+    different question. Added as a documented implementation-detail
+    extension of the vocabulary (same precedent as `CODE_LOOKUP` itself,
+    which HLRD §30/TAD §23's own worked list also does not name), not an
+    HLRD/TAD-specified value -- backed entirely by the pre-existing,
+    already-documented `Capability.SYMBOL_REFERENCE`/`TYPE_RELATIONSHIP`
+    -> `RelationshipType.REFERENCES` mapping (`codex.query_understanding.
+    engine`'s `_CAPABILITY_RELATIONSHIP_TYPES`); no new relationship
+    semantics, no new capability, no new predicate."""
     UNKNOWN = "UNKNOWN"
     """No deterministic or SLM-provided intent could be established —
     an explicit, honest "no match" value, never silently coerced to

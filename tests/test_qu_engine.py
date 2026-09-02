@@ -322,3 +322,53 @@ def test_slm_path_relationship_types_are_untouched_by_this_fix() -> None:
     assert result.status is UnderstandingStatus.RESOLVED
     assert result.contract is not None
     assert result.contract.relationship_types == [RelationshipType.EXTENDS]
+
+
+# --- GAP-5 fix: FIND_REFERENCES end-to-end ----------------------------------
+
+
+def test_find_references_resolves_deterministically() -> None:
+    result = understand_query("What references authenticate?", repository_id="repo1", now=NOW)
+    assert result.status is UnderstandingStatus.RESOLVED
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_REFERENCES
+    assert result.contract.confidence > DETERMINISTIC_THRESHOLD
+    assert result.contract.targets == ["authenticate"]
+
+
+def test_find_references_required_evidence_is_symbol_reference_and_type_relationship() -> None:
+    from codex.provider.capability import Capability
+
+    result = understand_query("What references authenticate?", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert set(result.contract.required_evidence) == {
+        Capability.SYMBOL_REFERENCE,
+        Capability.TYPE_RELATIONSHIP,
+    }
+
+
+def test_find_references_relationship_types_include_references() -> None:
+    """`Capability.SYMBOL_REFERENCE` mechanically derives both `REFERENCES`
+    and `IMPORTS` (`_CAPABILITY_RELATIONSHIP_TYPES`'s pre-existing,
+    already-documented entry -- SCIPAdapter's own real output shape,
+    exactly as FIND_CALLERS/FIND_TESTS already inherit) -- this only
+    proves `REFERENCES` itself is present, not that it's the sole entry."""
+    from codex.ontology.relationships import RelationshipType
+
+    result = understand_query("What references authenticate?", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert RelationshipType.REFERENCES in result.contract.relationship_types
+
+
+def test_find_references_does_not_change_find_callers_required_evidence() -> None:
+    """Regression guard: adding `FIND_REFERENCES` to `_REQUIRED_EVIDENCE`
+    must not alter any *other* intent's own entry -- FIND_CALLERS still
+    requires exactly what it required before this fix."""
+    from codex.provider.capability import Capability
+
+    result = understand_query("Who calls authenticate?", repository_id="repo1", now=NOW)
+    assert result.contract is not None
+    assert set(result.contract.required_evidence) == {
+        Capability.CALL_RELATIONSHIP,
+        Capability.SYMBOL_REFERENCE,
+    }
