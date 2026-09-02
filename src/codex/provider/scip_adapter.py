@@ -247,12 +247,74 @@ def _file_path_from_descriptor(descriptor_path: str) -> str:
     return descriptor_path.removesuffix("/").replace("`", "")
 
 
+def _dotted_prefix_file_candidates(dotted: str) -> tuple[str, str]:
+    """The two real-file shapes a dotted module path could correspond to
+    on disk: a flat module (``pkg/mod.py``) or a package (``pkg/mod/
+    __init__.py``)."""
+    slash_form = dotted.replace(".", "/")
+    return f"{slash_form}.py", f"{slash_form}/__init__.py"
+
+
+def _is_indexed_project_file(
+    descriptor_path: str, indexed_relative_paths: frozenset[str]
+) -> bool:
+    """GAP-10 fix: True only when a backtick-quoted dotted-module
+    descriptor prefix corresponds to a real file *this exact SCIP index
+    itself indexed* as part of the target repository's own source tree.
+
+    Investigation finding (real data, django/flask/click/pytest):
+    ``parsed.package_version == revision`` alone is NOT a safe local/
+    external discriminator, contrary to this fix's first draft. scip-python
+    falls back to attributing an *unresolved* import -- stdlib
+    (``unittest.case``, ``json.encoder``, ``_ast``), third-party
+    (``zope.interface``, ``werkzeug.exceptions``, ``PIL.ImageEnhance``,
+    ``psycopg.pq``), even a project's own external dependency
+    (``click.core`` inside flask's own index) -- to the *local* project's
+    package name and this exact ingestion ``revision``, indistinguishably
+    from a genuine same-repository phantom. Confirmed: 18-95 such
+    indexer-fallback false positives per repository if `package_version
+    == revision` were trusted alone (pytest 18, flask 43, click 16,
+    django 95 -- out of the "backtick-quoted, version-matches" candidate
+    set in each). Backtick-quoting itself doesn't discriminate either --
+    it's used for *any* dotted qualified name, local or not.
+
+    The one signal that does hold with zero counterexamples across all
+    four repositories: convert the descriptor's own dotted prefix to its
+    two possible file-system shapes and check whether *this same parsed
+    index* actually has a ``Document`` at that path. A real local phantom
+    (e.g. flask's `` `tests.test_views`/Index# ``) always does -- its
+    ``tests/test_views.py`` is one of the files scip-python parsed. An
+    indexer-fallback artifact for an unresolved import never does, because
+    no such file exists in the project scip-python was pointed at.
+    """
+    if not descriptor_path.startswith("`"):
+        return False
+    end = descriptor_path.find("`", 1)
+    if end == -1:
+        return False
+    dotted = descriptor_path[1:end]
+    if not dotted:
+        return False
+    flat, package = _dotted_prefix_file_candidates(dotted)
+    return flat in indexed_relative_paths or package in indexed_relative_paths
+
+
 @dataclass(frozen=True)
 class _ResolvedSymbol:
     canonical_id: str
     base_type: BaseEntityType
     qualified_name: str
     revision: str
+    inferred_from_relationship_only: bool = False
+    """GAP-10 fix: True only for a symbol recovered by
+    ``_resolve_symbol``'s same-repository-phantom branch -- never backed
+    by any ``Occurrence`` (not even a non-Definition reference), only
+    named as the *object* of another symbol's ``is_implementation``/
+    ``is_type_definition`` relationship. Lets ``normalize()`` tag the
+    resulting entity's ``roles`` so this weaker provenance (inferred from
+    one relationship fact, never independently observed) stays auditable
+    rather than silently indistinguishable from a genuinely-observed
+    local symbol."""
 
 
 def _resolve_symbol(
@@ -262,6 +324,7 @@ def _resolve_symbol(
     revision: str,
     locally_defined: frozenset[str],
     kind_by_symbol: dict[str, int],
+    indexed_relative_paths: frozenset[str],
 ) -> _ResolvedSymbol | None:
     """Resolve a SCIP symbol string to a canonical Codex identity.
 
@@ -295,6 +358,59 @@ def _resolve_symbol(
             base_type=base_type,
         )
         return _ResolvedSymbol(canonical_id, base_type, qualified_name, revision)
+
+    # GAP-10 fix ("relationship object with no Definition occurrence and
+    # no SymbolInformation" investigation): a symbol can be named only as
+    # the *object* of another symbol's `is_implementation`/
+    # `is_type_definition` relationship, or reached only via a non-
+    # Definition Reference, with zero Occurrences of Definition role and
+    # zero SymbolInformation entries anywhere in the index -- confirmed
+    # real and reproducible against django/flask/pytest/click (0 on
+    # requests, its own narrower-scope index).
+    #
+    # First-draft signal (`parsed.package_version == revision` alone) was
+    # proven UNSAFE by real-data investigation: scip-python attributes an
+    # *unresolved* import -- stdlib, third-party, even a project's own
+    # external dependency -- to the local project's package name and this
+    # exact ingestion `revision` whenever it can't resolve the import's
+    # true origin (18-95 such false positives observed per repository).
+    # `_is_indexed_project_file` closes that gap: it additionally requires
+    # the descriptor's own dotted-module prefix to correspond to a real
+    # file *this same SCIP index actually indexed* (its `Document` list) --
+    # a signal with zero counterexamples across django/flask/pytest/click.
+    # Recovering the real identity (rather than collapsing it onto the
+    # same shared package-level EXTERNAL_LIBRARY node every other
+    # same-repo phantom symbol in this run would otherwise share) reuses
+    # `infer_base_type`'s existing kind-unspecified descriptor-suffix
+    # fallback verbatim -- the identical mechanism already trusted for a
+    # locally-defined symbol with no `kind` info (GAP-9's own fix).
+    if parsed.package_version == revision and _is_indexed_project_file(
+        parsed.descriptor_path, indexed_relative_paths
+    ):
+        base_type = infer_base_type(kind=kind_by_symbol.get(symbol, 0), symbol=symbol)
+        if base_type is not None:
+            qualified_name = (
+                _file_path_from_descriptor(parsed.descriptor_path)
+                if base_type is BaseEntityType.FILE
+                else parsed.descriptor_path
+            )
+            canonical_id = build_canonical_id(
+                repository_id=repository_id,
+                repository_revision=revision,
+                qualified_name=qualified_name,
+                base_type=base_type,
+            )
+            return _ResolvedSymbol(
+                canonical_id,
+                base_type,
+                qualified_name,
+                revision,
+                inferred_from_relationship_only=True,
+            )
+        # Unclassifiable descriptor shape (e.g. a bare Parameter) -- fall
+        # through to the external-library branch below, exactly like any
+        # other symbol this adapter can't confidently classify; never
+        # fabricate a base_type it has no real signal for.
 
     # Not defined anywhere in this index -> external library (directive D5 §10).
     qualified_name = f"{parsed.manager}:{parsed.package_name}@{parsed.package_version}"
@@ -504,6 +620,12 @@ class SCIPAdapter:
             )
             | frozenset(record.symbol for record in (definitions or ())),
             "kind_by_symbol": _build_kind_by_symbol(index),
+            # GAP-10 fix: the set of files this exact SCIP index itself
+            # indexed as part of the target repository's own source tree --
+            # ground truth for `_is_indexed_project_file`'s cross-reference,
+            # independent of (and safer than) the indexer's own package
+            # attribution for a symbol it failed to resolve.
+            "indexed_relative_paths": frozenset(doc.relative_path for doc in index.documents),
             "definitions": definitions,
             "references": references,
             "implementations": implementations,
@@ -517,6 +639,7 @@ class SCIPAdapter:
         revision: str = payload["revision"]
         locally_defined: frozenset[str] = payload["locally_defined"]
         kind_by_symbol: dict[str, int] = payload["kind_by_symbol"]
+        indexed_relative_paths: frozenset[str] = payload["indexed_relative_paths"]
 
         entities: dict[str, RepositorySymbol] = {}
         evidence: list[Evidence] = []
@@ -528,6 +651,7 @@ class SCIPAdapter:
                 revision=revision,
                 locally_defined=locally_defined,
                 kind_by_symbol=kind_by_symbol,
+                indexed_relative_paths=indexed_relative_paths,
             )
 
         def ensure_entity(
@@ -540,6 +664,10 @@ class SCIPAdapter:
             if existing is not None and existing.source_location is not None:
                 return
             name = resolved.qualified_name.rsplit("/", maxsplit=1)[-1] or resolved.qualified_name
+            merged_roles = list(roles or [])
+            inferred_role = "scip:inferred-from-relationship-only"
+            if resolved.inferred_from_relationship_only and inferred_role not in merged_roles:
+                merged_roles.append(inferred_role)
             entities[resolved.canonical_id] = RepositorySymbol(
                 canonical_id=resolved.canonical_id,
                 repository_id=repository_id,
@@ -547,7 +675,7 @@ class SCIPAdapter:
                 name=name,
                 qualified_name=resolved.qualified_name,
                 base_type=resolved.base_type,
-                roles=roles or [],
+                roles=merged_roles,
                 source_location=source_location,
                 # This adapter's own raw name, recorded under its own
                 # provider key (Symbol Identity & Name Normalization

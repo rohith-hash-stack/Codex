@@ -268,6 +268,7 @@ def test_resolve_symbol_returns_none_for_local_symbol() -> None:
         revision="rev1",
         locally_defined=frozenset(),
         kind_by_symbol={},
+        indexed_relative_paths=frozenset(),
     )
     assert resolved is None
 
@@ -856,3 +857,242 @@ def test_gap9_locally_defined_ignores_capability_not_requested(tmp_path: Path) -
     # so "Missing#" never becomes any kind of entity -- this is
     # pre-existing, unrelated behavior, only confirmed unaffected here.
     assert not any(e.qualified_name == "src/`a.ts`/Missing#" for e in normalized.entities)
+
+
+# ---------------------------------------------------------------------------
+# GAP-10 fix: relationship object with no Definition Occurrence and no
+# SymbolInformation, recovered when its own package_version matches this
+# ingestion's revision AND its dotted-module prefix corresponds to a real
+# file this same index indexed (a same-repository "phantom" symbol)
+# ---------------------------------------------------------------------------
+#
+# Confirmed root cause: a real symbol can be named only as the *object* of
+# another symbol's `is_implementation`/`is_type_definition` relationship,
+# with zero Occurrences of any role and zero SymbolInformation entries
+# anywhere in the index (real shape: flask's `tests.test_views`/Index#,
+# named only inside `BetterIndex#`'s own relationships list). Before this
+# fix, `_resolve_symbol` routed every such symbol through the "not defined
+# anywhere -> external library" branch unconditionally, collapsing it onto
+# the same shared package-level canonical_id every other same-repo phantom
+# symbol in the run would also share -- confirmed against real
+# django/flask/pytest/click data (0 on requests, its own narrower-scope
+# index): 108/2/6/11 such symbols respectively.
+#
+# `package_version == revision` alone was proven UNSAFE by a second round
+# of real-data investigation: scip-python attributes an *unresolved*
+# import (stdlib, third-party, even a project's own external dependency)
+# to the local project's package name and this exact revision whenever it
+# can't resolve the import's true origin -- 18-95 such false positives
+# observed per repository. The fixtures below use scip-python's own real
+# descriptor convention (the whole dotted module path backtick-quoted as
+# one unit, e.g. `` `tests.test_views`/Index# ``) and exercise both the
+# safe recovery (the module's file IS one of this index's own indexed
+# Documents) and the indexer-fallback false-positive this fix must reject
+# (package_version matches but no such file was ever indexed).
+
+
+def _relationship_object_without_definition_index(
+    *, object_version: str, object_module_indexed: bool = True
+) -> bytes:
+    """`BetterIndex#` is a real, locally-defined class (Definition
+    Occurrence + its own SymbolInformation) implementing `Index#` -- but
+    `Index#` itself has zero Occurrences and zero SymbolInformation
+    entries anywhere in this index, named only as the object of
+    `BetterIndex#`'s own `is_implementation` relationship (the real
+    GAP-10 shape, using scip-python's real descriptor convention: the
+    whole dotted module path backtick-quoted as one unit). `object_version`
+    controls whether `Index#`'s own symbol header claims the same
+    `package_version` as this fixture's revision (`"rev1"`,
+    `make_repository()`'s own default -- the same-repository-phantom
+    recovery case) or a genuinely different one (a real external
+    dependency, unaffected by this fix). `object_module_indexed` controls
+    whether `pkg/b.py` (the file `` `pkg.b` `` maps to) is itself one of
+    this index's own Documents -- False reproduces the confirmed
+    indexer-fallback false-positive shape (matching version, no real file)."""
+    subject_symbol = "scip-python python testrepo rev1 `pkg.a`/BetterIndex#"
+    object_symbol = f"scip-python python testrepo {object_version} `pkg.b`/Index#"
+    rel = relationship(object_symbol, is_implementation=True)
+    subject_def = occurrence(subject_symbol, roles=1, range_=(0, 0, 4))
+    subject_sym_info = symbol_information(subject_symbol, kind=7, relationships=(rel,))
+    doc_a = document("pkg/a.py", occurrences=(subject_def,), symbols=(subject_sym_info,))
+    docs = (doc_a, document("pkg/b.py")) if object_module_indexed else (doc_a,)
+    return scip_index(documents=docs)
+
+
+def test_gap10_same_repo_phantom_recovers_local_identity(tmp_path: Path) -> None:
+    """Requirement: a relationship object with no Definition Occurrence
+    and no SymbolInformation, whose own `package_version` matches this
+    ingestion's revision, is recovered as its own real local entity --
+    never routed through the "not defined anywhere" external-library
+    branch."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _relationship_object_without_definition_index(object_version="rev1")
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.b`/Index#"]
+    assert len(matches) == 1
+    entity = matches[0]
+    assert entity.base_type is not BaseEntityType.EXTERNAL_LIBRARY
+    assert entity.base_type is BaseEntityType.CLASS
+    assert entity.source_location is None
+
+
+def test_gap10_recovered_entity_gets_its_own_canonical_id() -> None:
+    """The recovered entity's canonical_id is derived from its own real
+    descriptor path -- never the shared package-level id every other
+    same-repo phantom symbol in the same run would otherwise collapse
+    onto."""
+    from codex.provider.scip_adapter import _resolve_symbol
+
+    object_symbol = "scip-python python testrepo rev1 `pkg.b`/Index#"
+    resolved = _resolve_symbol(
+        object_symbol,
+        repository_id="repo1",
+        revision="rev1",
+        locally_defined=frozenset(),
+        kind_by_symbol={},
+        indexed_relative_paths=frozenset({"pkg/b.py"}),
+    )
+    assert resolved is not None
+    assert resolved.base_type is BaseEntityType.CLASS
+    assert resolved.inferred_from_relationship_only is True
+    bogus_external_id = build_canonical_id(
+        repository_id="repo1",
+        repository_revision="external",
+        qualified_name="python:testrepo@rev1",
+        base_type=BaseEntityType.EXTERNAL_LIBRARY,
+    )
+    assert resolved.canonical_id != bogus_external_id
+    assert resolved.canonical_id == build_canonical_id(
+        repository_id="repo1",
+        repository_revision="rev1",
+        qualified_name="`pkg.b`/Index#",
+        base_type=BaseEntityType.CLASS,
+    )
+
+
+def test_gap10_recovered_entity_tagged_with_provenance_role(tmp_path: Path) -> None:
+    """The recovered entity carries an explicit provenance role marking
+    it as inferred purely from a relationship fact -- never
+    indistinguishable from a genuinely-observed local symbol (never
+    backed by any Occurrence at all, unlike GAP-9's own recovery case)."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _relationship_object_without_definition_index(object_version="rev1")
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.b`/Index#")
+    assert "scip:inferred-from-relationship-only" in entity.roles
+
+    # The genuinely-observed subject entity must NOT carry this role.
+    subject = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/BetterIndex#")
+    assert "scip:inferred-from-relationship-only" not in subject.roles
+
+
+def test_gap10_implements_evidence_uses_the_recovered_entity(tmp_path: Path) -> None:
+    """The real fact this whole gap is about -- `BetterIndex implements
+    Index` -- is preserved and correctly attributed to the recovered
+    `Index#` entity, not lost or misattributed to a collapsed node."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _relationship_object_without_definition_index(object_version="rev1")
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    implements = [e for e in normalized.evidence if e.predicate is RelationshipType.IMPLEMENTS]
+    assert len(implements) == 1
+    subject_entity = next(e for e in normalized.entities if e.canonical_id == implements[0].subject)
+    object_entity = next(e for e in normalized.entities if e.canonical_id == implements[0].object)
+    assert subject_entity.qualified_name == "`pkg.a`/BetterIndex#"
+    assert object_entity.qualified_name == "`pkg.b`/Index#"
+    assert object_entity.base_type is BaseEntityType.CLASS
+
+
+def test_gap10_genuinely_external_relationship_object_still_external_library(
+    tmp_path: Path,
+) -> None:
+    """Regression guard: a relationship object whose own `package_version`
+    genuinely differs from this ingestion's revision (a real external
+    dependency, e.g. a base class from a third-party library) is
+    unaffected by this fix and still resolves as EXTERNAL_LIBRARY --
+    proving the fix doesn't overcorrect and misclassify real external
+    references as local."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _relationship_object_without_definition_index(object_version="2.0.0")
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "python:testrepo@2.0.0"
+    assert "scip:inferred-from-relationship-only" not in external[0].roles
+
+
+def test_gap10_indexer_fallback_false_positive_still_external_library(tmp_path: Path) -> None:
+    """The confirmed real false-positive shape: `package_version` matches
+    this ingestion's revision, but no file matching the object's own
+    dotted-module prefix was ever indexed (scip-python's own "unresolved
+    import" fallback attribution, verified against real django/flask/
+    pytest/click data -- 18-95 such cases per repository). Must NOT be
+    recovered as a local entity; must still resolve as EXTERNAL_LIBRARY."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(
+        _relationship_object_without_definition_index(
+            object_version="rev1", object_module_indexed=False
+        )
+    )
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.b`/Index#"]
+    assert matches == []
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "python:testrepo@rev1"
+    assert "scip:inferred-from-relationship-only" not in external[0].roles
+
+
+def test_gap10_unclassifiable_descriptor_falls_back_to_external_library() -> None:
+    """A same-repo-version relationship object whose descriptor shape
+    `infer_base_type` cannot confidently classify (a bare Parameter
+    descriptor, trailing `")"`) is never fabricated into a fake CLASS --
+    it falls through to the pre-existing external-library branch
+    instead, exactly like any other symbol this adapter can't classify."""
+    from codex.provider.scip_adapter import _resolve_symbol
+
+    object_symbol = "scip-python python testrepo rev1 `pkg.b`/Index#foo().(name)"
+    resolved = _resolve_symbol(
+        object_symbol,
+        repository_id="repo1",
+        revision="rev1",
+        locally_defined=frozenset(),
+        kind_by_symbol={},
+        indexed_relative_paths=frozenset({"pkg/b.py"}),
+    )
+    assert resolved is not None
+    assert resolved.base_type is BaseEntityType.EXTERNAL_LIBRARY
+    assert resolved.inferred_from_relationship_only is False
+
+
+def test_gap10_deterministic_repeated_resolution() -> None:
+    from codex.provider.scip_adapter import _resolve_symbol
+
+    object_symbol = "scip-python python testrepo rev1 `pkg.b`/Index#"
+    kwargs = dict(
+        repository_id="repo1",
+        revision="rev1",
+        locally_defined=frozenset(),
+        kind_by_symbol={},
+        indexed_relative_paths=frozenset({"pkg/b.py"}),
+    )
+    first = _resolve_symbol(object_symbol, **kwargs)
+    second = _resolve_symbol(object_symbol, **kwargs)
+    assert first == second
