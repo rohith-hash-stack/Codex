@@ -473,9 +473,36 @@ class SCIPAdapter:
         payload = {
             "repository_id": repository.repository_id,
             "revision": repository.head_revision,
+            # GAP-9 fix ("candidate-generation completeness" investigation):
+            # `Document.symbols` (SymbolInformation) alone is not a reliable
+            # signal of "this symbol is defined in this repository" -- a real
+            # producer (scip-python/pyright) can emit a genuine
+            # `Definition`-role Occurrence for a symbol (a large, heavily-
+            # typed top-level class, confirmed against real requests/flask/
+            # pytest/click/django indexes) while omitting that same symbol's
+            # SymbolInformation entry entirely, even though every one of its
+            # own members gets one. Relying on `doc.symbols` alone silently
+            # routed such a symbol through `_resolve_symbol`'s "not defined
+            # anywhere in this index -> external library" branch, which (a)
+            # discarded its real identity and (b) collapsed it onto the same
+            # canonical_id as every other repository-owned symbol hitting
+            # this same gap (that branch's qualified_name is a pure function
+            # of repository+revision, never of the symbol's own descriptor
+            # path) -- up to 46 distinct real symbols conflated onto one
+            # node in a real `requests` index. `_collect_definitions()`
+            # (just above) already derives the correct, complete set of
+            # locally-defined symbols directly from `Definition`-role
+            # Occurrences -- the same data `_resolve_symbol` needs, just
+            # never previously fed into `locally_defined`. Unioning it in
+            # here fixes the root cause without touching `_resolve_symbol`,
+            # `infer_base_type` (its existing kind-unspecified fallback
+            # already classifies these symbols correctly once they reach
+            # it -- confirmed against real data), `_collect_definitions`
+            # itself, or canonical-id computation.
             "locally_defined": frozenset(
                 info.symbol for doc in index.documents for info in doc.symbols
-            ),
+            )
+            | frozenset(record.symbol for record in (definitions or ())),
             "kind_by_symbol": _build_kind_by_symbol(index),
             "definitions": definitions,
             "references": references,
