@@ -1429,3 +1429,211 @@ def test_symbol_path_scip_shape_splits_on_last_slash() -> None:
     assert _symbol_path("django/contrib/gis/db/backends/oracle/operations.py") == (
         "django/contrib/gis/db/backends/oracle/operations.py"
     )
+
+
+# --- GAP-8 fix: SCIP-aware bare-symbol tier-0 matching ------------------------
+#
+# First post-freeze improvement cycle against frozen baseline
+# 9d62223f5dc645d198fbb22777f6c0da4f5ebc43. GAP-8 (documented in the freeze
+# audit, `docs/architecture-conformance-audit.md` §KK.8): a SCIP class
+# entity's own `name`/symbol-path always carries SCIP's `"#"` descriptor
+# terminator (e.g. `"Storage#"`, never bare `"Storage"`), so it could never
+# reach `_match_tier`'s tier-0 exact-identity classification -- only tier-1
+# -- which mattered once a query's real candidate set exceeded the fixed
+# 80-node truncation budget (`resolve_targets`'s sort key is
+# `(tier, canonical_id)`; with every real candidate stuck at tier-1,
+# ordering within the truncation cut was effectively arbitrary
+# `canonical_id`-based, and real IMPLEMENTS evidence could be lost).
+
+
+def _seed_scip_over_budget_collision_graph(
+    *, decoy_count: int, exact_count: int
+) -> InMemoryGraphStore:
+    """The real django `"Storage"`/`"Command"` shape: a handful of genuine
+    SCIP class entities whose *own* `name` is literally `"Storage#"` (SCIP's
+    always-decorated form -- `AstCallsAdapter` never emits class-level
+    entities at all, so a class candidate for an IMPLEMENTS query is always
+    SCIP-only), drowned in a much larger set of real boundary-aligned but
+    non-exact subclasses (`"StorageHandler#"`-shaped -- still real,
+    legitimate tier-1 candidates, never buried/tier-2). Decoy `canonical_id`s
+    are deliberately chosen to sort *before* every exact entity's, so
+    pre-fix (tier-1-for-everyone) canonical-id-only truncation would keep
+    only decoys -- exactly `_seed_extreme_name_collision_graph`'s own
+    construction, adapted to SCIP's decorated-name shape."""
+    store = _store()
+    for i in range(decoy_count):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"aaa_decoy_{i:05d}",
+                name=f"StorageVariant{i}#",
+                qualified_name=f"`vendor.stubs.pkg{i}`/StorageVariant{i}#",
+            )
+        )
+    for i in range(exact_count):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"zzz_real_storage_{i}",
+                name="Storage#",
+                qualified_name=f"`django.contrib.app{i}.storage`/Storage#",
+            )
+        )
+    return store
+
+
+def test_gap8_bare_scip_symbol_direct_unit_checks() -> None:
+    """Direct unit check of `_bare_scip_symbol`, covering all three real
+    SCIP descriptor terminators plus the required no-ops: a nested/
+    attribute descriptor (only one trailing terminator ever stripped), an
+    `AstCallsAdapter` bare identifier (never ends in a SCIP terminator, so
+    always a no-op), and a plain string with none of the markers."""
+    from codex.planner.retrieval import _bare_scip_symbol
+
+    assert _bare_scip_symbol("storage#") == "storage"
+    assert _bare_scip_symbol("get_random_string().") == "get_random_string"
+    assert _bare_scip_symbol("command#help.") == "command#help"
+    assert _bare_scip_symbol("outer#inner_test().nested#") == "outer#inner_test().nested"
+    assert _bare_scip_symbol("approx") == "approx"
+    assert _bare_scip_symbol("django/shortcuts.py") == "django/shortcuts.py"
+
+
+def test_gap8_scip_decorated_class_reaches_tier_zero() -> None:
+    """The core hypothesis, direct `_match_tier` proof: a SCIP class
+    entity whose own `name` and qualified_name symbol-path are both
+    literally `"Storage#"` now classifies as tier-0 exact identity for a
+    bare `"Storage"` query target -- before this fix, this was always
+    tier-1 (`_has_boundary_aligned_occurrence` only)."""
+    from codex.planner.retrieval import _match_tier
+
+    entity = _entity(
+        canonical_id="real-storage",
+        name="Storage#",
+        qualified_name="`django.core.files.storage.base`/Storage#",
+    )
+    assert _match_tier(entity, {"storage"}) == 0
+
+
+def test_gap8_nested_or_attribute_descriptor_does_not_reach_tier_zero() -> None:
+    """Negative case proving `_bare_scip_symbol` strips *exactly one*
+    trailing terminator, never renormalizes a whole descriptor chain: a
+    `Command` class's own `help` attribute (`"Command#help."`, real django
+    shape) and a nested nested-class descriptor never collapse to a bare
+    `"command"` match -- both correctly stay at tier 1 (boundary-aligned,
+    since `"command"` still occurs at a boundary), never tier 0."""
+    from codex.planner.retrieval import _match_tier
+
+    attribute_entity = _entity(
+        canonical_id="command-help-attr",
+        name="Command#help.",
+        qualified_name="`django.core.management.commands.check`/Command#help.",
+    )
+    nested_entity = _entity(
+        canonical_id="nested-command",
+        name="CommandTypes#test_app_command().",
+        qualified_name="`tests.admin_scripts.tests`/CommandTypes#test_app_command().",
+    )
+    assert _match_tier(attribute_entity, {"command"}) == 1
+    assert _match_tier(nested_entity, {"command"}) == 1
+
+
+def test_gap8_scip_decorated_class_promotes_to_tier_zero_via_resolve_targets() -> None:
+    """Full `resolve_targets` ordering proof: a SCIP-decorated exact class
+    match now sorts ahead of real boundary-aligned (but non-exact)
+    subclasses -- exactly `test_exact_bare_name_matches_sort_before_
+    substring_only_matches`'s own assertion shape, for SCIP decoration
+    instead of a bare `AstCallsAdapter` name."""
+    store = _seed_scip_over_budget_collision_graph(decoy_count=10, exact_count=3)
+    resolved = resolve_targets(store, ["Storage"])
+    assert [e.name for e in resolved[:3]] == ["Storage#", "Storage#", "Storage#"]
+    assert [e.canonical_id for e in resolved[:3]] == sorted(
+        f"zzz_real_storage_{i}" for i in range(3)
+    )
+    assert [e.canonical_id for e in resolved[3:]] == sorted(f"aaa_decoy_{i:05d}" for i in range(10))
+
+
+def test_gap8_multiple_real_classes_sharing_decorated_name_all_reach_tier_zero() -> None:
+    """The real django `"Command"` shape: ~60 distinct real classes across
+    different management-command modules are all literally named
+    `"Command"` (SCIP: `"Command#"`) -- every one of them independently
+    reaches tier 0, not just the first one found, since each is its own
+    genuine exact match, not a single shared entity."""
+    from codex.planner.retrieval import _match_tier
+
+    entities = [
+        _entity(
+            canonical_id=f"command-{i}",
+            name="Command#",
+            qualified_name=f"`django.contrib.app{i}.management.commands.foo{i}`/Command#",
+        )
+        for i in range(5)
+    ]
+    assert all(_match_tier(e, {"command"}) == 0 for e in entities)
+
+
+def test_gap8_exact_scip_match_survives_extreme_over_budget_collision() -> None:
+    """The real GAP-8 measurement shape reproduced end to end: a bare
+    `"Storage"` target resolves a handful of genuine SCIP class exact
+    matches plus a much larger set of real boundary-aligned (but
+    non-exact) subclasses, all exceeding `max_nodes` (80). Before this
+    fix, every candidate was tier-1 and canonical-id-only truncation could
+    keep zero of the real exact matches (every decoy's id sorts first, by
+    construction); with this fix, all of them survive the cut."""
+    store = _seed_scip_over_budget_collision_graph(decoy_count=90, exact_count=5)
+    resolved = resolve_targets(store, ["Storage"])
+    assert len(resolved) == 95
+    truncated = resolved[:80]
+    exact_survivors = [e for e in truncated if e.name == "Storage#"]
+    assert len(exact_survivors) == 5
+    assert {e.canonical_id for e in exact_survivors} == {f"zzz_real_storage_{i}" for i in range(5)}
+
+
+def test_gap8_astcalls_shape_unaffected() -> None:
+    """Regression guard: `_bare_scip_symbol` is a structural no-op for
+    every `AstCallsAdapter` bare-identifier shape (no valid Python
+    identifier ends in `"#"`/`"()."`/`"."`), so an `AstCallsAdapter`
+    entity's tier-0 classification -- already correct before this fix --
+    is byte-for-byte unchanged, and `resolve_targets`'s existing
+    `"::"`-shape behavior is untouched."""
+    from codex.planner.retrieval import _bare_scip_symbol, _match_tier
+
+    entity = _entity(
+        canonical_id="real-approx",
+        name="approx",
+        qualified_name="src/_pytest/approx.py::approx",
+    )
+    assert _bare_scip_symbol("approx") == "approx"
+    assert _match_tier(entity, {"approx"}) == 0
+
+    store = _store()
+    store.upsert_entity(entity)
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated",
+            name="_is_bool",
+            qualified_name="src/_pytest/approx.py::_is_bool",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    assert {e.canonical_id for e in resolved} == {"real-approx"}
+
+
+def test_gap8_negative_query_unaffected() -> None:
+    """A target with no real bare or decoration-stripped match anywhere
+    still resolves to nothing -- the fix promotes real exact matches, it
+    never invents one where none exists."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated",
+            name="Helper#",
+            qualified_name="`pkg.widgets.internal`/Helper#",
+        )
+    )
+    resolved = resolve_targets(store, ["TotallyNonexistentClassXyzzy123"])
+    assert resolved == []
+
+
+def test_gap8_fix_deterministic_across_repeated_calls() -> None:
+    store = _seed_scip_over_budget_collision_graph(decoy_count=20, exact_count=3)
+    runs = [resolve_targets(store, ["Storage"]) for _ in range(3)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert ids[0] == ids[1] == ids[2]
