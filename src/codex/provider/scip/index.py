@@ -76,6 +76,17 @@ class ScipSymbolInformation:
     symbol: str
     kind: int = 0
     relationships: tuple[ScipRelationship, ...] = ()
+    enclosing_symbol: str = ""
+    """``scip.proto`` field 8 -- an indexer's own, authoritative
+    declaration of "the parent/owner of this symbol", intended by the
+    spec itself for exactly this purpose (disambiguating a symbol whose
+    own descriptor doesn't encode full lexical scope). Decoded for
+    completeness and forward-compatibility; confirmed via direct
+    wire-level inspection of real `scip-python@0.6.6` output that this
+    producer never populates it (`docs/resources.md`'s FND-1 finding) --
+    `codex.provider.scip_adapter` therefore cannot rely on it today and
+    falls back to a position-based heuristic, but a future indexer
+    version populating this field would already decode correctly."""
 
 
 @dataclass(frozen=True)
@@ -144,10 +155,14 @@ def _decode_symbol_information(raw: bytes) -> ScipSymbolInformation:
         for f in fields.get(4, [])
     )
     kind = as_int(fields[5][0], context="SymbolInformation.kind") if 5 in fields else 0
+    enclosing_symbol = (
+        as_str(fields[8][0], context="SymbolInformation.enclosing_symbol") if 8 in fields else ""
+    )
     return ScipSymbolInformation(
         symbol=as_str(symbol_fields[0], context="SymbolInformation.symbol"),
         kind=kind,
         relationships=relationships,
+        enclosing_symbol=enclosing_symbol,
     )
 
 

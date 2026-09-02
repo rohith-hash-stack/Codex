@@ -2127,3 +2127,598 @@ def test_gap14_parameter_descriptor_with_repeated_references_unaffected(tmp_path
     assert fn_entity.source_location is not None
     assert fn_entity.source_location.start_line == 12
     assert "scip:redefinition-family" in fn_entity.roles
+
+
+# ---------------------------------------------------------------------------
+# FND-1 fix: distinct nested/local Python symbols (two closures/local classes
+# sharing one name because they're nested inside *different* enclosing
+# functions/methods) no longer collapse into one canonical identity.
+#
+# Confirmed root cause (real django/click/flask data, `docs/python-fidelity-
+# gap-register.md` and `docs/resources.md`'s fifth material finding):
+# scip-python's descriptor grammar encodes an enclosing *class*, never an
+# enclosing *function* -- so a closure nested inside two different methods
+# of the same class (django's `AbstractBaseUser.check_password`'s and
+# `.acheck_password`'s own, separate `setter` closures; django's
+# `Library#dec()`, five distinct closures in five different methods; click's
+# `Group#decorator()`, flask's `App#decorator()`/`Blueprint#decorator()`/
+# `Scaffold#decorator()`) all serialize to one identical descriptor string,
+# even though each is a genuinely different real Python entity. Confirmed via
+# direct wire-level inspection that `SymbolInformation.enclosing_symbol`
+# (`scip.proto` field 8, designed for exactly this) is never populated by
+# real scip-python@0.6.6 output -- `_nested_symbol_disambiguation` instead
+# uses each Definition-role occurrence's own source *position*: the nearest
+# textually-preceding real (non-local, non-Parameter) symbol definition in
+# the same document is a deterministic, structural proxy for "the real
+# entity whose body textually contains this occurrence."
+#
+# The reliable discriminator from GAP-13/14's own signal: more than one
+# *real Definition-role Occurrence* for the same descriptor, each with a
+# genuinely *different* nearest-enclosing scope. A symbol with 2+ Definition-
+# role occurrences sharing the *same* enclosing scope (or none at all -- a
+# module-level platform-conditional redefinition like click's `getchar`, or
+# a wire-format quirk emitting two Definition occurrences on the identical
+# position for one real declaration) is correctly left to the existing
+# GAP-13/14 path, unaffected.
+# ---------------------------------------------------------------------------
+
+
+def _two_sibling_closures_index(*, third_gap: int = 0) -> bytes:
+    """Two real, distinct methods (`method_a`, `method_b`) of one class,
+    each with its own nested closure named `helper` -- the exact real
+    shape confirmed against django's `AbstractBaseUser.check_password`/
+    `.acheck_password` and their own, separate `setter` closures.
+    `third_gap`, when nonzero, adds a third sibling method+closure pair
+    further down (for "multiple closures" tests)."""
+    outer_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    outer_b = "scip-python python testrepo rev1 `pkg.a`/Outer#method_b()."
+    closure = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    occs = [
+        occurrence(outer_a, roles=1, range_=(0, 4, 12)),
+        occurrence(closure, roles=1, range_=(1, 8, 14)),
+        occurrence(outer_b, roles=1, range_=(4, 4, 12)),
+        occurrence(closure, roles=1, range_=(5, 8, 14)),
+    ]
+    sym_infos = [
+        symbol_information(outer_a, kind=0),
+        symbol_information(closure, kind=0),
+        symbol_information(outer_b, kind=0),
+        symbol_information(closure, kind=0),
+    ]
+    if third_gap:
+        outer_c = "scip-python python testrepo rev1 `pkg.a`/Outer#method_c()."
+        line = 5 + third_gap
+        occs += [
+            occurrence(outer_c, roles=1, range_=(line, 4, 12)),
+            occurrence(closure, roles=1, range_=(line + 1, 8, 14)),
+        ]
+        sym_infos += [
+            symbol_information(outer_c, kind=0),
+            symbol_information(closure, kind=0),
+        ]
+    doc = document("pkg/a.py", occurrences=tuple(occs), symbols=tuple(sym_infos))
+    return scip_index(documents=(doc,))
+
+
+def test_fnd1_two_closures_same_name_different_methods_split(tmp_path: Path) -> None:
+    """(1): two closures named `helper`, nested in two different sibling
+    methods of the same class, must become two distinct canonical
+    entities -- not collapse into one, matching django's real
+    `AbstractBaseUser.check_password`/`.acheck_password` `setter` case."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_two_sibling_closures_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 2
+    ids = {e.canonical_id for e in matches}
+    assert len(ids) == 2
+    lines = sorted(e.source_location.start_line for e in matches if e.source_location)
+    assert lines == [1, 5]
+    for e in matches:
+        assert "scip:nested-scope-disambiguated" in e.roles
+        assert "method_a" in e.qualified_name or "method_b" in e.qualified_name
+
+
+def test_fnd1_multiple_closures_same_name_many_methods_split(tmp_path: Path) -> None:
+    """(2): three or more closures with the identical name, nested in
+    three or more different sibling methods, must each become their own
+    entity -- matches django's real `Library#dec()` (five distinct
+    closures across five methods)."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_two_sibling_closures_index(third_gap=10))
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 3
+    assert len({e.canonical_id for e in matches}) == 3
+
+
+def test_fnd1_closure_split_coexists_with_unrelated_overload_family(tmp_path: Path) -> None:
+    """(3): a genuine `@typing.overload` family (GAP-13/14's own target)
+    elsewhere in the *same* document must still converge to one entity,
+    completely unaffected by a separate FND-1 closure split happening in
+    the same file -- the two mechanisms must not interfere."""
+    overload_symbol = "scip-python python testrepo rev1 `pkg.a`/Helper#compute()."
+    overload_occs = (
+        occurrence(overload_symbol, roles=1, range_=(20, 4, 11)),
+        occurrence(overload_symbol, roles=8, range_=(23, 4, 11)),
+        occurrence(overload_symbol, roles=8, range_=(26, 4, 11)),
+    )
+    overload_infos = tuple(symbol_information(overload_symbol, kind=0) for _ in range(3))
+    outer_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    outer_b = "scip-python python testrepo rev1 `pkg.a`/Outer#method_b()."
+    closure_symbol = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    occs = (
+        occurrence(outer_a, roles=1, range_=(0, 4, 12)),
+        occurrence(closure_symbol, roles=1, range_=(1, 8, 14)),
+        occurrence(outer_b, roles=1, range_=(4, 4, 12)),
+        occurrence(closure_symbol, roles=1, range_=(5, 8, 14)),
+        *overload_occs,
+    )
+    sym_infos = (
+        symbol_information(outer_a, kind=0),
+        symbol_information(closure_symbol, kind=0),
+        symbol_information(outer_b, kind=0),
+        symbol_information(closure_symbol, kind=0),
+        *overload_infos,
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    closure_matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(closure_matches) == 2
+    assert len({e.canonical_id for e in closure_matches}) == 2
+
+    overload_matches = [
+        e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."
+    ]
+    assert len(overload_matches) == 1
+    assert overload_matches[0].source_location is not None
+    assert overload_matches[0].source_location.start_line == 26
+    assert "scip:redefinition-family" in overload_matches[0].roles
+
+
+def test_fnd1_same_closure_name_different_modules_remain_distinct(tmp_path: Path) -> None:
+    """(4): the same nested-closure collision pattern in two different
+    modules must never cross-collapse -- each module's own two closures
+    stay within that module's own 2-entity split."""
+    docs = []
+    for module in ("a", "b"):
+        outer_a = f"scip-python python testrepo rev1 `pkg.{module}`/Outer#method_a()."
+        outer_b = f"scip-python python testrepo rev1 `pkg.{module}`/Outer#method_b()."
+        closure = f"scip-python python testrepo rev1 `pkg.{module}`/Outer#helper()."
+        occs = (
+            occurrence(outer_a, roles=1, range_=(0, 4, 12)),
+            occurrence(closure, roles=1, range_=(1, 8, 14)),
+            occurrence(outer_b, roles=1, range_=(4, 4, 12)),
+            occurrence(closure, roles=1, range_=(5, 8, 14)),
+        )
+        sym_infos = (
+            symbol_information(outer_a, kind=0),
+            symbol_information(closure, kind=0),
+            symbol_information(outer_b, kind=0),
+            symbol_information(closure, kind=0),
+        )
+        docs.append(document(f"pkg/{module}.py", occurrences=occs, symbols=sym_infos))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=tuple(docs)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 4
+    assert len({e.canonical_id for e in matches}) == 4
+
+
+def test_fnd1_local_class_same_name_different_functions_split(tmp_path: Path) -> None:
+    """(5)+(6): the identical pattern for a *locally-defined class*
+    (not just a closure function) nested in two different functions --
+    the same descriptor-grammar gap applies to any nested symbol kind,
+    not only functions."""
+    outer_a = "scip-python python testrepo rev1 `pkg.a`/make_a()."
+    outer_b = "scip-python python testrepo rev1 `pkg.a`/make_b()."
+    local_class = "scip-python python testrepo rev1 `pkg.a`/Helper#"
+    occs = (
+        occurrence(outer_a, roles=1, range_=(0, 0, 8)),
+        occurrence(local_class, roles=1, range_=(1, 4, 10)),
+        occurrence(outer_b, roles=1, range_=(4, 0, 8)),
+        occurrence(local_class, roles=1, range_=(5, 4, 10)),
+    )
+    sym_infos = (
+        symbol_information(outer_a, kind=0),
+        symbol_information(local_class, kind=7),
+        symbol_information(outer_b, kind=0),
+        symbol_information(local_class, kind=7),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("Helper#")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+    for e in matches:
+        assert e.base_type is BaseEntityType.CLASS
+
+
+def test_fnd1_mixed_with_normal_class_methods(tmp_path: Path) -> None:
+    """(7): an ordinary class method with no nesting ambiguity, in the
+    same document as an FND-1 collision, is completely unaffected."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_two_sibling_closures_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    method_a = next(e for e in normalized.entities if e.qualified_name.endswith("method_a()."))
+    method_b = next(e for e in normalized.entities if e.qualified_name.endswith("method_b()."))
+    assert method_a.canonical_id != method_b.canonical_id
+    assert "scip:nested-scope-disambiguated" not in method_a.roles
+    assert "scip:nested-scope-disambiguated" not in method_b.roles
+
+
+def test_fnd1_ast_scip_convergence_unaffected_when_ast_has_no_counterpart(
+    tmp_path: Path,
+) -> None:
+    """(8): confirmed real-data shape -- `AstCallsAdapter` never
+    independently tracks nested closures (its `_DefinitionCollector`
+    only reaches module functions and one level of class methods), so
+    there is no AST entity to converge with here. The fix's job is
+    limited to what it can prove: the two SCIP entities must never
+    themselves collapse into each other, which this confirms directly
+    at the identity-resolution layer via `resolve_entities`."""
+    from codex.resolution.entity_resolver import resolve_entities
+
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_two_sibling_closures_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    closure_entities = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(closure_entities) == 2
+    resolved = resolve_entities(list(normalized.entities)).entities
+    resolved_closures = [e for e in resolved if e.qualified_name.endswith("helper().")]
+    assert len({e.canonical_id for e in resolved_closures}) == 2
+
+
+def test_fnd1_overload_family_still_collapses_correctly(tmp_path: Path) -> None:
+    """(9): GAP-13/14's own case -- a real `@typing.overload` family (one
+    Definition-role occurrence, N ReadAccess) is not affected by this
+    fix at all; it never has more than one real Definition-role
+    occurrence, so it never reaches FND-1's own detection path."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_overload_family_index())
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.a`/Helper#compute()."]
+    assert len(matches) == 1
+    assert matches[0].source_location is not None
+    assert matches[0].source_location.start_line == 10
+    assert "scip:redefinition-family" in matches[0].roles
+    assert "scip:nested-scope-disambiguated" not in matches[0].roles
+
+
+def test_fnd1_property_setter_getter_unaffected(tmp_path: Path) -> None:
+    """(10): a real `@property`/`@x.setter` pair (one Definition-role
+    occurrence -- confirmed real shape) continues to converge to one
+    entity via the existing GAP-13/14 path, not this fix's new one."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Field#choices()."
+    occs = (
+        occurrence(symbol, roles=1, range_=(4, 4, 11)),
+        occurrence(symbol, roles=8, range_=(7, 4, 11)),
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=0) for _ in range(2))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.a`/Field#choices()."]
+    assert len(matches) == 1
+    assert "scip:redefinition-family" in matches[0].roles
+
+
+def test_fnd1_canonical_ids_deterministic_across_runs(tmp_path: Path) -> None:
+    """(12): repeated normalization of the same index produces
+    byte-identical canonical IDs and locations for the split entities."""
+    data = _two_sibling_closures_index()
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(data)
+    adapter = SCIPAdapter()
+
+    first = adapter.normalize(
+        adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    )
+    second = adapter.normalize(
+        adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    )
+    first_closures = sorted(
+        (e.canonical_id, e.source_location) for e in first.entities if "helper" in e.qualified_name
+    )
+    second_closures = sorted(
+        (e.canonical_id, e.source_location) for e in second.entities if "helper" in e.qualified_name
+    )
+    assert first_closures == second_closures
+    assert len(first_closures) == 2
+
+
+def test_fnd1_relationship_to_ambiguous_symbol_skipped_not_fabricated(tmp_path: Path) -> None:
+    """(13): a relationship fact naming an ambiguous (nested-closure)
+    symbol as its object -- structurally impossible to disambiguate,
+    since `SymbolInformation.relationships` carries no location at all
+    -- is safely skipped rather than guessed at. Confirmed this never
+    occurs in real data (0 of 239 real FND-1 symbols carry any
+    relationship), but the fallback must still never crash or
+    fabricate."""
+    outer_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    outer_b = "scip-python python testrepo rev1 `pkg.a`/Outer#method_b()."
+    closure = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    subject_symbol = "scip-python python testrepo rev1 `pkg.a`/Impl#"
+    rel = relationship(closure, is_implementation=True)
+    subject_def = occurrence(subject_symbol, roles=1, range_=(20, 0, 4))
+    subject_info = symbol_information(subject_symbol, kind=7, relationships=(rel,))
+    occs = (
+        subject_def,
+        occurrence(outer_a, roles=1, range_=(0, 4, 12)),
+        occurrence(closure, roles=1, range_=(1, 8, 14)),
+        occurrence(outer_b, roles=1, range_=(4, 4, 12)),
+        occurrence(closure, roles=1, range_=(5, 8, 14)),
+    )
+    sym_infos = (
+        subject_info,
+        symbol_information(outer_a, kind=0),
+        symbol_information(closure, kind=0),
+        symbol_information(outer_b, kind=0),
+        symbol_information(closure, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)  # must not raise
+
+    implements = [e for e in normalized.evidence if e.predicate is RelationshipType.IMPLEMENTS]
+    assert implements == []  # skipped, never fabricated onto one arbitrary entity
+    closure_matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(closure_matches) == 2  # the definitions themselves are still correct
+
+
+def test_fnd1_reference_to_ambiguous_symbol_skipped_not_fabricated(tmp_path: Path) -> None:
+    """(13)-adjacent: a plain `REFERENCES`-shaped occurrence of an
+    ambiguous symbol from elsewhere in the same file (document-level
+    aggregate, no per-occurrence position by the time it reaches
+    `_collect_references`) is skipped the same way -- never
+    arbitrarily attributed to one of the two real entities."""
+    outer_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    outer_b = "scip-python python testrepo rev1 `pkg.a`/Outer#method_b()."
+    closure = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    occs = (
+        occurrence(outer_a, roles=1, range_=(0, 4, 12)),
+        occurrence(closure, roles=1, range_=(1, 8, 14)),
+        occurrence(outer_b, roles=1, range_=(4, 4, 12)),
+        occurrence(closure, roles=1, range_=(5, 8, 14)),
+        occurrence(closure, roles=8, range_=(20, 0, 6)),  # plain later reference
+    )
+    sym_infos = (
+        symbol_information(outer_a, kind=0),
+        symbol_information(closure, kind=0),
+        symbol_information(outer_b, kind=0),
+        symbol_information(closure, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)  # must not raise
+
+    refs = [
+        e
+        for e in normalized.evidence
+        if e.predicate in (RelationshipType.REFERENCES, RelationshipType.IMPORTS)
+    ]
+    assert refs == []
+    closure_matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(closure_matches) == 2
+
+
+def test_fnd1_external_symbol_unaffected(tmp_path: Path) -> None:
+    """(14): a genuinely external symbol, referenced many times, is
+    completely untouched by FND-1's detection -- it requires a real,
+    locally-defined Definition-role occurrence to even be considered,
+    which an external symbol never has."""
+    local_symbol = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    external_symbol = "scip-python python otherpkg 2.0.0 `otherpkg.sub`/helper()."
+    occs = (
+        occurrence(local_symbol, roles=1, range_=(0, 0, 8)),
+        occurrence(external_symbol, roles=8, range_=(1, 4, 11)),
+        occurrence(external_symbol, roles=8, range_=(2, 4, 11)),
+    )
+    doc = document(
+        "pkg/a.py", occurrences=occs, symbols=(symbol_information(local_symbol, kind=0),)
+    )
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    external = [e for e in normalized.entities if e.base_type is BaseEntityType.EXTERNAL_LIBRARY]
+    assert len(external) == 1
+    assert external[0].qualified_name == "python:otherpkg@2.0.0"
+
+
+def test_fnd1_same_position_wire_quirk_never_split(tmp_path: Path) -> None:
+    """(also FND-1's own safety check): two Definition-role occurrences
+    for the same symbol that share the exact same nearest-enclosing
+    scope -- confirmed real shape, django's PEP-695 generic-class wire
+    quirk (`class GenericModelPEP695[T](...)`, two Definition-role
+    occurrences on the identical source line, one real class) -- must
+    never be split. Both occurrences here share no enclosing scope
+    (module-level), which is the same "no genuine cross-scope
+    collision" case."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/GenericThing#"
+    occs = (
+        occurrence(symbol, roles=1, range_=(10, 6, 18)),
+        occurrence(symbol, roles=1, range_=(10, 25, 30)),
+    )
+    sym_infos = tuple(symbol_information(symbol, kind=7) for _ in range(2))
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name == "`pkg.a`/GenericThing#"]
+    assert len(matches) == 1
+    assert "scip:nested-scope-disambiguated" not in matches[0].roles
+
+
+def test_fnd1_gap9_locally_defined_behavior_unchanged() -> None:
+    """(GAP-9/10 regression): the local-symbol/relationship-only-object
+    machinery this fix does not touch remains byte-identical."""
+    from codex.provider.scip.index import decode_index
+    from codex.provider.scip_adapter import _collect_definitions
+
+    symbol = "scip-python python testrepo rev1 `pkg.a`/Foo#"
+    occ = occurrence(symbol, roles=1, range_=(0, 0, 3))
+    doc = document("pkg/a.py", occurrences=(occ,), symbols=(symbol_information(symbol, kind=7),))
+    data = scip_index(documents=(doc,))
+    definitions = _collect_definitions(decode_index(data))
+    assert len(definitions) == 1
+    assert definitions[0].nested_qualifier is None
+    assert definitions[0].is_redefinition_family is False
+
+
+def test_fnd1_gap12_module_identity_unchanged(tmp_path: Path) -> None:
+    """(GAP-12 regression): a colon-suffixed module-identity symbol
+    (never more than one real SymbolInformation entry per document in
+    real data) never enters this fix's own detection path."""
+    symbol = "scip-python python testrepo rev1 `pkg.a`/__init__:"
+    occs = (occurrence(symbol, roles=1, range_=(0, 0, 0)),)
+    doc = document("pkg/a.py", occurrences=occs, symbols=(symbol_information(symbol, kind=0),))
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    entity = next(e for e in normalized.entities if e.qualified_name == "`pkg.a`/__init__:")
+    assert entity.base_type is BaseEntityType.MODULE
+    assert "scip:nested-scope-disambiguated" not in entity.roles
+
+
+def test_fnd1_true_indentation_not_fooled_by_keyword_length(tmp_path: Path) -> None:
+    """Regression lock for the confirmed real-data false-negative found
+    during this fix's own exhaustive validation: django's `Signal.asend`
+    (an ordinary top-level `async def` method) was first found merging
+    with an unrelated `asend` closure nested in `Signal.send` (a plain
+    `def` sibling), because a raw SCIP occurrence *column* is not a safe
+    proxy for true indentation -- `async def ` is six characters longer
+    than `def `, so a genuinely top-level sibling using `async def` gets
+    an identifier column that looks "more indented" than a shorter-
+    keyword sibling at the *same* real nesting depth, with nothing else
+    at a shallower indentation in between.
+
+    This fixture reproduces the exact shape with a real, matching source
+    file on disk (`pkg/a.py`) so the fix's true-indentation read path is
+    actually exercised, not the raw-column fallback used by every other
+    handcrafted (no-real-source-file) test in this module::
+
+        class Outer:
+            def method_a(self):        # indent 4, identifier col 8
+                def helper():          # indent 8, identifier col 12 (nested closure)
+                    pass
+                return helper
+
+            async def helper(self):    # indent 4 (same as method_a!), identifier col 14
+                pass
+
+    A raw-column comparison sees `method_a` (col 8) < `helper` (col 14)
+    and wrongly treats `method_a` as `helper`'s enclosing container. True
+    source indentation shows both at indent 4 -- genuine siblings, not
+    parent/child -- so the top-level `helper` must resolve to its real
+    container (the `Outer` class) and keep a plain, non-`<locals>`
+    identity, distinct from the closure genuinely nested in `method_a`.
+    """
+    source = (
+        "class Outer:\n"
+        "    def method_a(self):\n"
+        "        def helper():\n"
+        "            pass\n"
+        "        return helper\n"
+        "\n"
+        "    async def helper(self):\n"
+        "        pass\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    outer_class = "scip-python python testrepo rev1 `pkg.a`/Outer#"
+    method_a = "scip-python python testrepo rev1 `pkg.a`/Outer#method_a()."
+    helper = "scip-python python testrepo rev1 `pkg.a`/Outer#helper()."
+    occs = (
+        occurrence(outer_class, roles=1, range_=(0, 6, 11)),
+        occurrence(method_a, roles=1, range_=(1, 8, 16)),
+        occurrence(helper, roles=1, range_=(2, 12, 18)),  # nested closure
+        occurrence(helper, roles=1, range_=(6, 14, 20)),  # real top-level sibling
+    )
+    sym_infos = (
+        symbol_information(outer_class, kind=7),
+        symbol_information(method_a, kind=0),
+        symbol_information(helper, kind=0),
+        symbol_information(helper, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+
+    top_level = next(e for e in matches if e.qualified_name == "`pkg.a`/Outer#helper().")
+    nested = next(e for e in matches if e.qualified_name != "`pkg.a`/Outer#helper().")
+    assert top_level.source_location is not None and top_level.source_location.start_line == 6
+    assert nested.qualified_name == "`pkg.a`/Outer#method_a().<locals>.Outer#helper()."
+    assert nested.source_location is not None and nested.source_location.start_line == 2
+    for e in matches:
+        assert "scip:nested-scope-disambiguated" in e.roles
+
+
+def test_fnd1_no_real_source_file_falls_back_to_raw_column(tmp_path: Path) -> None:
+    """When the source file referenced by the `.scip` index cannot be
+    read (moved, deleted, or -- as in every other handcrafted fixture in
+    this module -- simply never written to disk), FND-1 detection must
+    not raise or silently disable itself: it falls back to the previous,
+    less reliable raw-column comparison rather than fabricating an
+    indentation value it has no real signal for. Reuses the ordinary
+    two-sibling-closures shape, which the raw-column fallback still
+    handles correctly (no keyword-length confusion present)."""
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(_two_sibling_closures_index())
+    assert not (tmp_path / "pkg").exists()
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("helper().")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
