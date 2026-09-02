@@ -105,6 +105,21 @@ def test_depth_control_impact_intent_uses_depth_two() -> None:
     assert plan.traversal_depth == 2
 
 
+def test_depth_control_find_references_intent_uses_depth_one() -> None:
+    """GAP-5 fix: `Intent.FIND_REFERENCES` gets the same single-hop
+    depth as its relationship-seeking siblings (FIND_CALLERS,
+    FIND_IMPLEMENTATIONS, FIND_TESTS, FIND_DEPENDENCIES)."""
+    result, registry, _, repository = build_graph(entity_paths=("auth.py",))
+    plan = plan_query(
+        query_contract=make_contract(intent=Intent.FIND_REFERENCES, targets=["auth.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.traversal_depth == 1
+
+
 def test_deterministic_repeatability_same_input_same_plan() -> None:
     result, registry, _, repository = build_graph(
         entity_paths=("service.py", "auth.py"),

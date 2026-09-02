@@ -178,6 +178,23 @@ def test_lookup_intent_is_never_a_negative_query_candidate() -> None:
     assert plan.negative_query_result is None
 
 
+def test_find_references_intent_is_a_negative_query_candidate() -> None:
+    """GAP-5 fix: `Intent.FIND_REFERENCES` is a relationship-seeking
+    ("does X relate to Y") intent, exactly like its siblings above --
+    a genuinely empty result must still trigger the safety check, never
+    silently excluded the way CODE_LOOKUP-shaped intents are."""
+    result, registry, _, repository = build_graph(entity_paths=("auth.py",))
+    plan = plan_query(
+        query_contract=make_contract(intent=Intent.FIND_REFERENCES, targets=["auth.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.negative_query_candidate is True
+    assert plan.negative_query_result is NegativeQueryCoverage.NO_EVIDENCE_FOUND
+
+
 def test_non_empty_result_is_not_a_negative_query_candidate() -> None:
     # `auth.py` is the caller (subject) and `service.py` the callee (object):
     # FIND_CALLERS/CALLS only anchors on the object endpoint (post-fix

@@ -63,6 +63,14 @@ _REQUIRED_EVIDENCE: dict[Intent, frozenset[Capability]] = {
         {Capability.SYMBOL_DEFINITION, Capability.IMPLEMENTATION, Capability.TYPE_RELATIONSHIP}
     ),
     Intent.CODE_LOOKUP: frozenset({Capability.SYMBOL_DEFINITION}),
+    # GAP-5 fix: "What references X?" needs the same capabilities that
+    # already back `RelationshipType.REFERENCES` in
+    # `_CAPABILITY_RELATIONSHIP_TYPES` below -- SCIPAdapter's own
+    # `SYMBOL_REFERENCE` (a non-import reference occurrence) and
+    # `TYPE_RELATIONSHIP` (`is_type_definition`). No new capability, no
+    # new predicate; reuses exactly what FIND_CALLERS/ARCHITECTURE_
+    # ANALYSIS already established for the same relationship type.
+    Intent.FIND_REFERENCES: frozenset({Capability.SYMBOL_REFERENCE, Capability.TYPE_RELATIONSHIP}),
     Intent.UNKNOWN: frozenset(),
 }
 

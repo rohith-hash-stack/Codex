@@ -503,6 +503,22 @@ def bounded_traversal(
     finding and its fix are specific to `CALLS`/`IMPLEMENTS`, not a general
     retrieval redesign.
 
+    **Known, documented limitation (GAP-5 fix, `Intent.FIND_REFERENCES`)**:
+    `REFERENCES` was deliberately left off `_DIRECTIONAL_PREDICATES` when
+    that intent was added -- every *other* consumer of `REFERENCES`
+    evidence (`FIND_CALLERS`, `FIND_TESTS`, `ARCHITECTURE_ANALYSIS`) uses
+    it only as supplementary, genuinely-both-directions-relevant context,
+    never as the query's own primary directional question, so making it
+    directional here would change their existing behavior for no reason
+    in scope. `FIND_REFERENCES` therefore still collects both "X
+    references target" and "target references X" edges for a `"What
+    references X?"` query -- broader than the literal question, but never
+    backwards, and disclosed rather than silently shipped as if it were
+    as precise as `CALLS`/`IMPLEMENTS`. Making it directional would
+    require threading `Intent` (not just `RelationshipType`) into this
+    function, a larger, separate change intentionally left out of GAP-5's
+    scope.
+
     Node visitation (which entities enter `visited`/get returned) is
     completely unaffected -- only which *edges* end up in `relationships`.
     """
