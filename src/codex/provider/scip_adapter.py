@@ -105,7 +105,7 @@ from codex.provider.contract import (
     ProviderHealthStatus,
     ValidationResult,
 )
-from codex.provider.scip.index import ScipIndex, ScipRange, decode_index
+from codex.provider.scip.index import ScipIndex, ScipOccurrence, ScipRange, decode_index
 from codex.provider.scip.mapping import (
     infer_base_type,
     is_local_symbol,
@@ -119,6 +119,24 @@ DEFAULT_INDEX_FILENAME: Final = "index.scip"
 
 _DEFINITION_ROLE: Final = 0x1
 _IMPORT_ROLE: Final = 0x2
+_READ_ACCESS_ROLE: Final = 0x8
+
+_OVERLOAD_FAMILY_LINE_WINDOW: Final = 25
+"""GAP-13 fix: the maximum line gap between consecutive same-symbol
+occurrences still treated as one textual "redefinition family" (the
+`@typing.overload` idiom, and the structurally identical `@property`/
+`@x.setter` pair) rather than an unrelated later reference. Real-data
+justification (`docs/python-fidelity-gap-register.md`, 5 repositories):
+every genuine redefinition family measured spans at most ~13 lines
+between its own occurrences (property getter/setter pairs, `@overload`
+stub blocks); unrelated call/reference sites to the same name measured
+in the same real data land far outside this range (368 lines, in one
+checked case) -- 25 is a deliberately generous but still discriminating
+buffer, not a tight fit to any single observed case. A family whose real
+span exceeds this window is not recovered by this fix (falls back to
+today's Definition-role-only behavior) rather than risking an incorrect
+guess -- this codebase's existing "never fabricate, prefer under- to
+over-recovery" discipline (GAP-9/GAP-10's own precedent)."""
 
 _EXTERNAL_REVISION_SENTINEL: Final = "external"
 """Fixed revision component for EXTERNAL_LIBRARY canonical IDs (see module
@@ -133,6 +151,12 @@ class _DefinitionRecord:
     kind: int
     range: ScipRange | None
     relative_path: str
+    is_redefinition_family: bool = False
+    """GAP-13 fix: True when `range` was recovered from the *last*
+    occurrence in a same-symbol textual-redefinition cluster (see
+    `_OVERLOAD_FAMILY_LINE_WINDOW`), not directly from the symbol's own
+    Definition-role Occurrence. Lets `normalize()` tag the resulting
+    entity's `roles` so this provenance stays auditable."""
 
 
 @dataclass(frozen=True)
@@ -162,16 +186,92 @@ def _build_kind_by_symbol(index: ScipIndex) -> dict[str, int]:
     return kinds
 
 
+def _redefinition_family_locations(index: ScipIndex) -> dict[tuple[str, str], ScipRange]:
+    """GAP-13 fix: for each ``(document, symbol)`` with more than one
+    ``SymbolInformation`` entry recorded within that same document --
+    the real, verified signal for "this name has multiple textual
+    definitions in this file" (a ``@typing.overload`` family, or the
+    structurally identical ``@property``/``@x.setter`` pair; confirmed
+    against real data this signal does *not* fire for an ordinarily
+    single-defined, merely-frequently-referenced symbol -- see
+    ``docs/python-fidelity-gap-register.md``) -- find the last
+    occurrence in a textually-adjacent cluster (within
+    ``_OVERLOAD_FAMILY_LINE_WINDOW`` lines of its predecessor, starting
+    from the earliest -- confirmed always the Definition-role
+    Occurrence in practice).
+
+    This mirrors ``AstCallsAdapter``'s own, already-existing,
+    unconditional "last textual definition wins" convention (its
+    ``_DefinitionCollector`` overwrites same-named dict entries in
+    source order, with no decorator awareness at all) -- the two
+    providers then naturally converge on the same ``source_location``
+    through ``entity_resolver.py``'s existing, untouched exact-line
+    identity key, rather than this fix loosening that key itself or
+    touching AST-side logic.
+
+    Never applied to a Parameter descriptor (trailing ``)``) -- those
+    never become entities regardless (``infer_base_type``'s own
+    ``_SKIP_SUFFIXES``), so their own, much noisier, per-reference
+    ``SymbolInformation`` repetition (a parameter name used many times
+    in its own function body) is irrelevant here and excluded before
+    it can affect anything.
+    """
+    result: dict[tuple[str, str], ScipRange] = {}
+    for doc in index.documents:
+        symbol_info_counts: dict[str, int] = {}
+        for info in doc.symbols:
+            symbol_info_counts[info.symbol] = symbol_info_counts.get(info.symbol, 0) + 1
+
+        occurrences_by_symbol: dict[str, list[ScipOccurrence]] = {}
+        for occ in doc.occurrences:
+            if not occ.symbol or is_local_symbol(occ.symbol) or occ.symbol.endswith(")"):
+                continue
+            if occ.symbol_roles & (_DEFINITION_ROLE | _READ_ACCESS_ROLE):
+                occurrences_by_symbol.setdefault(occ.symbol, []).append(occ)
+
+        for symbol, occs in occurrences_by_symbol.items():
+            if symbol_info_counts.get(symbol, 0) <= 1:
+                continue
+            if not any(occ.symbol_roles & _DEFINITION_ROLE for occ in occs):
+                continue  # never cluster a group with no real Definition anchor
+            ordered = sorted(
+                (occ for occ in occs if occ.range is not None),
+                key=lambda occ: _range_sort_key(occ.range),
+            )
+            if len(ordered) < 2:
+                continue
+            last = ordered[0].range
+            assert last is not None
+            for occ in ordered[1:]:
+                assert occ.range is not None
+                if occ.range.start_line - last.start_line <= _OVERLOAD_FAMILY_LINE_WINDOW:
+                    last = occ.range
+                else:
+                    break
+            if last is not ordered[0].range:
+                result[(doc.relative_path, symbol)] = last
+    return result
+
+
 def _collect_definitions(index: ScipIndex) -> list[_DefinitionRecord]:
     kind_by_symbol = _build_kind_by_symbol(index)
-    records = [
-        _DefinitionRecord(
-            occ.symbol, kind_by_symbol.get(occ.symbol, 0), occ.range, doc.relative_path
-        )
-        for doc in index.documents
-        for occ in doc.occurrences
-        if (occ.symbol_roles & _DEFINITION_ROLE) and occ.symbol and not is_local_symbol(occ.symbol)
-    ]
+    family_locations = _redefinition_family_locations(index)
+    records = []
+    for doc in index.documents:
+        for occ in doc.occurrences:
+            is_definition = occ.symbol_roles & _DEFINITION_ROLE
+            if not (is_definition and occ.symbol and not is_local_symbol(occ.symbol)):
+                continue
+            family_range = family_locations.get((doc.relative_path, occ.symbol))
+            records.append(
+                _DefinitionRecord(
+                    occ.symbol,
+                    kind_by_symbol.get(occ.symbol, 0),
+                    family_range if family_range is not None else occ.range,
+                    doc.relative_path,
+                    is_redefinition_family=family_range is not None,
+                )
+            )
     records.sort(key=lambda r: (r.relative_path, _range_sort_key(r.range), r.symbol))
     return records
 
@@ -697,9 +797,18 @@ class SCIPAdapter:
                 resolved = resolve(definition.symbol)
                 if resolved is None:
                     continue
-                role = role_for_kind(definition.kind)
+                kind_role = role_for_kind(definition.kind)
+                roles: list[str] = [kind_role] if kind_role else []
+                if definition.is_redefinition_family:
+                    # GAP-13 fix: this location came from the last member
+                    # of a same-symbol textual-redefinition cluster
+                    # (`@typing.overload`/`@property`+`.setter`), not
+                    # directly from the Definition-role Occurrence --
+                    # kept auditable rather than silently indistinguishable
+                    # from an ordinary single-defined symbol.
+                    roles.append("scip:redefinition-family")
                 location = _location_from_range(definition.range, definition.relative_path)
-                ensure_entity(resolved, roles=[role] if role else [], source_location=location)
+                ensure_entity(resolved, roles=roles, source_location=location)
 
         counter = 0
 
