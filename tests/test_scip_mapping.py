@@ -110,6 +110,26 @@ def test_infer_base_type_unspecified_kind_file_suffix() -> None:
     assert infer_base_type(kind=0, symbol=symbol) == BaseEntityType.FILE
 
 
+def test_infer_base_type_unspecified_kind_meta_suffix_is_module() -> None:
+    """GAP-12 fix: `:` is `scip.proto`'s own `Descriptor.Suffix.Meta`
+    punctuation -- scip-python's real, always-`__init__:`-shaped
+    per-file module-identity marker (`docs/python-fidelity-gap-
+    register.md`), not malformed or unclassifiable data."""
+    symbol = "scip-python python p 1.0.0 `pkg.mod`/__init__:"
+    assert infer_base_type(kind=0, symbol=symbol) == BaseEntityType.MODULE
+
+
+def test_infer_base_type_meta_suffix_distinct_from_file_suffix() -> None:
+    """A trailing `:` (Meta) and a trailing `/` (Namespace/File) are
+    different SCIP descriptor kinds naming different real things --
+    this fix must not conflate the module-identity symbol with the
+    file/namespace descriptor already handled above."""
+    module_symbol = "scip-python python p 1.0.0 `pkg.mod`/__init__:"
+    file_symbol = "scip-python python p 1.0.0 pkg/mod/"
+    assert infer_base_type(kind=0, symbol=module_symbol) == BaseEntityType.MODULE
+    assert infer_base_type(kind=0, symbol=file_symbol) == BaseEntityType.FILE
+
+
 def test_infer_base_type_parameter_descriptor_returns_none() -> None:
     symbol = "scip-ts npm p 1.0.0 src/`a.ts`/Foo#`<constructor>`().(message)"
     assert infer_base_type(kind=0, symbol=symbol) is None

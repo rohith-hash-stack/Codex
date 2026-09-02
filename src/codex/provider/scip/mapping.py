@@ -307,6 +307,28 @@ def infer_base_type(*, kind: int, symbol: str) -> BaseEntityType | None:
         return BaseEntityType.CLASS
     if trailing == ".":
         return BaseEntityType.VARIABLE
+    if trailing == ":":
+        # GAP-12 fix: `:` is `scip.proto`'s own `Descriptor.Suffix.Meta`
+        # punctuation, alongside `/` (Namespace), `#` (Type), `().`
+        # (Method) and `.` (Term) above -- a real, documented SCIP
+        # descriptor kind this function simply never enumerated, not
+        # malformed or ambiguous data. scip-python emits exactly one such
+        # symbol per source file, always shaped `<dotted-module>/__init__:`
+        # (confirmed: the segment immediately before `:` is always the
+        # literal `__init__:`, never anything else, across every real
+        # index checked) -- the module's own self-identity, distinct from
+        # the file's own FILE entity (a separate identity path, built
+        # from `Document.relative_path` by `GitAdapter`/this adapter's
+        # own FILE-subject convention) and from any class/function/
+        # variable defined inside it. Real-data measurement
+        # (`docs/python-fidelity-gap-register.md`, GAP-12): this shape
+        # was previously unclassified -> `None` -> silently no entity,
+        # silently dropping every reference/import fact naming a module
+        # by its own identity (31,411 real occurrences lost across 5
+        # repositories). `BaseEntityType.MODULE` is the pre-existing,
+        # already-`_KIND_TO_BASE_TYPE`-mapped (kind 29) type for exactly
+        # this concept -- reused verbatim, no new entity type invented.
+        return BaseEntityType.MODULE
     return None
 
 
