@@ -90,12 +90,74 @@ def _optional_int(params: dict[str, list[str]], name: str, default: int) -> int:
         ) from exc
 
 
+MAX_REQUEST_BODY_BYTES = 1_048_576
+"""API Hardening & Contract Audit finding: `_post_repositories`/
+`_post_query` previously read `Content-Length` bytes from the socket
+with no upper bound -- a client (malicious or merely broken) could
+declare an arbitrary `Content-Length` and force this process to
+allocate that much memory. 1 MiB is generous headroom for the actual
+payload shape (`repository_id`/`local_path`/`query_text`/two small
+integers) while capping the worst case. Rejected before any of the
+declared body is read into memory, never a partial read-then-discard."""
+
+
+def _read_json_object_body(handler: BaseHTTPRequestHandler) -> dict[str, object]:
+    """Reads, size-bounds, and JSON-decodes a POST body -- the one
+    shared implementation for both `/repositories` and `/query` (they
+    had drifted into two near-identical, independently-bug-prone
+    copies of this same logic). Raises `_RequestError` (mapped to a
+    structured 4xx by `_dispatch`, never a raw traceback) for an
+    oversized body, invalid JSON, or a body that parses but is not a
+    JSON object -- the last of these previously reached `body.get(...)`
+    unguarded and surfaced as an unhandled `AttributeError` -> `500`
+    for e.g. a bare JSON string body."""
+    raw_length = handler.headers.get("Content-Length")
+    length = int(raw_length) if raw_length else 0
+    if length > MAX_REQUEST_BODY_BYTES:
+        handler.close_connection = True
+        raise _RequestError(
+            HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            f"request body of {length} bytes exceeds the {MAX_REQUEST_BODY_BYTES}-byte limit",
+        )
+    raw = handler.rfile.read(length) if length else b"{}"
+    try:
+        body = json.loads(raw or b"{}")
+    except json.JSONDecodeError as exc:
+        raise _RequestError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
+    if not isinstance(body, dict):
+        raise _RequestError(HTTPStatus.BAD_REQUEST, "request body must be a JSON object")
+    return body
+
+
+def _require_body_str(body: dict[str, object], name: str) -> str:
+    """API Hardening & Contract Audit finding: a non-string, truthy
+    JSON value (e.g. `123`) for a required body field previously
+    reached `RepositoryManager`/`understand_query` unchecked and
+    surfaced as an unhandled `TypeError`/similar -> `500` with an
+    internal error message, instead of the structured `400` a request-
+    validation failure should be. Truthiness alone (the pre-existing
+    check) does not catch this -- a type check is required too."""
+    value = body.get(name)
+    if not isinstance(value, str) or not value:
+        raise _RequestError(HTTPStatus.BAD_REQUEST, f"{name!r} is required and must be a string")
+    return value
+
+
 def _optional_positive_body_int(body: dict[str, object], name: str) -> int | None:
     value = body.get(name)
     if value is None:
         return None
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise _RequestError(HTTPStatus.BAD_REQUEST, f"{name!r} must be a positive integer")
+    return value
+
+
+def _optional_body_str(body: dict[str, object], name: str) -> str | None:
+    value = body.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _RequestError(HTTPStatus.BAD_REQUEST, f"{name!r} must be a string")
     return value
 
 
@@ -117,7 +179,14 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
     Endpoints (docs §9): ``POST /repositories``, ``GET /jobs/{job_id}``,
     ``GET /repositories/{id}/status``, ``GET /symbols``,
     ``GET /neighborhood``, ``POST /query`` (API Integration Milestone,
-    `docs/api-query-integration.md`).
+    `docs/api-query-integration.md`), ``GET /healthz`` (API Hardening &
+    Contract Audit -- process-level liveness only, deliberately
+    independent of any repository's readiness or the configured
+    Gateway: it answers "is this server process up and dispatching
+    requests", never "is repository X ready" or "is the LLM reachable"
+    -- those are exactly what `/repositories/{id}/status` and a real
+    per-request `/query` call already answer, so `/healthz` does not
+    duplicate either).
     """
 
     class Handler(BaseHTTPRequestHandler):
@@ -137,7 +206,9 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
             try:
-                if method == "POST" and parsed.path == "/repositories":
+                if method == "GET" and parsed.path == "/healthz":
+                    self._get_healthz()
+                elif method == "POST" and parsed.path == "/repositories":
                     self._post_repositories()
                 elif method == "POST" and parsed.path == "/query":
                     self._post_query()
@@ -192,40 +263,22 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
                 _write_json(self, HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
 
         def _post_repositories(self) -> None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                body = json.loads(raw or b"{}")
-            except json.JSONDecodeError as exc:
-                raise _RequestError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
-            repository_id = body.get("repository_id")
-            local_path = body.get("local_path")
-            if not repository_id or not local_path:
-                raise _RequestError(
-                    HTTPStatus.BAD_REQUEST, "repository_id and local_path are required"
-                )
+            body = _read_json_object_body(self)
+            repository_id = _require_body_str(body, "repository_id")
+            local_path = _require_body_str(body, "local_path")
             api.register_repository(
                 repository_id,
                 local_path,
-                remote_url=body.get("remote_url"),
-                revision=body.get("revision"),
+                remote_url=_optional_body_str(body, "remote_url"),
+                revision=_optional_body_str(body, "revision"),
             )
             handle = api.start_ingestion(repository_id)
             _write_json(self, HTTPStatus.ACCEPTED, handle)
 
         def _post_query(self) -> None:
-            length = int(self.headers.get("Content-Length", "0") or "0")
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                body = json.loads(raw or b"{}")
-            except json.JSONDecodeError as exc:
-                raise _RequestError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
-            repository_id = body.get("repository_id")
-            query_text = body.get("query_text")
-            if not repository_id or not query_text:
-                raise _RequestError(
-                    HTTPStatus.BAD_REQUEST, "repository_id and query_text are required"
-                )
+            body = _read_json_object_body(self)
+            repository_id = _require_body_str(body, "repository_id")
+            query_text = _require_body_str(body, "query_text")
             token_budget = _optional_positive_body_int(body, "token_budget")
             latency_budget_ms = _optional_positive_body_int(body, "latency_budget_ms")
             response = api.ask(
@@ -235,6 +288,14 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
                 latency_budget_ms=latency_budget_ms,
             )
             _write_json(self, HTTPStatus.OK, response)
+
+        def _get_healthz(self) -> None:
+            # Deliberately does not call `api.*` at all -- process
+            # liveness must never depend on repository state, ingestion
+            # state, or Gateway configuration (see `make_handler`'s own
+            # docstring for why this is intentionally not a readiness
+            # check).
+            _write_json(self, HTTPStatus.OK, {"status": "ok"})
 
         def _get_job(self, job_id: str) -> None:
             _write_json(self, HTTPStatus.OK, api.get_job_status(job_id))

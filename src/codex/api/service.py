@@ -199,6 +199,25 @@ class CodexAPI:
         `LLMGateway` -- lifecycle/lookup/neighborhood are entirely
         unaffected either way, since none of them touch `self._gateway`."""
         self._lock = threading.Lock()
+        self._llm_lock = threading.Lock()
+        """API Hardening & Contract Audit finding: `OpenAIGateway.
+        generate()` records per-call metadata (`served_model`, token
+        usage, `finish_reason`) on its own `self.last_response_metadata`
+        -- an instance attribute, not a return value (`codex.llm.
+        openai_gateway`'s own documented "opt-in side channel"). That
+        module was never exercised concurrently before (the benchmark
+        harness calls it strictly sequentially); `codex.api`'s
+        `ThreadingHTTPServer` makes concurrent `/query` requests share
+        one `CodexAPI` -- and therefore one Gateway instance -- for the
+        first time, which opened a real race: `generate()`'s blocking
+        network call releases the GIL, so a second, concurrent
+        `generate()` call can overwrite `last_response_metadata` between
+        the first call returning and `ask()` reading it back, silently
+        attributing one request's served-model/usage metadata to a
+        different request. Serializing exactly the `generate()` call and
+        its immediate metadata read (never retrieval/planning, which
+        stay fully concurrent) fixes this without touching `codex.llm.
+        openai_gateway` at all."""
         self._results: dict[str, IngestionResult] = {}
         self._jobs: dict[str, _JobState] = {}
         self._active_jobs: dict[str, str] = {}
@@ -351,6 +370,7 @@ class CodexAPI:
     def get_repository_status(self, repository_id: str) -> RepositoryStatus:
         with self._lock:
             result = self._results.get(repository_id)
+            is_active = repository_id in self._active_jobs
         if result is not None:
             return self._status_from_result(repository_id, result)
         try:
@@ -359,9 +379,23 @@ class CodexAPI:
             return RepositoryStatus(
                 repository_id=repository_id, phase=RepositoryPhase.NOT_REGISTERED
             )
+        # API Hardening & Contract Audit finding: an in-flight ingestion
+        # was previously invisible here -- `get_job_status` already
+        # reported `INDEXING` correctly (from `_JobState.phase`), but
+        # this repository-scoped view fell back to the pre-ingestion
+        # `REGISTERED` phase for the entire duration of a real
+        # ingestion run, silently disagreeing with the job-scoped view
+        # of the exact same repository. Checking `self._active_jobs`
+        # (already the R1 singleflight's own source of truth for "is a
+        # job currently mutating this repository") costs one dict
+        # lookup and makes the two views consistent -- most visibly,
+        # this is also what `ask()`'s `RepositoryNotReadyError.phase`
+        # reports on a `409`, so a mid-ingestion `/query` now correctly
+        # says `INDEXING`, not the misleading `REGISTERED`.
+        phase = RepositoryPhase.INDEXING if is_active else RepositoryPhase.REGISTERED
         return RepositoryStatus(
             repository_id=repository_id,
-            phase=RepositoryPhase.REGISTERED,
+            phase=phase,
             head_revision=metadata.head_revision,
         )
 
@@ -558,8 +592,12 @@ class CodexAPI:
             provider=getattr(self._gateway, "provider", "unknown"),
             model_id=getattr(self._gateway, "requested_model", "unknown"),
         )
-        generation = self._gateway.generate(request)
-        metadata = getattr(self._gateway, "last_response_metadata", None)
+        # Serialized (see `self._llm_lock`'s own docstring): a shared
+        # Gateway's per-call metadata side-channel is not safe to read
+        # from two concurrent `generate()` calls without this.
+        with self._llm_lock:
+            generation = self._gateway.generate(request)
+            metadata = getattr(self._gateway, "last_response_metadata", None)
 
         return AskResponse(
             repository_id=repository_id,
