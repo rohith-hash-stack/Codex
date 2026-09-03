@@ -1,0 +1,104 @@
+{
+  "corpus": {
+    "corpus_version": "codex-self-dev-v0",
+    "labels": {
+      "a12d6237d0c563650365c9d4257925bf": {
+        "query_id": "a12d6237d0c563650365c9d4257925bf",
+        "expected_verification_status": null,
+        "should_abstain": false,
+        "relevant_entity_ids": [
+          "codex:e37ad4969a4e9fac5ff095e3d253c896",
+          "codex:9134a0b77cc07469a03e9f13f9ca8846",
+          "codex:fe2ef2bfff1c96faf95aae66f87d5a99",
+          "codex:6b2c06531011f3f1cc3d06c4e23a4649",
+          "codex:ff3e90794a136be4984a22e859599ac4",
+          "codex:1c806b566ee21d37dec00d4d08617447",
+          "codex:fa4e9d6a4927f7e7bab7b2ab10ff2c0d",
+          "codex:f70711e7e99f477b532a64715b7ba9a2",
+          "codex:3e7f34ecbf318421d5658636daf14fb6",
+          "codex:c95e8436055ae140b599a871adcfabef",
+          "codex:c930e7151db9c891a8b73baa6226dc4e",
+          "codex:88c06dd15cd0929c141220d9115a9b46",
+          "codex:6e9327a45865c59d8e71e122738f954f",
+          "codex:28cd2b89bad054ed2440f9f8bd0c7b56",
+          "codex:193441ee652ef2cb4cd276778f80f271",
+          "codex:0c722e32cc0b70a4ba8b6688df7ff141",
+          "codex:fa7c45513c32d4baff2d2dda5e9ffffa",
+          "codex:931fc0369c86fe27f0af1f5ce77dd9bd",
+          "codex:3755455b4e992e84b64a34c4ea2a3bc3",
+          "codex:246dd4f118b7eb95059bc786734c8fc9",
+          "codex:ce365f7eab3fe34921cb5b05d12048fa",
+          "codex:8ef236378f757459a30c6e96c8f2cdea",
+          "codex:c776e7db216ec735d01e1e26e82d68b9",
+          "codex:4de7582292bc3b88806be98a54e7ce02",
+          "codex:ae34c540e10cc9c1028ad0f0d3c5aafb",
+          "codex:38d0d9d315e5f96360fffdc2b59d1b6c",
+          "codex:e10808683296aa3455f85628957465f4"
+        ]
+      },
+      "054eb68a7d6dfd720ad424e61c593653": {
+        "query_id": "054eb68a7d6dfd720ad424e61c593653",
+        "expected_verification_status": null,
+        "should_abstain": false,
+        "relevant_entity_ids": [
+          "codex:33fd38f6e5a599a0f43022c7ef8015a0",
+          "codex:2581741831cc847b3e4c75c7c991e4bf",
+          "codex:905fc400c45e651a714aec37eb64e887",
+          "codex:d7c66e8fcef692bceebfbb92e3b21f56"
+        ]
+      },
+      "e4a6fad23b48bffaf50cae9076d2ddd6": {
+        "query_id": "e4a6fad23b48bffaf50cae9076d2ddd6",
+        "expected_verification_status": null,
+        "should_abstain": false,
+        "relevant_entity_ids": [
+          "codex:2011ba4dac5d275a550c7412796596d7",
+          "codex:081e1851351d83748aef84576b926d3b",
+          "codex:5b0c85f8e90f0877ccf36286b075fe09",
+          "codex:0648db8d7c3d48d8eb4393739a0447c7",
+          "codex:76f731090ed791793fb56cd6980e53ef",
+          "codex:44a14b0736d709e329430f4c03da9225",
+          "codex:ad098f053c921464d1800bbb29f33dc9"
+        ]
+      },
+      "c5e94156a64a9333a0ef9cb89b72dada": {
+        "query_id": "c5e94156a64a9333a0ef9cb89b72dada",
+        "expected_verification_status": null,
+        "should_abstain": true,
+        "relevant_entity_ids": []
+      }
+    },
+    "cases": {
+      "a12d6237d0c563650365c9d4257925bf": {
+        "query_id": "a12d6237d0c563650365c9d4257925bf",
+        "repository_id": "codex",
+        "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+        "query_text": "What calls build_canonical_id?"
+      },
+      "054eb68a7d6dfd720ad424e61c593653": {
+        "query_id": "054eb68a7d6dfd720ad424e61c593653",
+        "repository_id": "codex",
+        "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+        "query_text": "Which tests call compute_query_identity?"
+      },
+      "e4a6fad23b48bffaf50cae9076d2ddd6": {
+        "query_id": "e4a6fad23b48bffaf50cae9076d2ddd6",
+        "repository_id": "codex",
+        "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+        "query_text": "What does codex depend on?"
+      },
+      "c5e94156a64a9333a0ef9cb89b72dada": {
+        "query_id": "c5e94156a64a9333a0ef9cb89b72dada",
+        "repository_id": "codex",
+        "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+        "query_text": "What calls this_function_does_not_exist_anywhere_xyz?"
+      }
+    }
+  },
+  "categories": {
+    "a12d6237d0c563650365c9d4257925bf": "FIND_CALLERS",
+    "054eb68a7d6dfd720ad424e61c593653": "FIND_TESTS",
+    "e4a6fad23b48bffaf50cae9076d2ddd6": "FIND_DEPENDENCIES",
+    "c5e94156a64a9333a0ef9cb89b72dada": "FIND_CALLERS"
+  }
+}
