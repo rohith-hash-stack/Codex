@@ -280,6 +280,148 @@ def test_directional_anchoring_is_deterministic_across_repeated_execution() -> N
         assert [(r.subject, r.object) for r in other.relationships] == first
 
 
+# --- `reverse_directional` (Query-Shaped Evidence Retrieval milestone,
+# task #127 real-measurement finding): `Intent.TRACE_EXECUTION`'s "what
+# does X call next" question needs the opposite anchoring from every
+# other directional-predicate consumer above -- these tests mirror the
+# default-mode tests immediately above them, with `reverse_directional=
+# True`, to make the contrast explicit. ---------------------------------
+
+
+def test_reverse_directional_collects_seed_outbound_edge() -> None:
+    """Mirrors `test_reverse_direction_calls_excluded_from_find_callers`
+    exactly, with `reverse_directional=True`: the same `target -> other`
+    edge that mode correctly excludes (wrong direction for "who calls
+    target") is exactly what "what does target call" needs, and must now
+    be collected."""
+    store = _store()
+    target = _entity("target")
+    other = _entity("other")
+    store.upsert_entity(target)
+    store.upsert_entity(other)
+    store.upsert_relationship(_edge("target", RelationshipType.CALLS, "other"))
+
+    result = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        reverse_directional=True,
+    )
+    assert [(r.subject, r.object) for r in result.relationships] == [("target", "other")]
+
+
+def test_reverse_directional_inbound_edge_to_seed_still_excluded() -> None:
+    """The flip is a swap, not an addition: in `reverse_directional`
+    mode, an inbound ("someone calls target") edge must NOT also be kept
+    -- only target's own outbound edge answers "what does target call"."""
+    store = _store()
+    target = _entity("target")
+    caller = _entity("caller")
+    store.upsert_entity(target)
+    store.upsert_entity(caller)
+    store.upsert_relationship(_edge("caller", RelationshipType.CALLS, "target"))
+
+    result = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        reverse_directional=True,
+    )
+    assert result.relationships == []
+
+
+def test_reverse_directional_enables_multihop_chain_via_hop_expanded_neighbor() -> None:
+    """Mirrors `test_unrelated_calls_edge_between_hop_expanded_neighbors_
+    excluded` exactly, with `reverse_directional=True`: real multi-hop
+    execution tracing ("A calls B calls C") needs B's own outbound edge
+    to reach C, even though B is only a hop-expanded neighbor, never one
+    of the original `seeds` -- the exact edge the default (seed-only)
+    mode correctly excludes for `"what calls X"`-shaped queries must now
+    be included for `"what happens when X runs"`-shaped ones."""
+    store = _store()
+    hub = _entity("hub")
+    neighbor_a = _entity("neighbor_a")
+    neighbor_b = _entity("neighbor_b")
+    for e in (hub, neighbor_a, neighbor_b):
+        store.upsert_entity(e)
+    store.upsert_relationship(_edge("hub", RelationshipType.CALLS, "neighbor_a"))
+    store.upsert_relationship(_edge("neighbor_a", RelationshipType.CALLS, "neighbor_b"))
+
+    result = bounded_traversal(
+        store,
+        [hub],
+        [RelationshipType.CALLS],
+        depth=2,
+        max_nodes=100,
+        max_edges=100,
+        reverse_directional=True,
+    )
+
+    kept = {(r.subject, r.object) for r in result.relationships}
+    assert kept == {("hub", "neighbor_a"), ("neighbor_a", "neighbor_b")}
+
+
+def test_reverse_directional_does_not_affect_non_directional_predicates() -> None:
+    """REFERENCES is not in `_DIRECTIONAL_PREDICATES` -- it already
+    collects both directions from every frontier entity regardless, so
+    `reverse_directional` must be a complete no-op for it."""
+    store = _store()
+    a = _entity("a")
+    b = _entity("b")
+    store.upsert_entity(a)
+    store.upsert_entity(b)
+    store.upsert_relationship(_edge("a", RelationshipType.REFERENCES, "b"))
+
+    default_mode = bounded_traversal(
+        store, [a], [RelationshipType.REFERENCES], depth=1, max_nodes=100, max_edges=100
+    )
+    reverse_mode = bounded_traversal(
+        store,
+        [a],
+        [RelationshipType.REFERENCES],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        reverse_directional=True,
+    )
+    assert [(r.subject, r.object) for r in default_mode.relationships] == [
+        (r.subject, r.object) for r in reverse_mode.relationships
+    ]
+
+
+def test_reverse_directional_defaults_to_false_and_is_backward_compatible() -> None:
+    """Every existing call site (`codex.evaluation.observer`,
+    `codex.api.service`, every other test in this file) omits
+    `reverse_directional` entirely -- confirms the parameter's default
+    reproduces the exact pre-milestone inbound-to-seed behavior."""
+    store = _store()
+    target = _entity("target")
+    other = _entity("other")
+    store.upsert_entity(target)
+    store.upsert_entity(other)
+    store.upsert_relationship(_edge("target", RelationshipType.CALLS, "other"))
+
+    explicit_default = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        reverse_directional=False,
+    )
+    omitted = bounded_traversal(
+        store, [target], [RelationshipType.CALLS], depth=1, max_nodes=100, max_edges=100
+    )
+    assert explicit_default.relationships == omitted.relationships == []
+
+
 def test_collect_evidence_deduplicates_shared_evidence_ids() -> None:
     from datetime import UTC, datetime
 

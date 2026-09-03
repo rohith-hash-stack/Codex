@@ -472,6 +472,8 @@ def bounded_traversal(
     depth: int,
     max_nodes: int,
     max_edges: int,
+    *,
+    reverse_directional: bool = False,
 ) -> TraversalResult:
     """TAD §35's "bounded traversal", respecting `max_nodes`/`max_edges`
     (TAD §41) and `depth` (TAD §29's Planner output). Deterministic:
@@ -521,6 +523,41 @@ def bounded_traversal(
 
     Node visitation (which entities enter `visited`/get returned) is
     completely unaffected -- only which *edges* end up in `relationships`.
+
+    **`reverse_directional` (Query-Shaped Evidence Retrieval milestone,
+    task #127 real-measurement finding)**: the anchoring above assumes
+    every directional-predicate-producing intent means "X calls/
+    implements the target" (`_DIRECTIONAL_PREDICATES`'s own docstring).
+    That was true when it was written, but `Intent.TRACE_EXECUTION`
+    queries phrased as "what happens when X runs/is invoked" or "trace
+    what happens from X" ask the opposite question -- "what does X call
+    next", not "who calls X" -- and real measurement against 5
+    independently-selected repositories (django, flask, click, pytest,
+    requests) confirmed the default (inbound-to-seed) direction returns
+    zero of the validated required edges for these queries, because the
+    real edges run *from* the seed outward. `reverse_directional=True`
+    (opt-in, default `False`, so every existing call site and every
+    non-`TRACE_EXECUTION` intent is byte-for-byte unaffected) swaps a
+    directional predicate's seed-anchored collection from "object is the
+    seed" (inbound) to "subject is the seed" (outbound) -- and, unlike the
+    inbound case, is deliberately *not* restricted to the original
+    `seeds`: every frontier entity (including hop-expanded neighbors)
+    contributes its own outbound edges once `reverse_directional` is set.
+    This is required, not incidental -- a genuine multi-hop execution
+    trace ("A calls B calls C") needs B's *own* outbound `CALLS` edge to
+    reach C, and B is never one of the original `seeds`. Restricting to
+    `seed_ids` here (as the inbound case correctly does, to keep
+    `"who calls foo?"` from admitting unrelated noise from every visited
+    node) would silently cap every forward trace at exactly one hop
+    regardless of the configured `depth` -- confirmed by real measurement
+    (task #127) before this relaxation was added. This is still safe for
+    every non-`TRACE_EXECUTION` intent because `reverse_directional`
+    itself is never set for them (`RetrievalPlan.trace_forward`'s own
+    docstring) -- `FIND_CALLERS`/`FIND_TESTS`/`FIND_IMPLEMENTATIONS`/
+    `FIND_IMPACT` keep the original seed-only inbound anchoring,
+    unchanged. Non-directional predicates (`REFERENCES`, `IMPORTS`, ...)
+    are completely unaffected either way -- they already collect both
+    directions from every frontier entity.
     """
     visited: dict[str, RepositorySymbol] = {s.canonical_id: s for s in seeds}
     distances: dict[str, int] = {s.canonical_id: 0 for s in seeds}
@@ -543,11 +580,14 @@ def bounded_traversal(
                             truncated = True
                             continue
                         relationships[rel.key] = rel
-                if directional and entity.canonical_id not in seed_ids:
+                if directional and not reverse_directional and entity.canonical_id not in seed_ids:
                     continue
-                for rel in graph.get_relationships(
-                    object_id=entity.canonical_id, predicate=predicate
-                ):
+                anchor_kwargs = (
+                    {"subject": entity.canonical_id}
+                    if directional and reverse_directional
+                    else {"object_id": entity.canonical_id}
+                )
+                for rel in graph.get_relationships(predicate=predicate, **anchor_kwargs):
                     if rel.key not in relationships and len(relationships) >= max_edges:
                         truncated = True
                         continue

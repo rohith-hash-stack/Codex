@@ -193,3 +193,97 @@ def test_find_implementations_determinism() -> None:
     a = detect("What implements Storage?")
     b = detect("What implements Storage?")
     assert a == b
+
+
+# ---------------------------------------------------------------------
+# Query-Shaped Evidence Retrieval milestone: new TRACE_EXECUTION/
+# FIND_IMPACT phrasings (LLM Grounding / Graph Sufficiency Validation's
+# multihop/behavioral/impact query shapes, which previously matched no
+# Tier-0 pattern at all and so never reached the intent's existing
+# required_evidence/relationship_types/depth wiring). Every phrasing
+# below is one of the 15 real queries the validation used.
+# ---------------------------------------------------------------------
+def test_what_happens_when_x_is_invoked_routes_to_trace_execution() -> None:
+    candidates = detect("What happens when Signal.send() is invoked?")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    # Bare trailing identifier only -- the "Signal." qualifier is dropped
+    # (task #127 measurement: resolve_targets deliberately never
+    # normalizes across provider-specific qualified-name decoration, so
+    # a dotted "ClassName.method" composite target only resolves by
+    # accident for AST-style qualified names and fails entirely for
+    # SCIP-style ones; the bare method name resolves against both).
+    assert candidates[0].targets == ("send",)
+
+
+def test_what_happens_when_x_runs_routes_to_trace_execution() -> None:
+    candidates = detect("What happens when Flask.full_dispatch_request() runs?")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("full_dispatch_request",)
+
+
+def test_what_happens_when_x_is_called_with_trailing_chain_clause() -> None:
+    """The trailing "-- trace the call chain" clause must not prevent
+    the earlier "what happens when X is called" clause from matching."""
+    candidates = detect("What happens when Signal.send() is called -- trace the call chain.")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("send",)
+
+
+def test_trace_what_happens_from_x_routes_to_trace_execution() -> None:
+    candidates = detect("Trace what happens from FixtureRequest.getfixturevalue() onward.")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("getfixturevalue",)
+
+
+def test_call_path_from_x_routes_to_trace_execution() -> None:
+    candidates = detect("What is the call path from Flask.wsgi_app() down to dispatch_request()?")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("wsgi_app",)
+
+
+def test_if_x_changes_what_could_be_affected_routes_to_find_impact() -> None:
+    candidates = detect("If Signal.send changes, what components could be affected?")
+    assert candidates[0].intent is Intent.FIND_IMPACT
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("send",)
+
+
+def test_if_x_changes_pattern_does_not_collide_with_find_dependencies() -> None:
+    """"If X changes, what could be affected" is a distinct structural
+    shape from "what does X depend on" -- must not collapse into
+    FIND_DEPENDENCIES or any other pre-existing intent."""
+    candidates = detect(
+        "If FixtureRequest._get_active_fixturedef changes, what components could be affected?"
+    )
+    assert candidates[0].intent is Intent.FIND_IMPACT
+    assert all(
+        c.intent is not Intent.FIND_DEPENDENCIES
+        for c in candidates
+        if c.score >= DETERMINISTIC_THRESHOLD
+    )
+
+
+def test_new_trace_execution_phrasings_do_not_collide_with_find_callers() -> None:
+    """"What happens when X is called" must never be claimed by the
+    bare-keyword FIND_CALLERS rule or any "what calls X" structural
+    rule -- "called" is a different word from "calls", and the phrase
+    shape is entirely different."""
+    candidates = detect("What happens when Session.send() is invoked?")
+    assert candidates[0].intent is Intent.TRACE_EXECUTION
+    assert all(
+        c.intent is not Intent.FIND_CALLERS or c.score < DETERMINISTIC_THRESHOLD for c in candidates
+    )
+
+
+def test_new_trace_execution_and_find_impact_patterns_are_deterministic() -> None:
+    a = detect("What happens when Signal.send() is invoked?")
+    b = detect("What happens when Signal.send() is invoked?")
+    assert a == b
+    c = detect("If Session.send changes, what components could be affected?")
+    d = detect("If Session.send changes, what components could be affected?")
+    assert c == d

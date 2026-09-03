@@ -387,3 +387,86 @@ def test_find_references_does_not_change_find_callers_required_evidence() -> Non
         Capability.CALL_RELATIONSHIP,
         Capability.SYMBOL_REFERENCE,
     }
+
+
+# --- Query-Shaped Evidence Retrieval milestone: new TRACE_EXECUTION/
+# --- FIND_IMPACT phrasings produce the *same* relationship-type-scoped
+# --- contract as every other route into these already-existing intents.
+
+
+def test_what_happens_when_x_is_invoked_produces_scoped_trace_execution_contract() -> None:
+    from codex.ontology.relationships import RelationshipType
+
+    result = understand_query(
+        "What happens when Signal.send() is invoked?", repository_id="repo1", now=NOW
+    )
+    assert result.status is UnderstandingStatus.RESOLVED
+    assert result.contract is not None
+    assert result.contract.intent is Intent.TRACE_EXECUTION
+    # Bare trailing identifier only -- see task #127 measurement note in
+    # `codex.query_understanding.tier0`'s new-rule comment block.
+    assert result.contract.targets == ["send"]
+    # Relationship-type-scoped, not the empty/unfiltered list a generic
+    # bounded traversal would use -- this is the whole point of routing
+    # through TRACE_EXECUTION rather than bypassing Tier-0.
+    assert set(result.contract.relationship_types) == {
+        RelationshipType.CALLS,
+        RelationshipType.REFERENCES,
+    }
+
+
+def test_trace_what_happens_from_x_produces_identical_contract_shape_to_existing_pattern() -> None:
+    """The new "trace what happens from X" phrasing and the pre-existing
+    "trace execution of X" phrasing must resolve to the identical
+    intent/relationship_types/required_evidence -- two entry points into
+    one already-validated retrieval path, not a second, different one."""
+    existing_phrasing = understand_query(
+        "trace execution of Signal.send", repository_id="repo1", now=NOW
+    )
+    new_phrasing = understand_query(
+        "Trace what happens from Signal.send onward", repository_id="repo1", now=NOW
+    )
+    assert existing_phrasing.contract is not None
+    assert new_phrasing.contract is not None
+    assert (
+        existing_phrasing.contract.intent is new_phrasing.contract.intent is Intent.TRACE_EXECUTION
+    )
+    assert existing_phrasing.contract.relationship_types == new_phrasing.contract.relationship_types
+    assert existing_phrasing.contract.required_evidence == new_phrasing.contract.required_evidence
+
+
+def test_if_x_changes_produces_scoped_find_impact_contract() -> None:
+    from codex.ontology.relationships import RelationshipType
+
+    result = understand_query(
+        "If Session.send changes, what components could be affected?",
+        repository_id="repo1",
+        now=NOW,
+    )
+    assert result.status is UnderstandingStatus.RESOLVED
+    assert result.contract is not None
+    assert result.contract.intent is Intent.FIND_IMPACT
+    assert result.contract.targets == ["send"]
+    assert set(result.contract.relationship_types) == {
+        RelationshipType.CALLS,
+        RelationshipType.DEPENDS_ON,
+        RelationshipType.REFERENCES,
+    }
+
+
+def test_if_x_changes_matches_existing_impact_of_changing_contract_shape() -> None:
+    """The new "if X changes, what could be affected" phrasing and the
+    pre-existing "impact of changing X" phrasing must resolve to the
+    identical relationship_types/required_evidence."""
+    existing_phrasing = understand_query(
+        "impact of changing Session.send", repository_id="repo1", now=NOW
+    )
+    new_phrasing = understand_query(
+        "If Session.send changes, what components could be affected?",
+        repository_id="repo1",
+        now=NOW,
+    )
+    assert existing_phrasing.contract is not None
+    assert new_phrasing.contract is not None
+    assert existing_phrasing.contract.intent is new_phrasing.contract.intent is Intent.FIND_IMPACT
+    assert existing_phrasing.contract.relationship_types == new_phrasing.contract.relationship_types

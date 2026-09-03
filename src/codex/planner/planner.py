@@ -187,6 +187,10 @@ def plan_query(
     base_depth = _BASE_DEPTH_BY_INTENT.get(query_contract.intent, 0)
     relationship_types = list(query_contract.relationship_types)
     is_exhaustive = query_contract.completeness_requirement is CompletenessLevel.EXHAUSTIVE
+    # Query-Shaped Evidence Retrieval milestone (task #127): see
+    # `RetrievalPlan.trace_forward`'s own docstring for why TRACE_EXECUTION
+    # -- and only TRACE_EXECUTION -- needs outbound-from-seed traversal.
+    trace_forward = query_contract.intent is Intent.TRACE_EXECUTION
 
     selected_providers = select_providers(registry, query_contract.required_evidence, repository)
     budget = compute_budget(query_contract.token_budget, query_contract.latency_budget_ms)
@@ -234,6 +238,7 @@ def plan_query(
                 status=PlanStatus.PLAN_UNSUPPORTED,
                 negative_query_candidate=False,
                 negative_query_result=None,
+                trace_forward=trace_forward,
                 budget_trace=BudgetTrace(
                     original_node_estimate=len(target_entities),
                     original_edge_estimate=0,
@@ -267,12 +272,19 @@ def plan_query(
                 reason="latency_budget cannot afford the required EXHAUSTIVE traversal depth",
                 cache=cache,
                 key=key,
+                trace_forward=trace_forward,
             )
         effective_depth = depth_ceiling
         pruning_steps.append("reduce traversal depth")
 
     traversal = bounded_traversal(
-        graph, target_entities, effective_relationship_types, effective_depth, max_nodes, max_edges
+        graph,
+        target_entities,
+        effective_relationship_types,
+        effective_depth,
+        max_nodes,
+        max_edges,
+        reverse_directional=trace_forward,
     )
     original_nodes, original_edges = len(traversal.entities), len(traversal.relationships)
 
@@ -287,6 +299,7 @@ def plan_query(
                 reason="budget ceiling cannot support EXHAUSTIVE completeness",
                 cache=cache,
                 key=key,
+                trace_forward=trace_forward,
             )
         if len(effective_relationship_types) > 1:
             effective_relationship_types = _prioritize_relationship_types_by_evidence(
@@ -300,6 +313,7 @@ def plan_query(
                 effective_depth,
                 max_nodes,
                 max_edges,
+                reverse_directional=trace_forward,
             )
 
     if traversal.truncated:
@@ -327,6 +341,7 @@ def plan_query(
         status=PlanStatus.PRUNED if pruning_occurred else PlanStatus.OK,
         negative_query_candidate=negative_candidate,
         negative_query_result=negative_result,
+        trace_forward=trace_forward,
         budget_trace=BudgetTrace(
             original_node_estimate=original_nodes,
             original_edge_estimate=original_edges,
@@ -356,6 +371,7 @@ def _build_plan(
     negative_query_candidate: bool,
     negative_query_result: NegativeQueryCoverage | None,
     budget_trace: BudgetTrace,
+    trace_forward: bool = False,
 ) -> RetrievalPlan:
     return RetrievalPlan(
         query_identity=query_identity,
@@ -372,6 +388,7 @@ def _build_plan(
         stop_conditions=list(_STOP_CONDITIONS),
         negative_query_candidate=negative_query_candidate,
         negative_query_result=negative_query_result,
+        trace_forward=trace_forward,
         status=status,
         telemetry=PlanTelemetry(
             graph_version_id=graph_version.version_id,
@@ -390,6 +407,7 @@ def _blocked_plan(
     reason: str,
     cache: PlanCache | None,
     key: CacheKey,
+    trace_forward: bool = False,
 ) -> RetrievalPlan:
     plan = _build_plan(
         query_identity=query_identity,
@@ -403,6 +421,7 @@ def _blocked_plan(
         status=PlanStatus.PLAN_BLOCKED,
         negative_query_candidate=False,
         negative_query_result=None,
+        trace_forward=trace_forward,
         budget_trace=BudgetTrace(
             original_node_estimate=0,
             original_edge_estimate=0,
@@ -464,6 +483,7 @@ def execute_query(
         plan.traversal_depth,
         plan.budget.max_nodes,
         plan.budget.max_edges,
+        reverse_directional=plan.trace_forward,
     )
 
     # BM25 query terms come from the resolved target entities' own names
@@ -496,6 +516,19 @@ def execute_query(
     }
 
     limitations: list[str] = []
+    if len(target_entities) > 1:
+        # Query-Shaped Evidence Retrieval milestone (LLM Grounding / Graph
+        # Sufficiency Validation, D21 finding): `resolve_targets` already
+        # correctly preserves every distinct entity matching the query's
+        # targets rather than collapsing them (HLRD §34's ambiguity-
+        # abstention discipline, unchanged) -- but when that real
+        # multiplicity is serialized into a large context alongside many
+        # relationships, the ambiguity signal itself can be easy to miss.
+        # Stating it explicitly, once, up front costs one string and
+        # changes no retrieval/ranking/traversal behavior.
+        limitations.append(
+            f"ambiguous target: {len(target_entities)} distinct entities match this query"
+        )
     if plan.status is PlanStatus.PRUNED:
         limitations.append(f"plan pruned: {plan.telemetry.budget_trace.reason}")
     if plan.negative_query_candidate and plan.negative_query_result is not None:

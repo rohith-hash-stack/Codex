@@ -140,6 +140,67 @@ def test_ambiguous_target_returns_every_distinct_real_candidate() -> None:
     assert resolve_targets(store, ["execute"]) == resolved
 
 
+# --- Query-Shaped Evidence Retrieval milestone: ambiguity multiplicity is
+# stated explicitly in the serialized `EvidencePackage`, not just preserved
+# internally in `plan.target_entity_ids` -----------------------------------
+
+
+def test_ambiguous_target_produces_limitations_marker_in_evidence_package() -> None:
+    """Same real-multiplicity scenario as
+    `test_ambiguous_target_returns_every_distinct_real_candidate`, now
+    carried through the full `plan_query`/`execute_query` pipeline: the
+    ambiguity-abstention behavior itself is unchanged (every distinct
+    entity is still resolved and traversed, none collapsed), but the
+    resulting `EvidencePackage.limitations` now states the multiplicity
+    explicitly so it is not easy to miss once serialized alongside many
+    relationships. This is additive only -- it does not mark the package
+    `partial` (the evidence is complete, only the target is ambiguous)."""
+    result, registry, evidence_store, repository = build_graph(entity_paths=())
+    for i in range(3):
+        result.graph_store.upsert_entity(
+            _entity(
+                canonical_id=f"exec{i}",
+                name="execute",
+                qualified_name=f"pkg/mod{i}.py::execute",
+            )
+        )
+    plan = plan_query(
+        query_contract=make_contract(targets=["execute"], token_budget=4000),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert len(plan.target_entity_ids) == 3
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert "ambiguous target: 3 distinct entities match this query" in package.limitations
+    assert package.partial is False
+
+
+def test_single_resolved_target_has_no_ambiguity_marker() -> None:
+    """The marker only fires on genuine multiplicity -- a query that
+    resolves to exactly one entity must never spuriously claim
+    ambiguity."""
+    result, registry, evidence_store, repository = build_graph(
+        entity_paths=("service.py", "auth.py"),
+        relationship_pairs=(("service.py", "auth.py"),),
+    )
+    plan = plan_query(
+        query_contract=make_contract(targets=["auth.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert len(plan.target_entity_ids) == 1
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert not any("ambiguous target" in limitation for limitation in package.limitations)
+
+
 def test_no_exact_qualified_name_match_keeps_full_substring_set() -> None:
     """When no entity's `qualified_name` is an exact match, the full
     substring set is returned exactly as it always was -- this is a

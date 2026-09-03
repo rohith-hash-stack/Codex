@@ -144,6 +144,53 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
         re.compile(r"\barchitecture\s+of\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
+    # Query-Shaped Evidence Retrieval milestone: TRACE_EXECUTION/FIND_IMPACT
+    # already carry full `required_evidence`/`relationship_types`/depth
+    # wiring (`codex.query_understanding.engine`, `codex.planner.planner`)
+    # -- the LLM Grounding / Graph Sufficiency Validation's 15 multihop/
+    # behavioral/impact queries never reached that wiring because their
+    # natural phrasings matched no existing Tier-0 pattern, not because
+    # any capability was missing. These four rules teach Tier-0 those
+    # phrasings; they route to the same, unmodified intents/evidence/
+    # relationship-type/depth mappings every other TRACE_EXECUTION/
+    # FIND_IMPACT rule already used.
+    #
+    # The capture group deliberately drops any "ClassName." qualifier
+    # and keeps only the trailing bare identifier (e.g. "Flask.wsgi_app"
+    # -> "wsgi_app"), matching the single-bare-token convention every
+    # other Tier-0 rule already uses -- confirmed by real measurement
+    # (task #127) that a dotted "ClassName.method" composite target
+    # only resolves by accident against `AstCallsAdapter`-style
+    # `file::Class.method` qualified names (dot-separated) and fails
+    # entirely against `SCIPAdapter`-style `Class#method().` qualified
+    # names (hash-separated) -- `resolve_targets`/`_resolve_one_target`
+    # (`codex.planner.retrieval`) deliberately never normalizes across
+    # provider-specific naming decoration (see that module's own
+    # docstring), so this fix belongs entirely in query understanding's
+    # target extraction, not in retrieval.
+    _Rule(
+        Intent.TRACE_EXECUTION,
+        re.compile(
+            r"\bwhat\s+happens\s+when\s+(?:[\w]+\.)*(\w+)(?:\(\))?\s+(?:is\s+)?(?:invoked|called|runs?)\b",
+            re.I,
+        ),
+        _STRUCTURAL_SCORE,
+    ),
+    _Rule(
+        Intent.TRACE_EXECUTION,
+        re.compile(r"\btrace\s+what\s+happens\s+from\s+(?:[\w]+\.)*(\w+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    _Rule(
+        Intent.TRACE_EXECUTION,
+        re.compile(r"\bcall\s+path\s+from\s+(?:[\w]+\.)*(\w+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    _Rule(
+        Intent.FIND_IMPACT,
+        re.compile(r"\bif\s+(?:[\w]+\.)*(\w+)\s+changes?\b.*\baffected\b", re.I),
+        _STRUCTURAL_SCORE,
+    ),
 )
 
 # Category 2 -- strong lexical/structural pattern, genuine semantic ambiguity

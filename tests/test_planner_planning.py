@@ -8,7 +8,7 @@ from __future__ import annotations
 from codex.coverage.engine import CompletenessLevel
 from codex.ontology.relationships import RelationshipType
 from codex.planner.models import PlanStatus
-from codex.planner.planner import plan_query
+from codex.planner.planner import execute_query, plan_query
 from codex.provider.capability import Capability
 from codex.query_understanding.models import Intent, QueryContract
 from planner_fixtures import build_graph
@@ -141,3 +141,74 @@ def test_deterministic_repeatability_same_input_same_plan() -> None:
         repository=repository,
     )
     assert first.model_dump(exclude={"telemetry"}) == second.model_dump(exclude={"telemetry"})
+
+
+# --- `RetrievalPlan.trace_forward` (Query-Shaped Evidence Retrieval
+# milestone, task #127): derived from intent, drives `bounded_traversal`'s
+# `reverse_directional` outbound-from-seed anchoring for TRACE_EXECUTION
+# only. -----------------------------------------------------------------
+
+
+def test_trace_execution_intent_sets_plan_trace_forward_true() -> None:
+    result, registry, _, repository = build_graph(entity_paths=("auth.py",))
+    plan = plan_query(
+        query_contract=make_contract(intent=Intent.TRACE_EXECUTION, targets=["auth.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.trace_forward is True
+
+
+def test_find_callers_intent_leaves_plan_trace_forward_false() -> None:
+    result, registry, _, repository = build_graph(entity_paths=("auth.py",))
+    plan = plan_query(
+        query_contract=make_contract(intent=Intent.FIND_CALLERS, targets=["auth.py"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.trace_forward is False
+
+
+def test_trace_execution_end_to_end_traverses_outbound_multihop_chain() -> None:
+    """Real multi-hop execution trace, through the complete, unmodified
+    `plan_query`/`execute_query` pipeline: `a.py` (the query's only
+    target) `CALLS` `b.py` `CALLS` `c.py`. `Intent.TRACE_EXECUTION`'s
+    base depth is 2 (`_BASE_DEPTH_BY_INTENT`), matching this chain's
+    length -- the resulting `EvidencePackage.relationships` must contain
+    BOTH hops, including the second one (`b.py -> c.py`), which is only
+    reachable because `b.py` (a hop-expanded neighbor, never one of the
+    plan's own `target_entity_ids`) contributes its own outbound edge
+    under `trace_forward`."""
+    result, registry, evidence_store, repository = build_graph(
+        entity_paths=("a.py", "b.py", "c.py"),
+        relationship_pairs=(("a.py", "b.py"), ("b.py", "c.py")),
+        predicate=RelationshipType.CALLS,
+    )
+    plan = plan_query(
+        query_contract=make_contract(
+            intent=Intent.TRACE_EXECUTION,
+            targets=["a.py"],
+            relationship_types=[RelationshipType.CALLS],
+        ),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.trace_forward is True
+    assert plan.traversal_depth == 2
+
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    store = result.graph_store
+    kept_names = {
+        (store.get_entity(r.subject).name, store.get_entity(r.object).name)
+        for r in package.relationships
+    }
+    assert ("a.py", "b.py") in kept_names
+    assert ("b.py", "c.py") in kept_names
