@@ -719,21 +719,49 @@ def _nested_symbol_disambiguation(
     The reliable signal, confirmed against real django/flask/click data
     (`docs/python-fidelity-gap-register.md`, FND-1): more than one
     *real Definition-role Occurrence* for the exact same descriptor
-    string -- not merely more than one `SymbolInformation` entry (that
-    alone is `_redefinition_family_locations`'s own signal: a
-    `@typing.overload`/`@property` family, or a wire-format quirk
-    emitting two Definition occurrences on the identical position for
-    one real declaration, both of which get a single, shared nearest-
-    enclosing scope here and are therefore *not* split). Two or more
-    Definition-role occurrences with *different* nearest-enclosing
-    scopes is the confirmed, specific signature of real distinct
-    entities: e.g. two same-named nested closures in sibling methods
-    (django's ``AbstractBaseUser.check_password``'s and
+    string. Two or more Definition-role occurrences with *different*
+    nearest-enclosing scopes is the confirmed, specific signature of
+    real distinct entities: e.g. two same-named nested closures in
+    sibling methods (django's ``AbstractBaseUser.check_password``'s and
     ``.acheck_password``'s own, separate ``setter`` closures; django's
     ``Library#dec()``, five distinct closures nested in five different
     methods; click's ``Group#decorator()``, flask's ``App#decorator()``
     /``Blueprint#decorator()``/``Scaffold#decorator()``, three or four
     distinct closures each).
+
+    **FND-3 fix (this cycle):** entry into this detection no longer
+    additionally requires 2+ real `SymbolInformation` entries for the
+    symbol (FND-1/FND-2's original gate). Direct inspection of
+    scip-python's own indexer source (`packages/pyright-scip/src/
+    treeVisitor.ts`, clean-room research only per `docs/policy-external-
+    references.md`) confirmed `SymbolInformation` emission is *not*
+    uniformly one-per-declaration: `visitFunction` and `emitDeclaration`'s
+    class branch push unconditionally (so a real function/class
+    redefinition's `SymbolInformation` count tracks its Definition-
+    occurrence count, as FND-1/FND-2's original gate assumed), but
+    `emitDeclaration`'s generic name/attribute branch instead calls
+    `emitSymbolInformationOnce` -- an explicit, document-wide dedup-by-
+    descriptor-string guard ("Only emit symbol info once") -- so an
+    instance attribute (`self.x = ...`, a `.`-suffix descriptor) genuinely
+    redefined across 2+ distinct real local scopes can carry only **one**
+    `SymbolInformation` entry despite 2+ real, differently-scoped
+    Definition-role Occurrences (confirmed real: click's
+    `tests/test_context.py`, ``Foo#title.``, `SymbolInformation` count 1,
+    3 real Definition occurrences in 3 distinct local `Foo` classes).
+    The `scip.proto` schema itself is silent on any such cardinality
+    correspondence between the two message types -- nothing in the
+    format guarantees or requires it -- so the prior gate encoded an
+    assumption about one producer's implementation detail, not a SCIP
+    invariant. `SymbolInformation` is never consulted as a gating signal
+    here any more; the Definition-role Occurrence count is the only
+    trigger, exactly as this docstring's own "reliable signal" paragraph
+    above already stated before the gate was corrected to match it.
+    `_redefinition_family_locations` (GAP-13/14, same-scope redefinition
+    convergence) is untouched and still keys on its own, separate
+    `SymbolInformation`-count signal -- appropriate there, since that
+    mechanism's whole purpose is recovering a location for a symbol
+    `_nested_symbol_disambiguation` has *not* claimed as cross-scope
+    ambiguous, not detecting cross-scope ambiguity itself.
 
     **FND-2 fix (this cycle):** "nearest enclosing scope" is no longer
     identified by a container occurrence's own descriptor *string*
@@ -805,10 +833,6 @@ def _nested_symbol_disambiguation(
             doc, indentations, lines
         )
 
-        symbol_info_counts: dict[str, int] = {}
-        for info in doc.symbols:
-            symbol_info_counts[info.symbol] = symbol_info_counts.get(info.symbol, 0) + 1
-
         def_occs_by_symbol: dict[str, list[ScipOccurrence]] = {}
         for occ in doc.occurrences:
             if not (occ.symbol_roles & _DEFINITION_ROLE):
@@ -818,7 +842,14 @@ def _nested_symbol_disambiguation(
             def_occs_by_symbol.setdefault(occ.symbol, []).append(occ)
 
         for symbol, occs in def_occs_by_symbol.items():
-            if symbol_info_counts.get(symbol, 0) <= 1 or len(occs) <= 1:
+            # FND-3 fix: Definition-occurrence multiplicity alone decides
+            # whether disambiguation runs -- `SymbolInformation` count is
+            # never consulted (see this function's own docstring). Whether
+            # 2+ occurrences actually land in 2+ *distinct* scopes -- as
+            # opposed to all resolving to the same real scope, the ordinary
+            # GAP-13/14 case -- is decided below, by the family-grouping
+            # itself (`distinct_real_scopes`), not by this entry check.
+            if len(occs) <= 1:
                 continue
             ordered = sorted(
                 (o for o in occs if o.range is not None), key=lambda o: _range_sort_key(o.range)
