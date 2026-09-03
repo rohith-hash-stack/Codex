@@ -168,8 +168,40 @@ def run_corpus(
         traces[query_id] = observe_ranked_candidates(plan, graph)
 
         request = _build_request(case.query_text, package, contract)
-        generation = gateway.generate(request)
+        try:
+            generation = gateway.generate(request)
+        except Exception as exc:  # noqa: BLE001 - isolate one case's gateway
+            # failure from the rest of the corpus run (D5 §14 precedent:
+            # a single provider/case failure must never abort the whole
+            # run) -- never silently discarded, captured in `error`
+            # instead. The Gateway implementation itself is responsible
+            # for never leaking a secret into its own exception message
+            # (see e.g. `codex.llm.openai_gateway._redact`, applied on
+            # every one of its own error paths before raising); this
+            # harness does not attempt a second redaction pass.
+            results[query_id] = CaseRunResult(
+                query_id=query_id,
+                query_identity=identity,
+                error=str(exc),
+                retrieval_context_version=plan.graph_version.version_id,
+                token_budget=contract.token_budget,
+                latency_budget_ms=contract.latency_budget_ms,
+            )
+            events.append(
+                QueryTelemetryEvent.build(
+                    query_id=identity,
+                    graph_version=plan.graph_version,
+                    query_contract=contract,
+                    retrieval_plan=plan,
+                    candidate_count=len(package.entities),
+                    mss_size=len(package.entities),
+                    llm_calls=1,
+                    now=now,
+                )
+            )
+            continue
 
+        metadata = getattr(gateway, "last_response_metadata", None)
         results[query_id] = CaseRunResult(
             query_id=query_id,
             query_identity=identity,
@@ -180,6 +212,11 @@ def run_corpus(
             retrieval_context_version=plan.graph_version.version_id,
             token_budget=contract.token_budget,
             latency_budget_ms=contract.latency_budget_ms,
+            served_model=getattr(metadata, "served_model", None),
+            usage_prompt_tokens=getattr(metadata, "usage_prompt_tokens", None),
+            usage_completion_tokens=getattr(metadata, "usage_completion_tokens", None),
+            usage_total_tokens=getattr(metadata, "usage_total_tokens", None),
+            llm_tokens=getattr(metadata, "usage_total_tokens", None),
         )
         events.append(
             QueryTelemetryEvent.build(

@@ -77,10 +77,26 @@ class CaseRunResult(BaseModel):
     trusting it silently (mirrors `codex.evaluation.benchmark.
     verify_case_execution`'s own consistency-check discipline)."""
 
-    generation_status: GenerationStatus
+    generation_status: GenerationStatus | None = None
+    """`None` only when `error` is set -- the gateway itself raised
+    before producing any `LLMGenerationResult` at all (e.g. a missing
+    API key or a transport/auth failure), so there is no model
+    disposition to report. Never both `None` and `error is None`
+    simultaneously in practice: the harness sets exactly one of the two
+    per case."""
     raw_model_output: str | None = None
     structured_answer: StructuredAnswer | None = None
     detail: str | None = None
+
+    error: str | None = None
+    """Set when the `LLMGateway.generate()` call itself raised (not a
+    `GenerationStatus`-representable model disposition) -- e.g.
+    `codex.llm.openai_gateway.OpenAIAuthenticationError`/
+    `OpenAIGatewayError`. The harness never lets one case's gateway
+    failure abort the whole corpus run, and never silently drops it
+    either -- it is captured here instead. Always the gateway's own
+    already-redacted message (see `codex.llm.openai_gateway._redact`);
+    this field is never populated from an un-redacted exception."""
 
     retrieval_context_version: str
     """D9's real `RetrievalPlan.graph_version.version_id` -- the
@@ -91,12 +107,23 @@ class CaseRunResult(BaseModel):
     token_budget: int = Field(gt=0)
     latency_budget_ms: int = Field(gt=0)
 
+    served_model: str | None = None
+    """The exact model identifier the provider's own response reported
+    (e.g. `codex.llm.openai_gateway.ResponseMetadata.served_model`) --
+    never assumed from the run's configured `ModelRunRecord.model_id`.
+    `None` when the gateway does not expose this (e.g. `FakeLLMGateway`,
+    or a case that errored before any response was received)."""
+
     llm_tokens: int | None = Field(default=None, ge=0)
     """`None` until a concrete `LLMGateway` implementation reports real
     usage -- `LLMGenerationResult` (D10, unmodified by this milestone)
     carries no token/latency field today (matching `QueryTelemetryEvent.
     llm_tokens`'s own identical, already-documented gap); never
-    fabricated here."""
+    fabricated here. Populated from `usage_total_tokens` below when a
+    gateway reports one."""
+    usage_prompt_tokens: int | None = Field(default=None, ge=0)
+    usage_completion_tokens: int | None = Field(default=None, ge=0)
+    usage_total_tokens: int | None = Field(default=None, ge=0)
     latency_ms: float | None = Field(default=None, ge=0.0)
 
 

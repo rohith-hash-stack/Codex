@@ -214,6 +214,54 @@ def test_score_run_produces_evaluable_retrieval_metrics_against_real_ground_trut
     assert by_metric[EvaluationMetric.ABSTENTION_PRECISION].evaluable is False
 
 
+class _AlwaysRaisesGateway:
+    """A minimal `LLMGateway`-shaped stub whose `generate()` always
+    raises -- simulates e.g. `codex.llm.openai_gateway.OpenAIGateway`
+    hitting an authentication or transport failure, without depending
+    on that module or the network at all."""
+
+    def __init__(self, message: str = "simulated gateway failure") -> None:
+        self._message = message
+        self.calls = 0
+
+    def generate(self, request):  # noqa: ANN001, ANN201 - matches LLMGateway.generate
+        self.calls += 1
+        raise RuntimeError(self._message)
+
+
+def test_run_corpus_captures_a_gateway_failure_per_case_without_aborting_the_run() -> None:
+    """A gateway that raises for every case (e.g. a real, unreachable
+    OpenAI endpoint) must not crash `run_corpus` or silently drop the
+    case -- every case still gets a `CaseRunResult`, with `error` set
+    and `generation_status` left `None`."""
+    corpus, result, registry, evidence_store, repository = _corpus_and_graph()
+    gateway = _AlwaysRaisesGateway("boom: simulated auth failure")
+
+    record, events, traces = run_corpus(
+        corpus,
+        gateway,
+        graph=result.graph_store,
+        evidence_store=evidence_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+        model_id="fake-model",
+        provider="fake-provider",
+        now=BENCHMARK_DEV_NOW,
+    )
+
+    assert gateway.calls == 4
+    assert set(record.results) == set(corpus.corpus.cases)
+    for case_result in record.results.values():
+        assert case_result.generation_status is None
+        assert case_result.error == "boom: simulated auth failure"
+        assert case_result.raw_model_output is None
+    # Retrieval still happened for every case -- a gateway failure does
+    # not discard the retrieval work already done.
+    assert len(events) == 4
+    assert len(traces) == 4
+
+
 def test_run_corpus_rejects_a_stale_corpus_whose_query_id_no_longer_matches() -> None:
     """If a case's frozen `query_id` no longer matches what Tier-0/
     `compute_query_identity` produce for its own `query_text` today
