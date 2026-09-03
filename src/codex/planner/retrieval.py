@@ -171,6 +171,107 @@ def _bare_scip_symbol(symbol_path: str) -> str:
     return symbol_path
 
 
+_SOURCE_FILE_EXTENSIONS: Final = frozenset(
+    {
+        "py", "js", "jsx", "ts", "tsx", "go", "rb", "java", "c", "h", "cpp",
+        "hpp", "cc", "cs", "rs", "php", "swift", "kt", "scala", "m", "mm",
+        "sh", "pl", "lua", "json", "yaml", "yml", "toml", "md", "txt",
+        "html", "css", "sql", "cfg", "ini",
+    }
+)
+"""Common source/config file extensions (High-Fan-Out Identity-Aware Seed
+Resolution milestone). Guards `_resolve_one_target`'s qualifier-splitting
+below against misreading a file-path-shaped target like `"auth.py"` as a
+`"auth"`-qualified `"py"` symbol -- `find_entities` is a substring lookup
+(`codex.graph.memory_store.InMemoryGraphStore.find_entities`), so a bogus
+2-3 character "symbol" is not reliably empty, and the sort/exact-match
+machinery elsewhere in this module already treats bare file-path targets
+(e.g. `"auth.py"`, `make_contract`'s own long-standing default target)
+as a first-class, un-dotted-in-spirit case that must not change behavior."""
+
+
+def _qualified_name_segments(qualified_name: str) -> list[str]:
+    """Tokenize `qualified_name` into its discrete path/symbol segments,
+    lower-cased, provider-format-agnostic (High-Fan-Out Identity-Aware
+    Seed Resolution milestone).
+
+    Unifies every real separator this codebase's two providers use
+    (`AstCallsAdapter`'s `<file-path>::<Class>.<method>`, `SCIPAdapter`'s
+    `` `<module>` ``-quoted-namespace `/<Class>#<method>().` descriptor
+    path -- both already documented in full by `_symbol_path`'s own
+    docstring) into one flat token list: strips SCIP's backtick module
+    quoting, treats `/`, `::`, `#`, and `.` all as segment boundaries,
+    and drops a trailing SCIP method-call `()` from any segment. Applied
+    to the *whole* `qualified_name` (file path included), not just
+    `_symbol_path`'s narrower symbol-only slice -- a query qualifier like
+    `"django.dispatch.Signal.send"` legitimately names module/file
+    segments (`"django"`, `"dispatch"`) as well as the class (`"Signal"`),
+    and this tokenizer's job is to make each of those independently
+    checkable, not to decide which are "real" symbol identity the way
+    `_symbol_path`/`_match_tier` do for the primary-match axis.
+    """
+    normalized = qualified_name.replace("`", "")
+    for sep in ("::", "/", "#"):
+        normalized = normalized.replace(sep, ".")
+    segments = []
+    for segment in normalized.split("."):
+        if segment.endswith("()"):
+            segment = segment[:-2]
+        if segment:
+            segments.append(segment.lower())
+    return segments
+
+
+def _qualifier_confirmation_tier(entity: RepositorySymbol, qualifier: str) -> int | None:
+    """Two-tier, deterministic check for whether `qualifier` (e.g.
+    `"Signal"`, or a multi-segment `"django.dispatch.Signal"`) is real
+    identity evidence for `entity` (High-Fan-Out Identity-Aware Seed
+    Resolution milestone). Returns `0` (strong), `1` (weak), or `None`
+    (not confirmed at all) -- never a bool, because the two tiers are not
+    interchangeable for ranking (see `resolve_targets`).
+
+    Tier 0 -- every `.`-separated piece of `qualifier` is a *whole, exact*
+    segment of `_symbol_path(entity.qualified_name)`: the class/method
+    portion alone, file/module path excluded. This is the strong,
+    class-scoped signal a query like `"Flask.dispatch_request"` wants.
+
+    Tier 1 -- falls back to the *full* `entity.qualified_name` (file/
+    module path included) only when tier 0 finds nothing -- needed for a
+    genuinely module-qualified query (`"django.dispatch.Signal.send"`'s
+    `"django"`/`"dispatch"` segments only ever appear in the file-path
+    prefix `_symbol_path` strips away), but real-measurement confirmed
+    tier 1 alone is too permissive to use unconditionally: `flask`'s own
+    package directory is `src/flask/`, so *every* class in the whole
+    library -- not just the `Flask` class itself -- has `"flask"`
+    sitting in its qualified_name's module-path segment. A bare `"Flask"`
+    qualifier would therefore spuriously confirm `MethodView.
+    dispatch_request` right alongside the real `Flask.dispatch_request`
+    match if checked against the full path unconditionally. Restricting
+    tier 1 to entities tier 0 couldn't already resolve keeps this
+    fallback for the case it exists for, without diluting the common,
+    single-class-qualifier case's precision.
+
+    Exact segment membership (not `_has_boundary_aligned_occurrence`,
+    this module's existing substring-boundary primitive) was chosen
+    deliberately: that primitive only requires a boundary at the *start*
+    of a match (correct for its own use -- `"add"` legitimately prefix-
+    matching `"AddHelperVariant0"`) but produces a real false positive
+    here -- qualifier `"Signal"` boundary-matches the unrelated module
+    segment `"signals"` (plural, Django's own `tests.signals.tests`
+    package) as a boundary-aligned prefix. Confirmed against the real
+    `django/django` `Signal`/`send` candidate set before this function
+    was written, not assumed.
+    """
+    qualifier_segments = _qualified_name_segments(qualifier)
+    symbol_scope = set(_qualified_name_segments(_symbol_path(entity.qualified_name)))
+    if all(segment in symbol_scope for segment in qualifier_segments):
+        return 0
+    full_scope = set(_qualified_name_segments(entity.qualified_name))
+    if all(segment in full_scope for segment in qualifier_segments):
+        return 1
+    return None
+
+
 def _match_tier(entity: RepositorySymbol, targets: set[str]) -> int:
     """Deterministic 3-way classification of how `entity` relates to the
     query's target strings (D9 candidate-prioritization refinement,
@@ -236,6 +337,11 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     an exact `qualified_name` match over a mere substring one (D9
     target-resolution refinement, `docs/architecture-conformance-audit.md`
     §II; real-repository benchmark findings #12/#13/#22/#24).
+
+    Unaware of qualifier-based disambiguation on its own -- see
+    `resolve_targets`'s own docstring for the High-Fan-Out Identity-Aware
+    Seed Resolution milestone's `_qualifier_confirmation_tier` step,
+    which is applied at the multi-target level, above this function.
 
     `GraphReader.find_entities(name=..., qualified_name=...)` is itself
     still HLRD §34's plain, deterministic substring lookup, completely
@@ -441,15 +547,104 @@ def resolve_targets(graph: GraphReader, targets: list[str]) -> list[RepositorySy
        docstring guard (`add().`, `AdapterA#extract().`,
        `AddHelperVariant0`, `InterfaceAB`, `TestClass1`) -- is returned
        exactly as before, unaffected by this narrowing.
+
+    **Identity-aware qualifier resolution** (High-Fan-Out Identity-Aware
+    Seed Resolution milestone): a dotted `target` (`"Signal.send"`)
+    carries real, deterministic disambiguating evidence
+    `_resolve_one_target` alone never uses -- it either treats the whole
+    string as one literal substring (works only for `AstCallsAdapter`'s
+    dot-joined qualified names, confirmed empty for `SCIPAdapter`'s
+    `#`/`().`-joined ones, real-repository measurement) or, if a caller
+    already stripped to the bare trailing symbol, never sees it at all.
+    For each such `target`, this function additionally resolves the bare
+    trailing symbol on its own (`_resolve_one_target`, unchanged, exactly
+    the same call every un-dotted target already goes through) and scores
+    every candidate's `_qualifier_confirmation_tier` against the
+    qualifier -- real django/flask/click/pytest/requests measurement:
+    django's `"Signal.send"` narrows from 142 bare-`"send"` candidates to
+    8, all genuinely part of `Signal`; flask's `"Flask.dispatch_request"`
+    narrows from 13 to the real `Flask.dispatch_request` ranked first,
+    ahead of the unrelated `MethodView.dispatch_request` that merely
+    lives in the same `src/flask/` package directory (tier-0 qualifier
+    confirmation beats tier-1, beats no confirmation at all -- the new
+    leading element of the sort key below).
+
+    Guarded by `_SOURCE_FILE_EXTENSIONS` against a file-path-shaped
+    target (`"auth.py"`) being misread as qualifier `"auth"` / symbol
+    `"py"` -- `find_entities` is a plain substring lookup, so a bogus
+    2-3 character "symbol" search is not reliably empty.
+
+    Strictly additive and safe for every un-dotted target (the common
+    case, and all 35 already-validated NL-pipeline queries): the
+    qualifier step only ever adds candidates backed by real segment-
+    identity evidence, on top of what `_resolve_one_target` already
+    returned for `target` itself -- it can never remove one, and it
+    never runs at all when no `target` in `targets` contains a `.`.
+
+    A qualifier that confirms nothing at all (a mistyped or non-existent
+    class/module name) falls back to the full, unfiltered bare-symbol
+    candidate set instead of contributing zero candidates -- an
+    unrecognized qualifier must never make the result *worse* than
+    omitting it, and dropping to nothing would be exactly that.
     """
     seen: dict[str, RepositorySymbol] = {}
     for target in targets:
         for entity in _resolve_one_target(graph, target):
             seen[entity.canonical_id] = entity
+
+    qualifier_tier: dict[str, int] = {}
+    for target in targets:
+        if "." not in target:
+            continue
+        qualifier, _, symbol = target.rpartition(".")
+        if not symbol or not qualifier or symbol.lower() in _SOURCE_FILE_EXTENSIONS:
+            continue
+        symbol_candidates = _resolve_one_target(graph, symbol)
+        confirmed_any = False
+        for entity in symbol_candidates:
+            tier = _qualifier_confirmation_tier(entity, qualifier)
+            if tier is None:
+                continue
+            confirmed_any = True
+            seen.setdefault(entity.canonical_id, entity)
+            existing = qualifier_tier.get(entity.canonical_id)
+            if existing is None or tier < existing:
+                qualifier_tier[entity.canonical_id] = tier
+        if not confirmed_any:
+            # A qualifier that confirms nothing real (mistyped, or naming
+            # something outside this graph) must not make the result
+            # *worse* than omitting it entirely -- fall back to the full,
+            # unfiltered bare-symbol candidate set (the exact set an
+            # un-dotted query for `symbol` alone would already return),
+            # preserving genuine ambiguity rather than silently returning
+            # nothing.
+            for entity in symbol_candidates:
+                seen.setdefault(entity.canonical_id, entity)
+
+    # `target_set` also carries each dotted target's bare trailing symbol
+    # (never just the full composite) so `_match_tier`'s tie-break below
+    # can still tell an *exact* bare-name match from a merely boundary-
+    # aligned one -- e.g. Flask's own `dispatch_request` (exact) from the
+    # unrelated `full_dispatch_request` (`dispatch_request` occurs at a
+    # real boundary within it, after the `_`) -- both are otherwise
+    # tier-0 qualifier-confirmed `Flask` methods and would tie without
+    # this (real-measurement finding: the full composite `"flask.
+    # dispatch_request"` never reaches tier 0/1 against either candidate,
+    # SCIP's `#`-joined qualified names never containing a literal `.`
+    # where the composite has one, so it could not break the tie alone).
     target_set = {target.lower() for target in targets}
+    for target in targets:
+        if "." in target:
+            _, _, symbol = target.rpartition(".")
+            if symbol:
+                target_set.add(symbol.lower())
     return sorted(
         seen.values(),
-        key=lambda e: (_match_tier(e, target_set), e.canonical_id),
+        key=lambda e: (
+            qualifier_tier.get(e.canonical_id, 2),
+            _match_tier(e, target_set),
+            e.canonical_id,
+        ),
     )
 
 

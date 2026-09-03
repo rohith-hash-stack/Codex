@@ -201,6 +201,194 @@ def test_single_resolved_target_has_no_ambiguity_marker() -> None:
     assert not any("ambiguous target" in limitation for limitation in package.limitations)
 
 
+# --- High-Fan-Out Identity-Aware Seed Resolution milestone: a dotted
+# target's qualifier ("Signal" in "Signal.send") is real disambiguating
+# evidence against a high-fan-out bare symbol -- confirmed against the
+# real django/dispatch/dispatcher.py::Signal.send case (142 raw "send"
+# candidates in the real audit, narrowed to 8 by this mechanism) and,
+# separately, against `_qualifier_confirmation_tier`'s own module-path-
+# collision fix (real flask/src/flask/ case). ---------------------------
+
+
+def _ast_style(
+    *, canonical_id: str, name: str, class_name: str, file_path: str
+) -> RepositorySymbol:
+    return _entity(
+        canonical_id=canonical_id,
+        name=name,
+        qualified_name=f"{file_path}::{class_name}.{name}",
+    )
+
+
+def _scip_style(*, canonical_id: str, name: str, class_name: str, module: str) -> RepositorySymbol:
+    return _entity(
+        canonical_id=canonical_id,
+        name=f"{class_name}#{name}().",
+        qualified_name=f"`{module}`/{class_name}#{name}().",
+    )
+
+
+def test_qualified_target_narrows_high_fan_out_bare_symbol() -> None:
+    """Real django shape, synthetically reproduced: many entities share
+    the bare name "send" (test methods, nested closures, an unrelated
+    class's own "send"), but only two are genuinely `Signal`'s own --
+    the qualified query must narrow to those two, not the whole
+    high-fan-out set."""
+    store = _store()
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="signal-send", name="send", class_name="Signal", file_path="dispatcher.py"
+        )
+    )
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="signal-send-robust",
+            name="send_robust",
+            class_name="Signal",
+            file_path="dispatcher.py",
+        )
+    )
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="mailer-send", name="send", class_name="EmailMessage", file_path="mail.py"
+        )
+    )
+    for i in range(20):
+        store.upsert_entity(
+            _ast_style(
+                canonical_id=f"test-send-{i}",
+                name=f"test_send_{i}",
+                class_name="SomeTestCase",
+                file_path="tests.py",
+            )
+        )
+
+    unqualified = resolve_targets(store, ["send"])
+    unqualified_ids = {e.canonical_id for e in unqualified}
+    # Unaffected by this milestone: "test_send_N" boundary-matches "send"
+    # (preceded by "_", a real boundary) exactly as `_match_tier`'s own
+    # pre-existing, unchanged tier-1 rule already allows -- the full,
+    # un-narrowed high-fan-out set stays high-fan-out when no qualifier
+    # is given at all.
+    assert {"signal-send", "mailer-send"} <= unqualified_ids
+    assert len(unqualified_ids) == 23  # 3 real + 20 boundary-matched decoys
+
+    qualified = resolve_targets(store, ["Signal.send"])
+    # "signal-send" (exact "send") ranks first; "signal-send-robust" is
+    # also legitimately `Signal`'s own and boundary-matches bare "send"
+    # (pre-existing, unchanged `_match_tier` tier-1 rule) so it is kept
+    # too, ranked second -- neither "mailer-send" nor any "test_send_N"
+    # decoy is qualifier-confirmed as `Signal`'s own, so none survive.
+    assert [e.canonical_id for e in qualified] == ["signal-send", "signal-send-robust"]
+
+
+def test_qualified_target_works_against_scip_style_qualified_names() -> None:
+    """The real flask/click/pytest/requests shape: `SCIPAdapter`-sourced
+    entities never contain a literal "." between class and method
+    (`Class#method().`, not `Class.method`) -- the qualifier mechanism
+    must still resolve them, provider-agnostically."""
+    store = _store()
+    store.upsert_entity(
+        _scip_style(
+            canonical_id="flask-wsgi-app",
+            name="wsgi_app",
+            class_name="Flask",
+            module="src.flask.app",
+        )
+    )
+    store.upsert_entity(
+        _scip_style(
+            canonical_id="flask-dispatch",
+            name="dispatch_request",
+            class_name="Flask",
+            module="src.flask.app",
+        )
+    )
+    store.upsert_entity(
+        _scip_style(
+            canonical_id="methodview-dispatch",
+            name="dispatch_request",
+            class_name="MethodView",
+            module="src.flask.views",
+        )
+    )
+
+    resolved = resolve_targets(store, ["Flask.dispatch_request"])
+    assert resolved[0].canonical_id == "flask-dispatch"
+    # `MethodView.dispatch_request` lives under the same `src/flask/`
+    # package directory, but is not `Flask`'s own method -- the
+    # module-path-collision fix (_qualifier_confirmation_tier's tier-0/
+    # tier-1 split) must not let it outrank or displace the real match.
+    assert resolved[0].canonical_id != "methodview-dispatch"
+
+
+def test_qualifier_that_matches_nothing_falls_back_to_unqualified_result() -> None:
+    """A mistyped or non-existent qualifier must never make the result
+    worse than the unqualified lookup -- purely additive, never
+    subtractive."""
+    store = _store()
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="signal-send", name="send", class_name="Signal", file_path="dispatcher.py"
+        )
+    )
+    resolved = resolve_targets(store, ["TotallyWrongClassName.send"])
+    assert [e.canonical_id for e in resolved] == ["signal-send"]
+
+
+def test_genuinely_ambiguous_bare_query_is_completely_unaffected() -> None:
+    """No "." in the target at all -- the qualifier mechanism must never
+    activate, and ambiguity must be preserved exactly as before this
+    milestone: real multiplicity, no arbitrary narrowing."""
+    store = _store()
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="signal-send", name="send", class_name="Signal", file_path="dispatcher.py"
+        )
+    )
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="mailer-send", name="send", class_name="EmailMessage", file_path="mail.py"
+        )
+    )
+    resolved = resolve_targets(store, ["send"])
+    assert {e.canonical_id for e in resolved} == {"signal-send", "mailer-send"}
+
+
+def test_file_extension_shaped_target_is_not_misread_as_a_qualifier() -> None:
+    """ "auth.py" must resolve exactly as it always has -- never
+    misinterpreted as qualifier "auth" / symbol "py"."""
+    store = _store()
+    auth_file = _entity(canonical_id="auth-file", name="auth.py", qualified_name="pkg/auth.py")
+    store.upsert_entity(auth_file)
+    # A real symbol whose bare name happens to be "py" would otherwise be
+    # spuriously pulled in by a naive qualifier split.
+    store.upsert_entity(
+        _entity(canonical_id="decoy-py", name="py", qualified_name="pkg/auth/decoy.py::py")
+    )
+
+    with_guard = resolve_targets(store, ["auth.py"])
+    assert "decoy-py" not in {e.canonical_id for e in with_guard}
+    assert "auth-file" in {e.canonical_id for e in with_guard}
+
+
+def test_qualified_resolution_deterministic_across_repeated_calls() -> None:
+    store = _store()
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="signal-send", name="send", class_name="Signal", file_path="dispatcher.py"
+        )
+    )
+    store.upsert_entity(
+        _ast_style(
+            canonical_id="mailer-send", name="send", class_name="EmailMessage", file_path="mail.py"
+        )
+    )
+    first = resolve_targets(store, ["Signal.send"])
+    second = resolve_targets(store, ["Signal.send"])
+    assert [e.canonical_id for e in first] == [e.canonical_id for e in second]
+
+
 def test_no_exact_qualified_name_match_keeps_full_substring_set() -> None:
     """When no entity's `qualified_name` is an exact match, the full
     substring set is returned exactly as it always was -- this is a

@@ -207,20 +207,19 @@ def test_what_happens_when_x_is_invoked_routes_to_trace_execution() -> None:
     candidates = detect("What happens when Signal.send() is invoked?")
     assert candidates[0].intent is Intent.TRACE_EXECUTION
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    # Bare trailing identifier only -- the "Signal." qualifier is dropped
-    # (task #127 measurement: resolve_targets deliberately never
-    # normalizes across provider-specific qualified-name decoration, so
-    # a dotted "ClassName.method" composite target only resolves by
-    # accident for AST-style qualified names and fails entirely for
-    # SCIP-style ones; the bare method name resolves against both).
-    assert candidates[0].targets == ("send",)
+    # Full dotted composite, qualifier included (High-Fan-Out Identity-
+    # Aware Seed Resolution milestone: reverted from task #127's
+    # bare-trailing-identifier-only capture -- the "Signal." qualifier is
+    # real disambiguating evidence `_resolve_one_target`'s new
+    # `_qualifier_confirmed` narrowing now uses, provider-agnostically).
+    assert candidates[0].targets == ("Signal.send",)
 
 
 def test_what_happens_when_x_runs_routes_to_trace_execution() -> None:
     candidates = detect("What happens when Flask.full_dispatch_request() runs?")
     assert candidates[0].intent is Intent.TRACE_EXECUTION
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    assert candidates[0].targets == ("full_dispatch_request",)
+    assert candidates[0].targets == ("Flask.full_dispatch_request",)
 
 
 def test_what_happens_when_x_is_called_with_trailing_chain_clause() -> None:
@@ -229,28 +228,28 @@ def test_what_happens_when_x_is_called_with_trailing_chain_clause() -> None:
     candidates = detect("What happens when Signal.send() is called -- trace the call chain.")
     assert candidates[0].intent is Intent.TRACE_EXECUTION
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    assert candidates[0].targets == ("send",)
+    assert candidates[0].targets == ("Signal.send",)
 
 
 def test_trace_what_happens_from_x_routes_to_trace_execution() -> None:
     candidates = detect("Trace what happens from FixtureRequest.getfixturevalue() onward.")
     assert candidates[0].intent is Intent.TRACE_EXECUTION
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    assert candidates[0].targets == ("getfixturevalue",)
+    assert candidates[0].targets == ("FixtureRequest.getfixturevalue",)
 
 
 def test_call_path_from_x_routes_to_trace_execution() -> None:
     candidates = detect("What is the call path from Flask.wsgi_app() down to dispatch_request()?")
     assert candidates[0].intent is Intent.TRACE_EXECUTION
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    assert candidates[0].targets == ("wsgi_app",)
+    assert candidates[0].targets == ("Flask.wsgi_app",)
 
 
 def test_if_x_changes_what_could_be_affected_routes_to_find_impact() -> None:
     candidates = detect("If Signal.send changes, what components could be affected?")
     assert candidates[0].intent is Intent.FIND_IMPACT
     assert candidates[0].score > DETERMINISTIC_THRESHOLD
-    assert candidates[0].targets == ("send",)
+    assert candidates[0].targets == ("Signal.send",)
 
 
 def test_if_x_changes_pattern_does_not_collide_with_find_dependencies() -> None:

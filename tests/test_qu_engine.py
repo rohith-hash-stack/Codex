@@ -403,9 +403,10 @@ def test_what_happens_when_x_is_invoked_produces_scoped_trace_execution_contract
     assert result.status is UnderstandingStatus.RESOLVED
     assert result.contract is not None
     assert result.contract.intent is Intent.TRACE_EXECUTION
-    # Bare trailing identifier only -- see task #127 measurement note in
+    # Full dotted composite, qualifier included -- see High-Fan-Out
+    # Identity-Aware Seed Resolution milestone note in
     # `codex.query_understanding.tier0`'s new-rule comment block.
-    assert result.contract.targets == ["send"]
+    assert result.contract.targets == ["Signal.send"]
     # Relationship-type-scoped, not the empty/unfiltered list a generic
     # bounded traversal would use -- this is the whole point of routing
     # through TRACE_EXECUTION rather than bypassing Tier-0.
@@ -446,7 +447,7 @@ def test_if_x_changes_produces_scoped_find_impact_contract() -> None:
     assert result.status is UnderstandingStatus.RESOLVED
     assert result.contract is not None
     assert result.contract.intent is Intent.FIND_IMPACT
-    assert result.contract.targets == ["send"]
+    assert result.contract.targets == ["Session.send"]
     assert set(result.contract.relationship_types) == {
         RelationshipType.CALLS,
         RelationshipType.DEPENDS_ON,
