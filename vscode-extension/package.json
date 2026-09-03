@@ -1,0 +1,36 @@
+{
+  "name": "codex-nervous-system",
+  "displayName": "Codex Repository Nervous System",
+  "description": "Explore a repository's intelligence graph (symbols, calls, references) from VS Code, backed by the local Codex API.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "codex.indexWorkspace",
+        "title": "Codex: Index Repository"
+      },
+      {
+        "command": "codex.exploreSymbol",
+        "title": "Codex: Explore Symbol Neighborhood"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
