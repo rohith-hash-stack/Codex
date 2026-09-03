@@ -8,6 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from codex.coverage.engine import CompletenessLevel
+from codex.evidence.model import CanonicalRelationship, EvidenceStatus
+from codex.ontology.entities import BaseEntityType, RepositorySymbol
 from codex.ontology.relationships import RelationshipType
 from codex.planner.cache import PlanCache
 from codex.planner.models import PlanStatus
@@ -457,3 +459,155 @@ def test_pruned_telemetry_records_original_and_pruned_estimates() -> None:
     assert trace.original_node_estimate >= trace.pruned_node_estimate
     assert trace.reason is not None
     assert trace.pruning_steps != []
+
+
+# ---------------------------------------------------------------------------
+# File-Level REFERENCES Traversal Completeness milestone: `FIND_IMPACT`'s
+# three relationship types (`CALLS`, `DEPENDS_ON`, `REFERENCES`) come from
+# three distinct required capabilities (`_REQUIRED_EVIDENCE[FIND_IMPACT]`),
+# not a redundant/supplementary set like `FIND_CALLERS`'/`ARCHITECTURE_
+# ANALYSIS`'s own multi-type lists -- when truncation narrows to one type
+# (GAP-11's `[:1]` cut, above), a real, distinct evidence category can be
+# discarded entirely rather than merely reduced. Real example: a file
+# entity's own `REFERENCES` edge to the impact target, dropped whenever
+# `CALLS` wins the cut. `supplementary_relationship_types` recovers exactly
+# that -- seed-anchored only, never re-expanding the traversal that caused
+# the truncation in the first place.
+# ---------------------------------------------------------------------------
+
+
+def _impact_mixed_predicate_graph():
+    """`_fan_out_graph()`'s own CALLS edges all point *out of*
+    "service.py" (it is the caller, never the callee) -- irrelevant to
+    `FIND_IMPACT`'s inbound-only CALLS anchoring ("who calls into this
+    target", `_DIRECTIONAL_PREDICATES`), so this adds a real inbound
+    CALLS edge too: without it, CALLS has zero observed evidence for
+    this target and never competes for the pruning cut at all, which
+    would not reproduce the real benchmark shape (CALLS winning over a
+    REFERENCES edge that also has real evidence)."""
+    result, registry, evidence_store, repository = _fan_out_graph()
+    target = result.graph_store.find_entities(name="service.py")[0]
+    gateway = RepositorySymbol(
+        canonical_id="codex:gateway-caller",
+        repository_id="repo1",
+        repository_revision="rev1",
+        name="gateway.py",
+        qualified_name="gateway.py",
+        base_type=BaseEntityType.FILE,
+    )
+    file_entity = RepositorySymbol(
+        canonical_id="codex:file-referencer",
+        repository_id="repo1",
+        repository_revision="rev1",
+        name="config.py",
+        qualified_name="config.py",
+        base_type=BaseEntityType.FILE,
+    )
+    result.graph_store.upsert_entity(gateway)
+    result.graph_store.upsert_entity(file_entity)
+    result.graph_store.upsert_relationship(
+        CanonicalRelationship(
+            subject=gateway.canonical_id,
+            predicate=RelationshipType.CALLS,
+            object=target.canonical_id,
+            confidence=1.0,
+            status=EvidenceStatus.SUPPORTED,
+        )
+    )
+    result.graph_store.upsert_relationship(
+        CanonicalRelationship(
+            subject=file_entity.canonical_id,
+            predicate=RelationshipType.REFERENCES,
+            object=target.canonical_id,
+            confidence=1.0,
+            status=EvidenceStatus.SUPPORTED,
+        )
+    )
+    return result, registry, evidence_store, repository
+
+
+def test_find_impact_supplementary_predicates_recover_dropped_references_edge() -> None:
+    result, registry, evidence_store, repository = _impact_mixed_predicate_graph()
+    plan = plan_query(
+        query_contract=make_contract(
+            intent=Intent.FIND_IMPACT,
+            token_budget=100,
+            relationship_types=[
+                RelationshipType.CALLS,
+                RelationshipType.DEPENDS_ON,
+                RelationshipType.REFERENCES,
+            ],
+            required_evidence=[Capability.CALL_RELATIONSHIP],
+        ),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert "remove optional relationship types" in plan.telemetry.budget_trace.pruning_steps
+    assert plan.relationship_types == [RelationshipType.CALLS]
+    assert RelationshipType.REFERENCES in plan.supplementary_relationship_types
+
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    kept = {(r.subject, r.predicate, r.object) for r in package.relationships}
+    assert (
+        "codex:file-referencer",
+        RelationshipType.REFERENCES,
+        result.graph_store.find_entities(name="service.py")[0].canonical_id,
+    ) in kept
+    # The primary type's own edges are still present -- this is additive,
+    # not a replacement of the pruning's own chosen type.
+    assert any(r.predicate is RelationshipType.CALLS for r in package.relationships)
+
+
+def test_supplementary_predicates_do_not_apply_to_non_impact_intents() -> None:
+    """The exact same mixed-predicate graph and truncation, but
+    `FIND_CALLERS` (GAP-11's own originally-validated intent) -- its
+    relationship types are supplementary/redundant for one question, so
+    the pre-existing single-type pruning must remain completely
+    unaffected by this milestone."""
+    result, registry, evidence_store, repository = _impact_mixed_predicate_graph()
+    plan = plan_query(
+        query_contract=make_contract(
+            intent=Intent.FIND_CALLERS,
+            token_budget=100,
+            relationship_types=[RelationshipType.CALLS, RelationshipType.REFERENCES],
+        ),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert "remove optional relationship types" in plan.telemetry.budget_trace.pruning_steps
+    assert plan.supplementary_relationship_types == []
+
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert all(r.predicate is RelationshipType.CALLS for r in package.relationships)
+
+
+def test_supplementary_predicates_empty_when_no_truncation_occurs() -> None:
+    """The mechanism only activates inside the truncation-recovery
+    branch -- a `FIND_IMPACT` query that fits comfortably in budget must
+    never populate `supplementary_relationship_types` at all."""
+    result, registry, _, repository = _impact_mixed_predicate_graph()
+    plan = plan_query(
+        query_contract=make_contract(
+            intent=Intent.FIND_IMPACT,
+            relationship_types=[
+                RelationshipType.CALLS,
+                RelationshipType.DEPENDS_ON,
+                RelationshipType.REFERENCES,
+            ],
+            required_evidence=[Capability.CALL_RELATIONSHIP],
+        ),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.telemetry.budget_trace.pruning_occurred is False
+    assert plan.supplementary_relationship_types == []

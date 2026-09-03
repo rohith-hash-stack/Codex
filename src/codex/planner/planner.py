@@ -197,6 +197,7 @@ def plan_query(
     max_nodes, max_edges = budget.max_nodes, budget.max_edges
 
     pruning_steps: list[str] = []
+    supplementary_types: tuple[RelationshipType, ...] = ()
 
     # TAD §41: budget cannot support even a minimally viable evidence
     # package (the target entities themselves) -> PLAN_UNSUPPORTED.
@@ -302,9 +303,35 @@ def plan_query(
                 trace_forward=trace_forward,
             )
         if len(effective_relationship_types) > 1:
-            effective_relationship_types = _prioritize_relationship_types_by_evidence(
+            prioritized_relationship_types = _prioritize_relationship_types_by_evidence(
                 effective_relationship_types, traversal.relationships
-            )[:1]
+            )
+            # File-Level REFERENCES Traversal Completeness milestone:
+            # narrowing to a single relationship type below is correct
+            # for volume control (real measurement: re-including a
+            # dropped type's *full* expansion re-triggers the same node-
+            # budget truncation), but for FIND_IMPACT specifically its
+            # three relationship types are not redundant with each other
+            # (`_REQUIRED_EVIDENCE[FIND_IMPACT]` draws them from three
+            # distinct capabilities -- CALL_RELATIONSHIP, DEPENDENCY,
+            # DATA_FLOW -- required together, unlike e.g. FIND_CALLERS'
+            # REFERENCES/IMPORTS, which are supplementary signal for one
+            # question), so dropping a type here can silently discard a
+            # whole category of real impact evidence (confirmed: `src/
+            # flask/app.py --REFERENCES--> Flask.dispatch_request`, a
+            # real, supported edge, gone entirely once `CALLS` won this
+            # cut). `supplementary_seed_predicates` recovers exactly the
+            # dropped types' direct-on-seed edges (cheap, non-cascading,
+            # see `bounded_traversal`'s own docstring) without reopening
+            # that budget problem -- scoped to `FIND_IMPACT` only, so
+            # every other pruning-affected intent (`FIND_CALLERS`,
+            # `FIND_REFERENCES`, `ARCHITECTURE_ANALYSIS`) is unaffected.
+            if query_contract.intent is Intent.FIND_IMPACT:
+                observed_predicates = {rel.predicate for rel in traversal.relationships}
+                supplementary_types = tuple(
+                    t for t in prioritized_relationship_types[1:] if t in observed_predicates
+                )
+            effective_relationship_types = prioritized_relationship_types[:1]
             pruning_steps.append("remove optional relationship types")
             traversal = bounded_traversal(
                 graph,
@@ -314,6 +341,7 @@ def plan_query(
                 max_nodes,
                 max_edges,
                 reverse_directional=trace_forward,
+                supplementary_seed_predicates=supplementary_types,
             )
 
     if traversal.truncated:
@@ -342,6 +370,7 @@ def plan_query(
         negative_query_candidate=negative_candidate,
         negative_query_result=negative_result,
         trace_forward=trace_forward,
+        supplementary_relationship_types=supplementary_types,
         budget_trace=BudgetTrace(
             original_node_estimate=original_nodes,
             original_edge_estimate=original_edges,
@@ -372,6 +401,7 @@ def _build_plan(
     negative_query_result: NegativeQueryCoverage | None,
     budget_trace: BudgetTrace,
     trace_forward: bool = False,
+    supplementary_relationship_types: tuple[RelationshipType, ...] = (),
 ) -> RetrievalPlan:
     return RetrievalPlan(
         query_identity=query_identity,
@@ -389,6 +419,7 @@ def _build_plan(
         negative_query_candidate=negative_query_candidate,
         negative_query_result=negative_query_result,
         trace_forward=trace_forward,
+        supplementary_relationship_types=list(supplementary_relationship_types),
         status=status,
         telemetry=PlanTelemetry(
             graph_version_id=graph_version.version_id,
@@ -484,6 +515,7 @@ def execute_query(
         plan.budget.max_nodes,
         plan.budget.max_edges,
         reverse_directional=plan.trace_forward,
+        supplementary_seed_predicates=tuple(plan.supplementary_relationship_types),
     )
 
     # BM25 query terms come from the resolved target entities' own names

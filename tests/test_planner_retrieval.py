@@ -422,6 +422,119 @@ def test_reverse_directional_defaults_to_false_and_is_backward_compatible() -> N
     assert explicit_default.relationships == omitted.relationships == []
 
 
+# --- `supplementary_seed_predicates` (File-Level REFERENCES Traversal
+# Completeness milestone): edges collected directly on the original seeds
+# for these predicates, never used to expand the traversal frontier --
+# real shape: `plan_query`'s truncation-recovery narrows a FIND_IMPACT
+# plan to one relationship type, and this recovers the dropped types'
+# direct-on-seed edges without reopening the node-budget blowup that
+# caused the narrowing. -------------------------------------------------
+
+
+def test_supplementary_seed_predicates_collects_seed_anchored_edge() -> None:
+    store = _store()
+    target = _entity("target")
+    caller = _entity("caller")
+    file_entity = _entity("file")
+    for e in (target, caller, file_entity):
+        store.upsert_entity(e)
+    store.upsert_relationship(_edge("caller", RelationshipType.CALLS, "target"))
+    store.upsert_relationship(_edge("file", RelationshipType.REFERENCES, "target"))
+
+    result = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        supplementary_seed_predicates=(RelationshipType.REFERENCES,),
+    )
+    kept = {(r.subject, r.object, r.predicate) for r in result.relationships}
+    assert ("caller", "target", RelationshipType.CALLS) in kept
+    assert ("file", "target", RelationshipType.REFERENCES) in kept
+    assert "file" in {e.canonical_id for e in result.entities}
+
+
+def test_supplementary_seed_predicates_does_not_expand_frontier() -> None:
+    """The defining property: a supplementary predicate never cascades
+    into a second hop, regardless of `depth` -- an entity reachable only
+    *through* a supplementary-predicate edge from a non-seed neighbor
+    must not appear, unlike ordinary `relationship_types` edges which do
+    expand the frontier."""
+    store = _store()
+    target = _entity("target")
+    file_entity = _entity("file")
+    far_entity = _entity("far")
+    for e in (target, file_entity, far_entity):
+        store.upsert_entity(e)
+    store.upsert_relationship(_edge("file", RelationshipType.REFERENCES, "target"))
+    store.upsert_relationship(_edge("far", RelationshipType.REFERENCES, "file"))
+
+    result = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=2,
+        max_nodes=100,
+        max_edges=100,
+        supplementary_seed_predicates=(RelationshipType.REFERENCES,),
+    )
+    kept_ids = {e.canonical_id for e in result.entities}
+    assert "file" in kept_ids
+    assert "far" not in kept_ids
+    assert ("far", "file", RelationshipType.REFERENCES) not in {
+        (r.subject, r.object, r.predicate) for r in result.relationships
+    }
+
+
+def test_supplementary_seed_predicates_collects_both_directions() -> None:
+    store = _store()
+    target = _entity("target")
+    referrer = _entity("referrer")
+    referenced = _entity("referenced")
+    for e in (target, referrer, referenced):
+        store.upsert_entity(e)
+    store.upsert_relationship(_edge("referrer", RelationshipType.REFERENCES, "target"))
+    store.upsert_relationship(_edge("target", RelationshipType.REFERENCES, "referenced"))
+
+    result = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        supplementary_seed_predicates=(RelationshipType.REFERENCES,),
+    )
+    kept = {(r.subject, r.object) for r in result.relationships}
+    assert ("referrer", "target") in kept
+    assert ("target", "referenced") in kept
+
+
+def test_supplementary_seed_predicates_defaults_to_empty_and_is_backward_compatible() -> None:
+    store = _store()
+    target = _entity("target")
+    file_entity = _entity("file")
+    store.upsert_entity(target)
+    store.upsert_entity(file_entity)
+    store.upsert_relationship(_edge("file", RelationshipType.REFERENCES, "target"))
+
+    omitted = bounded_traversal(
+        store, [target], [RelationshipType.CALLS], depth=1, max_nodes=100, max_edges=100
+    )
+    explicit_empty = bounded_traversal(
+        store,
+        [target],
+        [RelationshipType.CALLS],
+        depth=1,
+        max_nodes=100,
+        max_edges=100,
+        supplementary_seed_predicates=(),
+    )
+    assert omitted.relationships == explicit_empty.relationships == []
+
+
 def test_collect_evidence_deduplicates_shared_evidence_ids() -> None:
     from datetime import UTC, datetime
 

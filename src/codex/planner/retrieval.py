@@ -669,6 +669,7 @@ def bounded_traversal(
     max_edges: int,
     *,
     reverse_directional: bool = False,
+    supplementary_seed_predicates: tuple[RelationshipType, ...] = (),
 ) -> TraversalResult:
     """TAD §35's "bounded traversal", respecting `max_nodes`/`max_edges`
     (TAD §41) and `depth` (TAD §29's Planner output). Deterministic:
@@ -753,6 +754,33 @@ def bounded_traversal(
     unchanged. Non-directional predicates (`REFERENCES`, `IMPORTS`, ...)
     are completely unaffected either way -- they already collect both
     directions from every frontier entity.
+
+    **`supplementary_seed_predicates`** (File-Level REFERENCES Traversal
+    Completeness milestone): edges for these predicates are collected
+    directly on the original `seeds` only (both directions, matching
+    every other non-directional predicate's existing semantics) and
+    their other endpoints are admitted into the returned `entities` --
+    but, unlike `relationship_types`, they are never passed to
+    `graph.neighbors()` for frontier expansion, so they cannot cascade
+    into a second hop. This exists for exactly one caller
+    (`plan_query`'s truncation-recovery narrowing, `Intent.FIND_IMPACT`
+    only): when a query's seed set is large enough that expanding via
+    *all* of `FIND_IMPACT`'s three relationship types (`CALLS`,
+    `DEPENDS_ON`, `REFERENCES`) blows the node budget, narrowing
+    expansion to a single type (as the existing recovery already does)
+    is still correct -- but real measurement (task #135) showed the
+    *other* two types often carry real, direct, file-level evidence
+    genuinely required by "what could be affected" (real example:
+    `src/flask/app.py --REFERENCES--> Flask.dispatch_request`, dropped
+    entirely, not merely reduced, whenever `CALLS` happened to have
+    marginally more edges in the exploratory pass). Re-including full
+    `REFERENCES` expansion re-triggers the same truncation (confirmed:
+    `REFERENCES` is non-directional and is what drives the node-count
+    blowup, not `CALLS`) -- collecting it seed-anchored-only recovers
+    the missing direct evidence at negligible cost (1-3 extra edges per
+    query, confirmed against the real benchmark) without reopening that
+    budget problem. Defaults to `()`, a complete no-op for every other
+    caller/intent.
     """
     visited: dict[str, RepositorySymbol] = {s.canonical_id: s for s in seeds}
     distances: dict[str, int] = {s.canonical_id: 0 for s in seeds}
@@ -803,6 +831,38 @@ def bounded_traversal(
         frontier = next_frontier
         if not frontier:
             break
+
+    # Seed-anchored supplementary collection (File-Level REFERENCES
+    # Traversal Completeness milestone) -- deliberately outside the
+    # `for level in range(depth)` loop above: these predicates never
+    # contribute to `next_frontier`, so they cannot cascade into a
+    # second hop regardless of `depth`.
+    for predicate in supplementary_seed_predicates:
+        for seed in seeds:
+            for rel in graph.get_relationships(subject=seed.canonical_id, predicate=predicate):
+                if rel.key not in relationships and len(relationships) >= max_edges:
+                    truncated = True
+                    continue
+                relationships[rel.key] = rel
+            for rel in graph.get_relationships(object_id=seed.canonical_id, predicate=predicate):
+                if rel.key not in relationships and len(relationships) >= max_edges:
+                    truncated = True
+                    continue
+                relationships[rel.key] = rel
+        for direction in ("out", "in"):
+            for seed in seeds:
+                for neighbor in graph.neighbors(
+                    seed.canonical_id, predicate=predicate, direction=direction
+                ):
+                    if neighbor.canonical_id in visited:
+                        continue
+                    if len(visited) >= max_nodes:
+                        truncated = True
+                        continue
+                    visited[neighbor.canonical_id] = neighbor
+                    distances.setdefault(
+                        neighbor.canonical_id, distances.get(seed.canonical_id, 0) + 1
+                    )
 
     entities = sorted(visited.values(), key=lambda e: e.canonical_id)
     edges = sorted(relationships.values(), key=lambda r: (r.subject, r.predicate.value, r.object))

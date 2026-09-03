@@ -97,6 +97,20 @@ class RetrievalPlan(BaseModel):
     Derived once, deterministically, from `QueryContract.intent` in
     `plan_query`; every other intent keeps the default `False` (byte-
     identical prior behavior)."""
+    supplementary_relationship_types: list[RelationshipType] = Field(default_factory=list)
+    """File-Level REFERENCES Traversal Completeness milestone: non-empty
+    only when `plan_query`'s truncation-recovery narrowed a
+    `Intent.FIND_IMPACT` plan's `relationship_types` down to one type
+    (`_prioritize_relationship_types_by_evidence`'s `[:1]` cut) while
+    other types still had real observed evidence. `execute_query` passes
+    these to `bounded_traversal`'s `supplementary_seed_predicates` so the
+    dropped types' direct-on-seed edges (e.g. a real `src/flask/app.py
+    --REFERENCES--> Flask.dispatch_request` edge, otherwise discarded
+    entirely, not merely reduced) are still recovered, without reopening
+    the node-budget blowup that caused the narrowing in the first place
+    (`bounded_traversal`'s own docstring has the full mechanism). Empty
+    for every plan that never hit that narrowing, and for every intent
+    other than `FIND_IMPACT` -- byte-identical prior behavior otherwise."""
     status: PlanStatus
     telemetry: PlanTelemetry
 
