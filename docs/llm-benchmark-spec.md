@@ -95,3 +95,32 @@ On a third checkpoint the same `curl` succeeded (`HTTP_STATUS:401` — a real re
 `PRECISION_AT_10=0.5`, `RECALL_AT_10=0.778`, `MRR=0.5` (unchanged from both prior attempts — real retrieval is independent of whether the LLM call itself succeeds). `CLAIM_VERIFICATION_ACCURACY`/`ABSTENTION_PRECISION` remain `NOT_EVALUABLE` (no Verification Engine wiring yet, per §5).
 
 **This is the first real OpenAI development baseline** — distinct from a canonical benchmark (§4's promotion criteria are still unmet) and from the historical, unrecoverable "50×5 Sonnet" conversation-level claim (§1).
+
+**§7-8 above are preserved verbatim as an immutable historical record** of the first real run (3/4 OK, 1/4 `MALFORMED_OUTPUT`) — not edited or backfilled after the fix below. §9 documents the diagnosis and fix as a separate, later event.
+
+## 9. Diagnose & fix: `build_canonical_id`'s `MALFORMED_OUTPUT`
+
+**Phase 1 — diagnosis, no code changed.** `scripts/diagnose_openai_malformed.py` reconstructed the exact same request (`OpenAIGateway._build_body`/`_post`, called directly, not duplicated) for the exact same case — same corpus, same pinned revision, same query, same real retrieval, same prompt template, same model — and inspected the full raw response rather than assuming a cause:
+
+- `finish_reason: "length"` — OpenAI's own signal that the completion was cut off by the token cap, not that the model chose to stop.
+- `usage.completion_tokens: 1024` — exactly equal to the old `DEFAULT_MAX_COMPLETION_TOKENS`, not a coincidence.
+- `content` (2633 chars) fails to parse: `Unterminated string starting at... char 2632 of 2633` — the very last character of the response is mid-string, the textbook signature of a hard cutoff.
+- Prompt side was fine (16803 prompt tokens, far under `gpt-4o-mini`'s context window) — ruling out a prompt/context-size cause.
+- The gateway's own JSON-parse-and-reject behavior worked exactly as designed (correctly refusing to accept truncated, invalid JSON as a fabricated answer) — ruling out a gateway parsing defect.
+
+**Root cause: CONFIRMED** as completion-token-budget truncation, not model-quality, prompt-size, or gateway-parsing.
+
+**Phase 2 — controlled experiment.** `scripts/experiment_openai_max_tokens.py` re-ran the identical request with only `max_completion_tokens` raised to `4096`, everything else unchanged: `generation_status=OK`, `finish_reason="stop"`, 27/27 claims parsed (matching all 27 real retrieved relationships exactly), using only 2149 of the 4096 available completion tokens. Confirms the fix without over-provisioning past what was actually tested.
+
+**Phase 3 — minimal fix.** `codex.llm.openai_gateway.DEFAULT_MAX_COMPLETION_TOKENS`: `1024` → `4096` (the exact value proven sufficient in Phase 2 — not a round-number guess past it). Also added `ResponseMetadata.finish_reason`/`CaseRunResult.finish_reason` (both `str | None`, additive) so a future `MALFORMED_OUTPUT` case is triageable straight from the run record, without needing another one-off diagnostic script. Nothing else changed: `LLMGateway`'s Protocol, `LLMGenerationResult`, provider isolation, redaction, and error handling are all untouched; no automatic fallback was introduced; the frozen corpus and ground truth were never touched (`git diff` on the fixture is empty throughout this checkpoint).
+
+**Regression — the exact same four frozen cases, before vs. after:**
+
+| Case | Before | After |
+|---|---|---|
+| build_canonical_id | `MALFORMED_OUTPUT` | **`OK`** |
+| compute_query_identity | `OK` | `OK` |
+| codex dependencies | `OK` | `OK` |
+| nonexistent symbol | `OK` | `OK` |
+
+`run_id` identical across every attempt (`run:a92e1d4c7b49b6a168ceed263a139231`) — proving it hashes configuration, not outcome. `served_model=gpt-4o-mini-2024-07-18` for all 4 cases, both before and after. Retrieval metrics unchanged (`PRECISION_AT_10=0.5`/`RECALL_AT_10=0.778`/`MRR=0.5`) — real retrieval never depended on the LLM call succeeding, before or after. 3 new regression tests (`tests/test_openai_gateway.py`) reproduce the exact real failure signature (`finish_reason="length"` + mid-string-truncated content → `MALFORMED_OUTPUT`) and guard against the default ever silently reverting to `1024`.

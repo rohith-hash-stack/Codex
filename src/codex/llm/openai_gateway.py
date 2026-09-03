@@ -79,14 +79,28 @@ DEFAULT_MODEL = "gpt-4o-mini"
 gets recorded as authoritative (`ResponseMetadata.served_model`), never
 assumed to equal this constant."""
 
-DEFAULT_MAX_COMPLETION_TOKENS = 1024
-"""A conservative, fixed cap on the completion -- not derived from
-`LLMRequest.token_budget` (TAD/HLRD never define a Codex `token_budget`
--> OpenAI `max_tokens` mapping, and inventing one here would be the same
+DEFAULT_MAX_COMPLETION_TOKENS = 4096
+"""A fixed cap on the completion -- not derived from `LLMRequest.
+token_budget` (TAD/HLRD never define a Codex `token_budget` -> OpenAI
+`max_tokens` mapping, and inventing one here would be the same
 "undefined formula" pattern `codex.evaluation.evaluate` already
-documents refusing to do elsewhere in this project). `StructuredAnswer`
-JSON is short; this is comfortably sufficient for this milestone's
-development-corpus cases."""
+documents refusing to do elsewhere in this project).
+
+Was `1024` until a real "Diagnose & Fix OpenAI Malformed Output"
+checkpoint experimentally confirmed it was too small: the
+`codex-self-dev-v0` "build_canonical_id" case (27 real relationships,
+the corpus's largest real evidence package) returned `MALFORMED_OUTPUT`
+against real `gpt-4o-mini-2024-07-18` with `finish_reason: "length"` and
+`completion_tokens: 1024` -- an exact match against the old cap, and the
+raw content ended mid-string ("Unterminated string... at char 2632 of
+2633"), a textbook truncation signature, not a model-quality, prompt-
+size, or gateway-parsing issue (`scripts/diagnose_openai_malformed.py`
+carries the full, reproducible diagnostic run). A controlled experiment
+(`scripts/experiment_openai_max_tokens.py`) with only this cap raised to
+`4096`, everything else identical, resolved it: `finish_reason: "stop"`,
+27/27 claims parsed, using only 2149 of the 4096 available completion
+tokens -- proven sufficient with real headroom, not raised further on
+guesswork past what was actually tested."""
 
 _DEFAULT_TIMEOUT_SECONDS = 60.0
 
@@ -143,6 +157,13 @@ class ResponseMetadata:
     usage_prompt_tokens: int | None
     usage_completion_tokens: int | None
     usage_total_tokens: int | None
+    finish_reason: str | None
+    """OpenAI's own `choices[0].finish_reason` -- `"length"` means the
+    completion was cut off by `max_tokens` (the real, diagnosed cause of
+    the original `build_canonical_id` `MALFORMED_OUTPUT` failure);
+    `"stop"` means the model completed normally. Recorded so a future
+    `MALFORMED_OUTPUT` case can be triaged (truncation vs. a genuinely
+    malformed generation) without needing a one-off diagnostic script."""
 
 
 def _read_api_key() -> str:
@@ -253,13 +274,15 @@ class OpenAIGateway:
 
     def _parse(self, payload: dict[str, Any]) -> LLMGenerationResult:
         usage = payload.get("usage") or {}
+        choice = payload["choices"][0]
         self.last_response_metadata = ResponseMetadata(
             served_model=payload.get("model"),
             usage_prompt_tokens=usage.get("prompt_tokens"),
             usage_completion_tokens=usage.get("completion_tokens"),
             usage_total_tokens=usage.get("total_tokens"),
+            finish_reason=choice.get("finish_reason"),
         )
-        content = payload["choices"][0]["message"]["content"]
+        content = choice["message"]["content"]
         try:
             answer = StructuredAnswer.model_validate_json(content)
         except (ValidationError, json.JSONDecodeError) as exc:

@@ -28,7 +28,6 @@ from benchmark_fixtures import BENCHMARK_DEV_NOW, ingest_codex_self  # noqa: E40
 from codex.benchmark.harness import run_corpus, score_run  # noqa: E402
 from codex.benchmark.models import DevelopmentCorpus  # noqa: E402
 from codex.llm.openai_gateway import (  # noqa: E402
-    API_KEY_ENV_VAR,
     OpenAIAuthenticationError,
     OpenAIGateway,
     OpenAIGatewayError,

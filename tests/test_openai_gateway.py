@@ -20,6 +20,7 @@ from codex.llm.gateway import GenerationStatus, LLMRequest
 from codex.llm.openai_gateway import (
     API_KEY_ENV_VAR,
     CHAT_COMPLETIONS_URL,
+    DEFAULT_MAX_COMPLETION_TOKENS,
     DEFAULT_MODEL,
     OpenAIAuthenticationError,
     OpenAIGateway,
@@ -69,14 +70,27 @@ class _FakeHTTPResponse:
 
 
 def _chat_completion_payload(
-    *, content: str, model: str = "gpt-4o-mini-2024-07-18"
+    *,
+    content: str,
+    model: str = "gpt-4o-mini-2024-07-18",
+    finish_reason: str = "stop",
+    completion_tokens: int = 30,
 ) -> bytes:
     return json.dumps(
         {
             "id": "chatcmpl-test",
             "model": model,
-            "choices": [{"message": {"role": "assistant", "content": content}}],
-            "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150},
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": finish_reason,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 120,
+                "completion_tokens": completion_tokens,
+                "total_tokens": 120 + completion_tokens,
+            },
         }
     ).encode("utf-8")
 
@@ -210,6 +224,93 @@ def test_timeout_returns_timeout_status_not_an_exception(
 
     assert result.status is GenerationStatus.TIMEOUT
     assert result.detail is not None
+
+
+# ---------------------------------------------------------------------------
+# Regression: "Diagnose & Fix OpenAI Malformed Output" checkpoint.
+#
+# Root cause (confirmed against real gpt-4o-mini-2024-07-18 via
+# scripts/diagnose_openai_malformed.py): the codex-self-dev-v0
+# "build_canonical_id" case's real response came back with
+# finish_reason="length" and completion_tokens exactly equal to the old
+# DEFAULT_MAX_COMPLETION_TOKENS=1024 cap, content ending mid-string
+# ("Unterminated string... at char 2632 of 2633") -- a textbook
+# completion-budget truncation, not a model-quality, prompt-size, or
+# gateway-parsing issue. scripts/experiment_openai_max_tokens.py proved
+# raising the cap to 4096 resolves it (finish_reason="stop", 27/27
+# claims parsed, only 2149 of 4096 tokens actually used) -- now the
+# default.
+# ---------------------------------------------------------------------------
+
+
+def test_default_max_completion_tokens_is_4096_not_the_original_undersized_1024() -> None:
+    """Regression guard against ever silently reverting the fix: the
+    default gateway must request `max_tokens=4096`, not the original
+    `1024` that truncated the real `build_canonical_id` response."""
+    gateway = OpenAIGateway()
+    body = gateway._build_body(_request())  # noqa: SLF001 - asserting the actual wire value
+    assert body["max_tokens"] == DEFAULT_MAX_COMPLETION_TOKENS
+    assert body["max_tokens"] == 4096
+    assert body["max_tokens"] != 1024
+
+
+def test_finish_reason_length_with_truncated_json_is_malformed_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reproduces the exact real failure signature found during
+    diagnosis: `finish_reason="length"` and content that ends mid-string
+    (not a complete JSON object) -- must be classified
+    `MALFORMED_OUTPUT`, with `finish_reason` recorded so a future case
+    like this is triageable without a one-off diagnostic script."""
+    monkeypatch.setenv(API_KEY_ENV_VAR, FAKE_KEY)
+    truncated_content = (
+        '{"explanation": "x calls many things", "claims": '
+        '[{"subject": "a", "predicate": "CALLS", "object": "b", '
+        '"claim_type": "FACT"}, {"subject": "c'
+    )  # deliberately cut off mid-string, exactly like the real response
+    response_bytes = _chat_completion_payload(
+        content=truncated_content, finish_reason="length", completion_tokens=1024
+    )
+
+    with patch("codex.llm.openai_gateway.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = _FakeHTTPResponse(response_bytes)
+        gateway = OpenAIGateway()
+        result = gateway.generate(_request())
+
+    assert result.status is GenerationStatus.MALFORMED_OUTPUT
+    assert result.raw_output == truncated_content
+    assert gateway.last_response_metadata is not None
+    assert gateway.last_response_metadata.finish_reason == "length"
+    assert gateway.last_response_metadata.usage_completion_tokens == 1024
+
+
+def test_finish_reason_stop_with_complete_json_is_ok_and_finish_reason_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same shape of case, but completing normally under the fixed
+    cap: `finish_reason="stop"`, valid JSON -> `OK`, with `finish_reason`
+    recorded (not just inferred from success)."""
+    monkeypatch.setenv(API_KEY_ENV_VAR, FAKE_KEY)
+    complete_content = json.dumps(
+        {
+            "explanation": "x calls many things",
+            "claims": [
+                {"subject": "a", "predicate": "CALLS", "object": "b", "claim_type": "FACT"}
+            ],
+        }
+    )
+    response_bytes = _chat_completion_payload(
+        content=complete_content, finish_reason="stop", completion_tokens=2149
+    )
+
+    with patch("codex.llm.openai_gateway.urllib.request.urlopen") as mock_urlopen:
+        mock_urlopen.return_value = _FakeHTTPResponse(response_bytes)
+        gateway = OpenAIGateway()
+        result = gateway.generate(_request())
+
+    assert result.status is GenerationStatus.OK
+    assert gateway.last_response_metadata is not None
+    assert gateway.last_response_metadata.finish_reason == "stop"
 
 
 # ---------------------------------------------------------------------------

@@ -217,6 +217,7 @@ def run_corpus(
             usage_completion_tokens=getattr(metadata, "usage_completion_tokens", None),
             usage_total_tokens=getattr(metadata, "usage_total_tokens", None),
             llm_tokens=getattr(metadata, "usage_total_tokens", None),
+            finish_reason=getattr(metadata, "finish_reason", None),
         )
         events.append(
             QueryTelemetryEvent.build(

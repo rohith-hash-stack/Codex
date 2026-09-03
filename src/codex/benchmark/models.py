@@ -126,6 +126,18 @@ class CaseRunResult(BaseModel):
     usage_total_tokens: int | None = Field(default=None, ge=0)
     latency_ms: float | None = Field(default=None, ge=0.0)
 
+    finish_reason: str | None = None
+    """The provider's own completion-stop reason (e.g. `codex.llm.
+    openai_gateway.ResponseMetadata.finish_reason`) -- `"length"` means
+    the completion was cut off by the gateway's max-completion-tokens
+    cap, `"stop"` means it completed normally. Recorded so a
+    `MALFORMED_OUTPUT` case is triageable straight from the run record
+    (was this a truncation, or a genuinely malformed generation?)
+    without a one-off diagnostic script -- the exact question the
+    "Diagnose & Fix OpenAI Malformed Output" checkpoint had to answer by
+    hand for the `build_canonical_id` case. `None` for gateways that
+    don't expose it."""
+
 
 class ModelRunRecord(BaseModel):
     """One reproducible run of one model/provider against one
