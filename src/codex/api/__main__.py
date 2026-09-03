@@ -14,6 +14,15 @@ pre-generated index this CLI has no way to produce itself, and adding
 them is a caller/deployment concern, not something `codex.api` should
 assume (`docs/vscode-nervous-system-architecture.md` §2: the API layer
 never owns provider registration).
+
+**`POST /query`** (API Integration Milestone): wires a real
+`OpenAIGateway` in unconditionally -- constructing one does not itself
+read `Codex_open_API_key` or touch the network (only `generate()`
+does, on every call, per that module's own documented behavior), so
+this stays safe even when the variable is unset; `/query` will then
+fail per-request with a clear `LLM authentication failed` error
+(mapped to `502` by `codex.api.server`) rather than this CLI refusing
+to start.
 """
 
 from __future__ import annotations
@@ -27,6 +36,7 @@ import types
 from codex.api.server import serve
 from codex.api.service import CodexAPI
 from codex.evidence.store import InMemoryEvidenceStore
+from codex.llm.openai_gateway import OpenAIGateway
 from codex.provider.ast_calls_adapter import AstCallsAdapter
 from codex.provider.git_adapter import GitAdapter
 from codex.registry.registry import CapabilityRegistry
@@ -39,7 +49,7 @@ def _build_api() -> CodexAPI:
     registry = CapabilityRegistry()
     registry.register(GitAdapter(), DEFAULT_PROFILE)
     registry.register(AstCallsAdapter(), DEFAULT_PROFILE)
-    return CodexAPI(registry, InMemoryEvidenceStore())
+    return CodexAPI(registry, InMemoryEvidenceStore(), gateway=OpenAIGateway())
 
 
 def main(argv: list[str] | None = None) -> int:

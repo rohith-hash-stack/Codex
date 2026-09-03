@@ -14,7 +14,7 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -23,14 +23,31 @@ from git import Actor, Repo
 from codex.api.server import serve
 from codex.api.service import CodexAPI
 from codex.evidence.store import InMemoryEvidenceStore
+from codex.llm.gateway import LLMGenerationResult, LLMRequest
+from codex.llm.openai_gateway import OpenAIAuthenticationError
+from codex.llm.schema import StructuredAnswer
 from codex.ontology.entities import BaseEntityType
 from codex.ontology.relationships import RelationshipType
 from codex.provider.capability import Capability
 from codex.registry.registry import CapabilityRegistry
 from codex.registry.scoring import ProviderScoreProfile
 from fake_ingestion_provider import DeterministicFakeAdapter
+from fake_llm_gateway import FakeLLMGateway, ok_result
 
 PROFILE = ProviderScoreProfile(evidence_quality=0.8, cost_factor=0.5)
+
+
+class _RaisingGateway:
+    """Test-only `LLMGateway` whose `generate()` always raises -- used
+    to prove `codex.api.server` maps a Gateway exception to a
+    structured, non-traceback HTTP response (API Integration
+    Milestone)."""
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def generate(self, request: LLMRequest) -> LLMGenerationResult:
+        raise self._exc
 
 
 def _make_git_repo(tmp_path: Path) -> Path:
@@ -193,4 +210,119 @@ def test_neighborhood_bad_depth_returns_structured_400(running_server: str) -> N
         "GET", f"{running_server}/neighborhood?repository_id=repo1&symbol=a&depth=notanumber"
     )
     assert status == 400
+    assert "error" in payload
+
+
+# -- POST /query (API Integration Milestone) ---------------------------------
+
+
+def _wait_ready_api(api: CodexAPI, job_id: str, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = api.get_job_status(job_id)
+        if status.phase.value in ("READY", "FAILED"):
+            assert status.phase.value == "READY", status.detail
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"job {job_id} did not reach a terminal phase within {timeout}s")
+
+
+@pytest.fixture
+def make_server(tmp_path: Path) -> Iterator[Callable[..., str]]:
+    """Factory fixture: `make_server(gateway, ingest=True)` builds a
+    fresh `CodexAPI` (one real `foo CALLS bar` fake-provider edge,
+    registered as `repo1`, ingested unless `ingest=False`), wraps it in
+    a real server, and returns its base URL. Every server it starts is
+    shut down at test teardown."""
+    servers: list[object] = []
+
+    def _make(gateway: object | None, *, ingest: bool = True) -> str:
+        repo_dir = _make_git_repo(tmp_path)
+        registry = CapabilityRegistry()
+        adapter = DeterministicFakeAdapter(
+            name="fake",
+            capabilities=frozenset({Capability.CALL_RELATIONSHIP, Capability.SYMBOL_REFERENCE}),
+            entity_paths=("foo", "bar"),
+            relationship_pairs=(("foo", "bar"),),
+            predicate=RelationshipType.CALLS,
+            base_type=BaseEntityType.FUNCTION,
+        )
+        registry.register(adapter, PROFILE)
+        api = CodexAPI(registry, InMemoryEvidenceStore(), gateway=gateway)  # type: ignore[arg-type]
+        api.register_repository("repo1", str(repo_dir))
+        if ingest:
+            handle = api.start_ingestion("repo1")
+            _wait_ready_api(api, handle.job_id)
+        server = serve(api, port=0)
+        servers.append(server)
+        return f"http://127.0.0.1:{server.server_address[1]}"
+
+    yield _make
+    for server in servers:
+        server.shutdown()  # type: ignore[attr-defined]
+        server.server_close()  # type: ignore[attr-defined]
+
+
+def test_query_endpoint_returns_grounded_answer(make_server: Callable[..., str]) -> None:
+    gateway = FakeLLMGateway([ok_result(StructuredAnswer(explanation="foo calls bar", claims=[]))])
+    base_url = make_server(gateway)
+    status, payload = _request(
+        "POST", f"{base_url}/query", {"repository_id": "repo1", "query_text": "What calls bar?"}
+    )
+    assert status == 200
+    assert payload["status"] == "OK"
+    assert payload["answer"] == "foo calls bar"
+    assert payload["intent"] == "FIND_CALLERS"
+    evidence_context = payload["evidence_context"]
+    assert isinstance(evidence_context, dict)
+    assert len(evidence_context["relationships"]) == 1
+
+
+def test_query_missing_fields_returns_structured_400(make_server: Callable[..., str]) -> None:
+    gateway = FakeLLMGateway([ok_result(StructuredAnswer(explanation="x", claims=[]))])
+    base_url = make_server(gateway)
+    status, payload = _request("POST", f"{base_url}/query", {"repository_id": "repo1"})
+    assert status == 400
+    assert "error" in payload
+
+
+def test_query_repository_not_ready_returns_409(make_server: Callable[..., str]) -> None:
+    gateway = FakeLLMGateway([ok_result(StructuredAnswer(explanation="x", claims=[]))])
+    base_url = make_server(gateway, ingest=False)
+    status, payload = _request(
+        "POST", f"{base_url}/query", {"repository_id": "repo1", "query_text": "What calls bar?"}
+    )
+    assert status == 409
+    assert "error" in payload
+
+
+def test_query_llm_not_configured_returns_503(make_server: Callable[..., str]) -> None:
+    base_url = make_server(None)
+    status, payload = _request(
+        "POST", f"{base_url}/query", {"repository_id": "repo1", "query_text": "What calls bar?"}
+    )
+    assert status == 503
+    assert "error" in payload
+
+
+def test_query_llm_auth_failure_returns_502_not_traceback(
+    make_server: Callable[..., str],
+) -> None:
+    gateway = _RaisingGateway(OpenAIAuthenticationError("Codex_open_API_key is not set"))
+    base_url = make_server(gateway)
+    status, payload = _request(
+        "POST", f"{base_url}/query", {"repository_id": "repo1", "query_text": "What calls bar?"}
+    )
+    assert status == 502
+    assert "error" in payload
+    assert "Traceback" not in str(payload["error"])
+
+
+def test_query_unknown_repository_returns_404(make_server: Callable[..., str]) -> None:
+    gateway = FakeLLMGateway([ok_result(StructuredAnswer(explanation="x", claims=[]))])
+    base_url = make_server(gateway)
+    status, payload = _request(
+        "POST", f"{base_url}/query", {"repository_id": "ghost", "query_text": "What calls bar?"}
+    )
+    assert status == 404
     assert "error" in payload

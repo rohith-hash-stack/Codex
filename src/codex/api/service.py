@@ -15,14 +15,20 @@ public interface.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 
 from codex.api.contracts import (
+    AskResponse,
+    AskStatus,
+    EvidenceContextSummary,
     GraphVersionRef,
     IngestionJobHandle,
     IngestionJobStatus,
+    ModelMetadata,
     ProviderSummary,
     RepositoryPhase,
     RepositoryStatus,
@@ -35,9 +41,20 @@ from codex.evidence.store import EvidenceStore
 from codex.graph.store import GraphReader
 from codex.ingestion.models import IngestionResult
 from codex.ingestion.pipeline import IngestionPipeline
+from codex.llm.gateway import GenerationStatus, LLMGateway, LLMRequest
+from codex.llm.schema import StructuredAnswer
 from codex.ontology.entities import RepositorySymbol
 from codex.ontology.relationships import RelationshipType
+from codex.planner.cache import compute_query_identity
+from codex.planner.mss import EvidencePackage
+from codex.planner.planner import execute_query, plan_query
 from codex.planner.retrieval import bounded_traversal, resolve_targets
+from codex.query_understanding.engine import (
+    DEFAULT_LATENCY_BUDGET_MS,
+    DEFAULT_TOKEN_BUDGET,
+    UnderstandingStatus,
+    understand_query,
+)
 from codex.registry.registry import CapabilityRegistry
 from codex.repository.manager import RepositoryManager
 from codex.repository.models import RepositoryMetadata
@@ -45,6 +62,32 @@ from codex.repository.models import RepositoryMetadata
 DEFAULT_MAX_NODES = 50
 DEFAULT_MAX_EDGES = 100
 DEFAULT_LOOKUP_LIMIT = 25
+
+_ASK_STATUS_BY_GENERATION_STATUS: dict[GenerationStatus, AskStatus] = {
+    GenerationStatus.OK: AskStatus.OK,
+    GenerationStatus.MALFORMED_OUTPUT: AskStatus.MALFORMED_OUTPUT,
+    GenerationStatus.TIMEOUT: AskStatus.LLM_TIMEOUT,
+    GenerationStatus.BUDGET_EXCEEDED: AskStatus.LLM_BUDGET_EXCEEDED,
+}
+"""A direct, exhaustive re-labeling of D10's own closed `GenerationStatus`
+enum -- not a new classification. `mypy` (a `dict` literal covering every
+enum member) is the proof this stays exhaustive if `GenerationStatus`
+ever grows a member."""
+
+
+def _compute_ask_run_id(
+    *, repository_revision: str, query_identity: str, provider: str, model_id: str
+) -> str:
+    """Deterministic per-request identity: two requests sharing every
+    reproducibility dimension get the identical id (same SHA-256 recipe
+    `codex.benchmark.harness.compute_run_id` already established for
+    this project). Duplicated rather than imported -- `codex.benchmark`
+    is benchmark/evaluation-only infrastructure, and the production API
+    must not depend on it (mirrors this project's existing package-
+    boundary discipline, e.g. `codex.query_understanding` importing
+    nothing from `codex.graph`)."""
+    payload = "\x1f".join([repository_revision, query_identity, provider, model_id])
+    return "ask-run:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
 
 class RepositoryNotFoundError(KeyError):
@@ -57,6 +100,44 @@ class RepositoryNotFoundError(KeyError):
 
 class IngestionJobNotFoundError(KeyError):
     """Raised by `get_job_status` for an unknown `job_id`."""
+
+
+class RepositoryNotReadyError(RuntimeError):
+    """Raised by `ask()` when `repository_id` is registered but has not
+    (yet) completed a successful ingestion -- distinct from
+    `RepositoryNotFoundError` (never registered at all), so a caller
+    can tell "try again shortly" apart from "this repository does not
+    exist here". `phase` reuses `get_repository_status`'s own existing
+    phase classification (unmodified) rather than inventing a second
+    one for `ask()` alone."""
+
+    def __init__(self, repository_id: str, phase: RepositoryPhase) -> None:
+        self.repository_id = repository_id
+        self.phase = phase
+        super().__init__(
+            f"repository {repository_id!r} is not ready for querying yet "
+            f"(phase={phase.value})"
+        )
+
+
+class LLMNotConfiguredError(RuntimeError):
+    """Raised by `ask()` when this `CodexAPI` instance was constructed
+    without an `LLMGateway` -- a deployment/configuration precondition,
+    distinct from any per-request LLM failure. An upstream Gateway
+    exception (e.g. `OpenAIAuthenticationError`/`OpenAIGatewayError`)
+    is deliberately **not** caught inside `ask()` -- it propagates
+    exactly like `RepositoryManager`/`IngestionPipeline` failures
+    already do elsewhere in this class (mirrors `GitRevisionResolutionError`'s
+    existing precedent), for `codex.api.server` to classify and map to
+    an HTTP status. Only outcomes the Gateway Protocol itself represents
+    as *data* (`GenerationStatus`) become an in-band `AskStatus` on a
+    normal response."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "this CodexAPI instance was constructed without an LLMGateway -- "
+            "ask() requires one to be supplied at construction time"
+        )
 
 
 class GitRevisionResolutionError(RuntimeError):
@@ -103,12 +184,20 @@ class CodexAPI:
         evidence_store: EvidenceStore,
         *,
         provider_authority: dict[str, float] | None = None,
+        gateway: LLMGateway | None = None,
     ) -> None:
         self._registry = registry
+        self._evidence_store = evidence_store
         self._pipeline = IngestionPipeline(
             registry, evidence_store, provider_authority=provider_authority
         )
         self._repo_manager = RepositoryManager()
+        self._gateway = gateway
+        """`None` by default (byte-identical to every pre-existing
+        caller of this constructor, which never passed one): `ask()`
+        raises `LLMNotConfiguredError` until a caller supplies a real
+        `LLMGateway` -- lifecycle/lookup/neighborhood are entirely
+        unaffected either way, since none of them touch `self._gateway`."""
         self._lock = threading.Lock()
         self._results: dict[str, IngestionResult] = {}
         self._jobs: dict[str, _JobState] = {}
@@ -368,6 +457,153 @@ class CodexAPI:
             raise RepositoryNotFoundError(repository_id)
         return result.graph_store
 
+    def _ingestion_result_for(self, repository_id: str) -> IngestionResult:
+        """Like `_graph_for`, but distinguishes "never registered"
+        (`RepositoryNotFoundError`) from "registered, not ready yet"
+        (`RepositoryNotReadyError`) -- `ask()`'s own two required error
+        semantics (requirement 5). Reuses `get_repository_status`
+        (unmodified) rather than a second registration-check path."""
+        with self._lock:
+            result = self._results.get(repository_id)
+        if result is not None:
+            return result
+        status = self.get_repository_status(repository_id)
+        if status.phase is RepositoryPhase.NOT_REGISTERED:
+            raise RepositoryNotFoundError(repository_id)
+        raise RepositoryNotReadyError(repository_id, status.phase)
+
+    # -- Query / Ask ------------------------------------------------------------
+
+    def ask(
+        self,
+        repository_id: str,
+        query_text: str,
+        *,
+        token_budget: int | None = None,
+        latency_budget_ms: int | None = None,
+        now: datetime | None = None,
+    ) -> AskResponse:
+        """`POST /query`: repository -> query -> intent/evidence
+        requirements -> targeted graph retrieval -> minimal sufficient
+        grounded context -> LLM -> grounded answer.
+
+        A thin orchestration over the real, unmodified pipeline --
+        `understand_query` (D8) -> `plan_query`/`execute_query` (D9) ->
+        `LLMGateway.generate` (D10) -- called in exactly that order,
+        making no retrieval/ranking/identity/generation decision of its
+        own (the same discipline `lookup_symbols`/`get_neighborhood`
+        already follow for graph retrieval, extended here to cover the
+        LLM boundary too).
+
+        Raises `RepositoryNotFoundError`/`RepositoryNotReadyError`
+        (`_ingestion_result_for`) or `LLMNotConfiguredError` before any
+        pipeline stage runs. A Gateway exception from `generate()`
+        itself is deliberately not caught -- see `LLMNotConfiguredError`'s
+        own docstring for why, and `codex.api.server` for where it is
+        classified into an HTTP status.
+        """
+        if self._gateway is None:
+            raise LLMNotConfiguredError
+        ingestion_result = self._ingestion_result_for(repository_id)
+        graph = ingestion_result.graph_store
+
+        understanding = understand_query(
+            query_text,
+            repository_id=repository_id,
+            now=now,
+            token_budget=token_budget if token_budget is not None else DEFAULT_TOKEN_BUDGET,
+            latency_budget_ms=(
+                latency_budget_ms if latency_budget_ms is not None else DEFAULT_LATENCY_BUDGET_MS
+            ),
+        )
+        not_resolved = understanding.status is not UnderstandingStatus.RESOLVED
+        if not_resolved or understanding.contract is None:
+            return AskResponse(
+                repository_id=repository_id,
+                query_text=query_text,
+                query_id="",
+                run_id="",
+                status=AskStatus.UNDERSTANDING_INCOMPLETE,
+                detail=understanding.detail or understanding.status.value,
+                model=self._model_metadata(None),
+            )
+        contract = understanding.contract
+        query_identity = compute_query_identity(contract)
+        repository = self._repo_manager.get_metadata(repository_id)
+
+        plan = plan_query(
+            query_contract=contract,
+            graph=graph,
+            ingestion_result=ingestion_result,
+            registry=self._registry,
+            repository=repository,
+        )
+        package = execute_query(
+            plan,
+            graph=graph,
+            evidence_store=self._evidence_store,
+            ingestion_result=ingestion_result,
+        )
+
+        request = LLMRequest(
+            query_text=query_text,
+            evidence_package=package,
+            response_schema=StructuredAnswer.model_json_schema(),
+            token_budget=contract.token_budget,
+            latency_budget_ms=contract.latency_budget_ms,
+        )
+        run_id = _compute_ask_run_id(
+            repository_revision=repository.head_revision,
+            query_identity=query_identity,
+            provider=getattr(self._gateway, "provider", "unknown"),
+            model_id=getattr(self._gateway, "requested_model", "unknown"),
+        )
+        generation = self._gateway.generate(request)
+        metadata = getattr(self._gateway, "last_response_metadata", None)
+
+        return AskResponse(
+            repository_id=repository_id,
+            query_text=query_text,
+            query_id=query_identity,
+            run_id=run_id,
+            status=_ASK_STATUS_BY_GENERATION_STATUS[generation.status],
+            intent=contract.intent,
+            plan_status=plan.status,
+            answer=generation.answer.explanation if generation.answer else None,
+            claims=list(generation.answer.claims) if generation.answer else [],
+            evidence_context=self._evidence_context(package),
+            model=self._model_metadata(metadata),
+            detail=generation.detail,
+        )
+
+    def _evidence_context(self, package: EvidencePackage) -> EvidenceContextSummary:
+        version = package.graph_version
+        return EvidenceContextSummary(
+            graph_version=GraphVersionRef(
+                version_id=version.version_id,
+                repository_id=version.repository_id,
+                repository_revision=version.repository_revision,
+            ),
+            entities=[self._to_node(entity, 0) for entity in package.entities],
+            relationships=[self._to_edge(relationship) for relationship in package.relationships],
+            evidence_count=len(package.evidence),
+            coverage={capability: status.value for capability, status in package.coverage.items()},
+            limitations=list(package.limitations),
+            partial=package.partial,
+        )
+
+    def _model_metadata(self, metadata: object | None) -> ModelMetadata:
+        gateway = self._gateway
+        return ModelMetadata(
+            provider=getattr(gateway, "provider", "unknown"),
+            requested_model=getattr(gateway, "requested_model", "unknown"),
+            served_model=getattr(metadata, "served_model", None),
+            usage_prompt_tokens=getattr(metadata, "usage_prompt_tokens", None),
+            usage_completion_tokens=getattr(metadata, "usage_completion_tokens", None),
+            usage_total_tokens=getattr(metadata, "usage_total_tokens", None),
+            finish_reason=getattr(metadata, "finish_reason", None),
+        )
+
     @staticmethod
     def _version_ref(graph: GraphReader) -> GraphVersionRef:
         version = graph.version
@@ -411,5 +647,7 @@ __all__ = [
     "CodexAPI",
     "GitRevisionResolutionError",
     "IngestionJobNotFoundError",
+    "LLMNotConfiguredError",
     "RepositoryNotFoundError",
+    "RepositoryNotReadyError",
 ]

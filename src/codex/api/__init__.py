@@ -1,7 +1,12 @@
 from codex.api.contracts import (
+    AskRequest,
+    AskResponse,
+    AskStatus,
+    EvidenceContextSummary,
     GraphVersionRef,
     IngestionJobHandle,
     IngestionJobStatus,
+    ModelMetadata,
     ProviderSummary,
     RepositoryPhase,
     RepositoryStatus,
@@ -9,16 +14,29 @@ from codex.api.contracts import (
     VisualizationGraph,
     VisualizationNode,
 )
-from codex.api.service import CodexAPI, IngestionJobNotFoundError, RepositoryNotFoundError
+from codex.api.service import (
+    CodexAPI,
+    IngestionJobNotFoundError,
+    LLMNotConfiguredError,
+    RepositoryNotFoundError,
+    RepositoryNotReadyError,
+)
 
 __all__ = [
+    "AskRequest",
+    "AskResponse",
+    "AskStatus",
     "CodexAPI",
+    "EvidenceContextSummary",
     "GraphVersionRef",
     "IngestionJobHandle",
     "IngestionJobNotFoundError",
     "IngestionJobStatus",
+    "LLMNotConfiguredError",
+    "ModelMetadata",
     "ProviderSummary",
     "RepositoryNotFoundError",
+    "RepositoryNotReadyError",
     "RepositoryPhase",
     "RepositoryStatus",
     "VisualizationEdge",

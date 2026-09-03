@@ -28,9 +28,23 @@ from codex.api.service import (
     CodexAPI,
     GitRevisionResolutionError,
     IngestionJobNotFoundError,
+    LLMNotConfiguredError,
     RepositoryNotFoundError,
+    RepositoryNotReadyError,
 )
+from codex.llm.openai_gateway import OpenAIAuthenticationError, OpenAIGatewayError
 from codex.ontology.relationships import RelationshipType
+
+# `codex.api.service.CodexAPI.ask()` deliberately lets a Gateway
+# exception propagate unmodified rather than catching it (see
+# `LLMNotConfiguredError`'s own docstring) -- this transport layer is
+# where a concrete Gateway's exception types get classified into an
+# HTTP status, exactly mirroring `codex.api.__main__`'s own existing
+# precedent of being the one place that references a concrete
+# provider/adapter implementation directly. `OpenAIGateway` is the
+# only concrete `LLMGateway` this project ships today; a future
+# Gateway's own exception types would be added here the same way,
+# without changing `service.py`'s Protocol-only boundary.
 
 
 class _RequestError(Exception):
@@ -76,6 +90,15 @@ def _optional_int(params: dict[str, list[str]], name: str, default: int) -> int:
         ) from exc
 
 
+def _optional_positive_body_int(body: dict[str, object], name: str) -> int | None:
+    value = body.get(name)
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise _RequestError(HTTPStatus.BAD_REQUEST, f"{name!r} must be a positive integer")
+    return value
+
+
 def _optional_relationship_types(
     params: dict[str, list[str]]
 ) -> list[RelationshipType] | None:
@@ -93,7 +116,8 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
 
     Endpoints (docs §9): ``POST /repositories``, ``GET /jobs/{job_id}``,
     ``GET /repositories/{id}/status``, ``GET /symbols``,
-    ``GET /neighborhood``.
+    ``GET /neighborhood``, ``POST /query`` (API Integration Milestone,
+    `docs/api-query-integration.md`).
     """
 
     class Handler(BaseHTTPRequestHandler):
@@ -115,6 +139,8 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
             try:
                 if method == "POST" and parsed.path == "/repositories":
                     self._post_repositories()
+                elif method == "POST" and parsed.path == "/query":
+                    self._post_query()
                 elif method == "GET" and parsed.path.startswith("/jobs/"):
                     self._get_job(parsed.path[len("/jobs/") :])
                 elif (
@@ -138,10 +164,24 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
                 _write_json(
                     self, HTTPStatus.NOT_FOUND, {"error": f"repository not ingested: {exc}"}
                 )
+            except RepositoryNotReadyError as exc:
+                _write_json(self, HTTPStatus.CONFLICT, {"error": str(exc)})
             except IngestionJobNotFoundError as exc:
                 _write_json(self, HTTPStatus.NOT_FOUND, {"error": f"unknown job: {exc}"})
             except GitRevisionResolutionError as exc:
                 _write_json(self, HTTPStatus.CONFLICT, {"error": str(exc)})
+            except LLMNotConfiguredError as exc:
+                _write_json(self, HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            except OpenAIAuthenticationError as exc:
+                # Already redacted by `openai_gateway._redact` before being
+                # raised -- no second redaction pass needed here (mirrors
+                # `codex.benchmark.harness.run_corpus`'s own documented
+                # reasoning for the identical situation).
+                _write_json(
+                    self, HTTPStatus.BAD_GATEWAY, {"error": f"LLM authentication failed: {exc}"}
+                )
+            except OpenAIGatewayError as exc:
+                _write_json(self, HTTPStatus.BAD_GATEWAY, {"error": f"LLM request failed: {exc}"})
             except KeyError as exc:
                 _write_json(
                     self, HTTPStatus.NOT_FOUND, {"error": f"repository not registered: {exc}"}
@@ -172,6 +212,29 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
             )
             handle = api.start_ingestion(repository_id)
             _write_json(self, HTTPStatus.ACCEPTED, handle)
+
+        def _post_query(self) -> None:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                body = json.loads(raw or b"{}")
+            except json.JSONDecodeError as exc:
+                raise _RequestError(HTTPStatus.BAD_REQUEST, f"invalid JSON body: {exc}") from exc
+            repository_id = body.get("repository_id")
+            query_text = body.get("query_text")
+            if not repository_id or not query_text:
+                raise _RequestError(
+                    HTTPStatus.BAD_REQUEST, "repository_id and query_text are required"
+                )
+            token_budget = _optional_positive_body_int(body, "token_budget")
+            latency_budget_ms = _optional_positive_body_int(body, "latency_budget_ms")
+            response = api.ask(
+                repository_id,
+                query_text,
+                token_budget=token_budget,
+                latency_budget_ms=latency_budget_ms,
+            )
+            _write_json(self, HTTPStatus.OK, response)
 
         def _get_job(self, job_id: str) -> None:
             _write_json(self, HTTPStatus.OK, api.get_job_status(job_id))
