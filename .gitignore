@@ -14,3 +14,8 @@ venv/
 htmlcov/
 *.log
 .DS_Store
+
+# Local secrets -- never commit real values (see PROGRESS.md).
+.env
+.env.*
+!.env.example
