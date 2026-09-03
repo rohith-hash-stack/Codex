@@ -59,6 +59,21 @@ class IngestionJobNotFoundError(KeyError):
     """Raised by `get_job_status` for an unknown `job_id`."""
 
 
+class GitRevisionResolutionError(RuntimeError):
+    """R2 fix: raised by `start_ingestion` when the repository's current
+    git HEAD cannot be read (deleted/corrupted working tree, no
+    commits, etc.) -- surfaced synchronously to the caller rather than
+    silently reusing whatever revision happened to be stored from an
+    earlier `register_repository`/`clone` call."""
+
+    def __init__(self, repository_id: str, detail: str) -> None:
+        self.repository_id = repository_id
+        self.detail = detail
+        super().__init__(
+            f"could not resolve current HEAD revision for repository {repository_id!r}: {detail}"
+        )
+
+
 @dataclass
 class _JobState:
     job_id: str
@@ -97,6 +112,14 @@ class CodexAPI:
         self._lock = threading.Lock()
         self._results: dict[str, IngestionResult] = {}
         self._jobs: dict[str, _JobState] = {}
+        self._active_jobs: dict[str, str] = {}
+        """R1 fix: `repository_id -> job_id` of the ingestion currently
+        mutating that repository's state, if any. This map *is* the
+        mutual-exclusion mechanism (a "singleflight" per repository,
+        checked-and-set atomically under `self._lock`) -- there is no
+        separate `threading.Lock` per repository, so unrelated
+        repositories never contend on anything beyond the brief,
+        O(1) critical section that reads/writes this dict."""
 
     # -- Repository lifecycle -------------------------------------------------
 
@@ -128,41 +151,100 @@ class CodexAPI:
     def start_ingestion(self, repository_id: str) -> IngestionJobHandle:
         """Start `IngestionPipeline.run()` on a background thread and
         return immediately (docs §6: "genuinely non-blocking, not
-        merely documented as a future concern"). Raises `KeyError` if
-        `repository_id` was never registered -- the same error
+        merely documented as a future concern").
+
+        **R2 fix (stale HEAD):** always re-resolves the repository's
+        *current* git HEAD before starting ingestion -- never reuses
+        whatever revision happened to be stored from an earlier
+        `register_repository`/`clone` call. Raises `KeyError` if
+        `repository_id` was never registered (the same error
         `RepositoryManager.get_metadata` already raises, not wrapped or
-        hidden."""
-        metadata = self._repo_manager.get_metadata(repository_id)
-        job_id = f"job-{repository_id}-{uuid.uuid4().hex[:8]}"
-        state = _JobState(
-            job_id=job_id, repository_id=repository_id, phase=RepositoryPhase.INDEXING
-        )
+        hidden), or `GitRevisionResolutionError` if the repository's
+        git state cannot be read right now.
+
+        **R1 fix (concurrent same-repository ingestion):** if an
+        ingestion for `repository_id` is already in flight, this
+        returns *that job's existing handle* rather than starting a
+        second one -- a per-repository "singleflight": at most one
+        `IngestionPipeline.run()` call may be mutating a given
+        repository's accumulator state at a time, while unrelated
+        repositories remain fully independent (the check-and-set below
+        is keyed by `repository_id` and holds `self._lock` only for
+        the O(1) dict operation itself, never across the actual
+        ingestion work). Never silently starts a second mutation.
+        """
+        metadata = self._resolve_fresh_metadata(repository_id)
+
         with self._lock:
-            self._jobs[job_id] = state
+            existing_job_id = self._active_jobs.get(repository_id)
+            if existing_job_id is not None:
+                return IngestionJobHandle(job_id=existing_job_id, repository_id=repository_id)
+            job_id = f"job-{repository_id}-{uuid.uuid4().hex[:8]}"
+            self._jobs[job_id] = _JobState(
+                job_id=job_id, repository_id=repository_id, phase=RepositoryPhase.INDEXING
+            )
+            self._active_jobs[repository_id] = job_id
+
         thread = threading.Thread(
             target=self._run_ingestion, args=(job_id, metadata), daemon=True
         )
         thread.start()
         return IngestionJobHandle(job_id=job_id, repository_id=repository_id)
 
+    def _resolve_fresh_metadata(self, repository_id: str) -> RepositoryMetadata:
+        """R2 fix: re-read the repository's current git HEAD (never a
+        cached value) immediately before it is used to determine the
+        ingestion target, and return the now-refreshed metadata.
+
+        `RepositoryManager.get_head_revision` both resolves the live
+        HEAD *and* persists it back onto the stored `RepositoryMetadata`
+        (`repository/manager.py`, unmodified) -- calling it here means
+        every `start_ingestion` call is guaranteed to target whatever
+        commit is current *at the moment ingestion is requested*,
+        exactly like a build tool re-running `git rev-parse HEAD`
+        rather than trusting an earlier snapshot.
+        """
+        try:
+            self._repo_manager.get_head_revision(repository_id)
+        except KeyError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- any git/filesystem
+            # failure while resolving HEAD is reported as a distinct,
+            # named error (never silently swallowed into "use whatever
+            # revision we already had").
+            raise GitRevisionResolutionError(repository_id, str(exc)) from exc
+        return self._repo_manager.get_metadata(repository_id)
+
     def _run_ingestion(self, job_id: str, metadata: RepositoryMetadata) -> None:
         try:
-            result = self._pipeline.run(metadata)
-        except Exception as exc:  # noqa: BLE001 -- isolate the background
-            # thread; the failure is reported through job status, never
-            # raised into an unrelated caller's stack (mirrors
-            # `IngestionPipeline`'s own per-provider isolation discipline,
-            # applied here at the job level instead).
-            with self._lock:
-                self._jobs[job_id].phase = RepositoryPhase.FAILED
-                self._jobs[job_id].detail = str(exc)
-            return
+            try:
+                result = self._pipeline.run(metadata)
+            except Exception as exc:  # noqa: BLE001 -- isolate the
+                # background thread; the failure is reported through
+                # job status, never raised into an unrelated caller's
+                # stack (mirrors `IngestionPipeline`'s own per-provider
+                # isolation discipline, applied here at the job level).
+                with self._lock:
+                    self._jobs[job_id].phase = RepositoryPhase.FAILED
+                    self._jobs[job_id].detail = str(exc)
+                return
 
-        status = self._status_from_result(metadata.repository_id, result)
-        with self._lock:
-            self._results[metadata.repository_id] = result
-            self._jobs[job_id].phase = RepositoryPhase.READY
-            self._jobs[job_id].result = status
+            status = self._status_from_result(metadata.repository_id, result)
+            with self._lock:
+                self._results[metadata.repository_id] = result
+                self._jobs[job_id].phase = RepositoryPhase.READY
+                self._jobs[job_id].result = status
+        finally:
+            # R1 fix: release this repository's ingestion slot on
+            # *every* exit path (success or failure) -- never leaves a
+            # repository permanently "busy". Only clears the entry if
+            # it still points at this job (defensive; by construction
+            # at most one job can ever be active per repository, so
+            # this can never actually mismatch, but costs nothing to
+            # guard).
+            with self._lock:
+                if self._active_jobs.get(metadata.repository_id) == job_id:
+                    del self._active_jobs[metadata.repository_id]
 
     def get_job_status(self, job_id: str) -> IngestionJobStatus:
         with self._lock:
@@ -327,6 +409,7 @@ __all__ = [
     "DEFAULT_MAX_EDGES",
     "DEFAULT_MAX_NODES",
     "CodexAPI",
+    "GitRevisionResolutionError",
     "IngestionJobNotFoundError",
     "RepositoryNotFoundError",
 ]

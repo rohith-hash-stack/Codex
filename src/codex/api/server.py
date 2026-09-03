@@ -24,7 +24,12 @@ from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel
 
-from codex.api.service import CodexAPI, IngestionJobNotFoundError, RepositoryNotFoundError
+from codex.api.service import (
+    CodexAPI,
+    GitRevisionResolutionError,
+    IngestionJobNotFoundError,
+    RepositoryNotFoundError,
+)
 from codex.ontology.relationships import RelationshipType
 
 
@@ -135,6 +140,8 @@ def make_handler(api: CodexAPI) -> type[BaseHTTPRequestHandler]:
                 )
             except IngestionJobNotFoundError as exc:
                 _write_json(self, HTTPStatus.NOT_FOUND, {"error": f"unknown job: {exc}"})
+            except GitRevisionResolutionError as exc:
+                _write_json(self, HTTPStatus.CONFLICT, {"error": str(exc)})
             except KeyError as exc:
                 _write_json(
                     self, HTTPStatus.NOT_FOUND, {"error": f"repository not registered: {exc}"}
