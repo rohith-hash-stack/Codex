@@ -1,0 +1,827 @@
+{
+  "corpus_version": "codex-canonical-v1",
+  "records_by_repository": {
+    "codex": {
+      "run_id": "run:68f8c2a53190c245a484a558e5cb290c",
+      "corpus_version": "codex-canonical-v1",
+      "repository_id": "codex",
+      "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "a12d6237d0c563650365c9d4257925bf": {
+          "query_id": "a12d6237d0c563650365c9d4257925bf",
+          "query_identity": "a12d6237d0c563650365c9d4257925bf",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The function `build_canonical_id` is used within several other functions, which derive from structured evidence of call relationships found in the codebase. These relationships indicate how `build_canonical_id` is interconnected with other functions.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:193441ee652ef2cb4cd276778f80f271\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:1c806b566ee21d37dec00d4d08617447\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:3755455b4e992e84b64a34c4ea2a3bc3\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:38d0d9d315e5f96360fffdc2b59d1b6c\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:4de7582292bc3b88806be98a54e7ce02\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:6b2c06531011f3f1cc3d06c4e23a4649\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:6e9327a45865c59d8e71e122738f954f\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:88c06dd15cd0929c141220d9115a9b46\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:ae34c540e10cc9c1028ad0f0d3c5aafb\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fa7c45513c32d4baff2d2dda5e9ffffa\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fe2ef2bfff1c96faf95aae66f87d5a99\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:ff3e90794a136be4984a22e859599ac4\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:c776e7db216ec735d01e1e26e82d68b9\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:c930e7151db9c891a8b73baa6226dc4e\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:c95e8436055ae140b599a871adcfabef\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:e10808683296aa3455f85628957465f4\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:e37ad4969a4e9fac5ff095e3d253c896\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:347a058c3b3baf09523335b5e42f5f67\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The function `build_canonical_id` is used within several other functions, which derive from structured evidence of call relationships found in the codebase. These relationships indicate how `build_canonical_id` is interconnected with other functions.",
+            "claims": [
+              {
+                "subject": "codex:193441ee652ef2cb4cd276778f80f271",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:1c806b566ee21d37dec00d4d08617447",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:3755455b4e992e84b64a34c4ea2a3bc3",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:38d0d9d315e5f96360fffdc2b59d1b6c",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:4de7582292bc3b88806be98a54e7ce02",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:6b2c06531011f3f1cc3d06c4e23a4649",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:6e9327a45865c59d8e71e122738f954f",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:88c06dd15cd0929c141220d9115a9b46",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:ae34c540e10cc9c1028ad0f0d3c5aafb",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fa7c45513c32d4baff2d2dda5e9ffffa",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fe2ef2bfff1c96faf95aae66f87d5a99",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:ff3e90794a136be4984a22e859599ac4",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:c776e7db216ec735d01e1e26e82d68b9",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:c930e7151db9c891a8b73baa6226dc4e",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:c95e8436055ae140b599a871adcfabef",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:e10808683296aa3455f85628957465f4",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:e37ad4969a4e9fac5ff095e3d253c896",
+                "predicate": "CALLS",
+                "object": "codex:347a058c3b3baf09523335b5e42f5f67",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 18163,
+          "usage_prompt_tokens": 16803,
+          "usage_completion_tokens": 1360,
+          "usage_total_tokens": 18163,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "d0187aa001248c40bbf11ca284a4ff7d": {
+          "query_id": "d0187aa001248c40bbf11ca284a4ff7d",
+          "query_identity": "d0187aa001248c40bbf11ca284a4ff7d",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The function `plan_query` is called by several test functions within the codebase, exemplifying how various components interact with the planning mechanism.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:a8752e5f36c04058d778c26f7e44d2c1\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:c26229c8b0f9f95419b9a925e1ce7703\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:6657644f19a26c912bc0a6d1a08ba879\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:abfe59293f3da92463924bb8b3c5cc7e\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:0cc4ffbf14e5343f1859b871a7b38b67\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The function `plan_query` is called by several test functions within the codebase, exemplifying how various components interact with the planning mechanism.",
+            "claims": [
+              {
+                "subject": "codex:a8752e5f36c04058d778c26f7e44d2c1",
+                "predicate": "CALLS",
+                "object": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:c26229c8b0f9f95419b9a925e1ce7703",
+                "predicate": "CALLS",
+                "object": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:6657644f19a26c912bc0a6d1a08ba879",
+                "predicate": "CALLS",
+                "object": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:abfe59293f3da92463924bb8b3c5cc7e",
+                "predicate": "CALLS",
+                "object": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:0cc4ffbf14e5343f1859b871a7b38b67",
+                "predicate": "CALLS",
+                "object": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 53629,
+          "usage_prompt_tokens": 53217,
+          "usage_completion_tokens": 412,
+          "usage_total_tokens": 53629,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "054eb68a7d6dfd720ad424e61c593653": {
+          "query_id": "054eb68a7d6dfd720ad424e61c593653",
+          "query_identity": "054eb68a7d6dfd720ad424e61c593653",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The following tests call the function 'compute_query_identity': test_compute_query_identity_differs_on_any_field_change, test_compute_query_identity_is_deterministic, test_benchmark_case_repository_revision_mismatch_is_detected_end_to_end, test_benchmark_case_to_d13a_evaluation_end_to_end, among others.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:153c02da961cd84cf408c697e2ab1892\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:2581741831cc847b3e4c75c7c991e4bf\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:33fd38f6e5a599a0f43022c7ef8015a0\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:53cb133ae0fd5d9371d2acc463561293\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:67f65b52c1df774efae06cc8406ce8af\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:905fc400c45e651a714aec37eb64e887\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:b8aa0613660c95366ebfa261ebf0929e\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:d7c66e8fcef692bceebfbb92e3b21f56\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:5ce15a8f9aa9a376f126cfa75e9202f8\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The following tests call the function 'compute_query_identity': test_compute_query_identity_differs_on_any_field_change, test_compute_query_identity_is_deterministic, test_benchmark_case_repository_revision_mismatch_is_detected_end_to_end, test_benchmark_case_to_d13a_evaluation_end_to_end, among others.",
+            "claims": [
+              {
+                "subject": "codex:153c02da961cd84cf408c697e2ab1892",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:2581741831cc847b3e4c75c7c991e4bf",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:33fd38f6e5a599a0f43022c7ef8015a0",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:53cb133ae0fd5d9371d2acc463561293",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:67f65b52c1df774efae06cc8406ce8af",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:905fc400c45e651a714aec37eb64e887",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:b8aa0613660c95366ebfa261ebf0929e",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:d7c66e8fcef692bceebfbb92e3b21f56",
+                "predicate": "CALLS",
+                "object": "codex:5ce15a8f9aa9a376f126cfa75e9202f8",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 7556,
+          "usage_prompt_tokens": 6865,
+          "usage_completion_tokens": 691,
+          "usage_total_tokens": 7556,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "e4a6fad23b48bffaf50cae9076d2ddd6": {
+          "query_id": "e4a6fad23b48bffaf50cae9076d2ddd6",
+          "query_identity": "e4a6fad23b48bffaf50cae9076d2ddd6",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"Codex depends on several external libraries as part of its functionality.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:0648db8d7c3d48d8eb4393739a0447c7\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:081e1851351d83748aef84576b926d3b\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:2011ba4dac5d275a550c7412796596d7\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:44a14b0736d709e329430f4c03da9225\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:5b0c85f8e90f0877ccf36286b075fe09\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:76f731090ed791793fb56cd6980e53ef\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a41e973d46f3b6f948cae71e4d6dec57\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"codex:ad098f053c921464d1800bbb29f33dc9\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "Codex depends on several external libraries as part of its functionality.",
+            "claims": [
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:0648db8d7c3d48d8eb4393739a0447c7",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:081e1851351d83748aef84576b926d3b",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:2011ba4dac5d275a550c7412796596d7",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:44a14b0736d709e329430f4c03da9225",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:5b0c85f8e90f0877ccf36286b075fe09",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:76f731090ed791793fb56cd6980e53ef",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a41e973d46f3b6f948cae71e4d6dec57",
+                "predicate": "DEPENDS_ON",
+                "object": "codex:ad098f053c921464d1800bbb29f33dc9",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 6372,
+          "usage_prompt_tokens": 5807,
+          "usage_completion_tokens": 565,
+          "usage_total_tokens": 6372,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "1ee28d4cc09cfb5213814efab5676872": {
+          "query_id": "1ee28d4cc09cfb5213814efab5676872",
+          "query_identity": "1ee28d4cc09cfb5213814efab5676872",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"No evidence was found for any calls to 'zzz_nonexistent_codex_symbol_xyz'.\",\n  \"claims\": [\n    {\n      \"subject\": \"zzz_nonexistent_codex_symbol_xyz\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"None\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "No evidence was found for any calls to 'zzz_nonexistent_codex_symbol_xyz'.",
+            "claims": [
+              {
+                "subject": "zzz_nonexistent_codex_symbol_xyz",
+                "predicate": "CALLS",
+                "object": "None",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 975,
+          "usage_prompt_tokens": 902,
+          "usage_completion_tokens": 73,
+          "usage_total_tokens": 975,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    },
+    "click": {
+      "run_id": "run:b2c318e77a06ef3953a61b90e309ad76",
+      "corpus_version": "codex-canonical-v1",
+      "repository_id": "click",
+      "repository_revision": "36baa15ff831b939a22bc527cd76ce653ef6f66d",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "808ae60c697b29ef51ffc026af7ebf67": {
+          "query_id": "808ae60c697b29ef51ffc026af7ebf67",
+          "query_identity": "808ae60c697b29ef51ffc026af7ebf67",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"Several classes implement the ParamType interface, including ParamType itself, and its specific variations such as BoolParamType, FuncParamType, etc., as well as multiple methods providing various functionalities.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:4f02cc90a6eed61a99943838c0a66e15\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:266541a0960abcdb90bbcbeeb6162fde\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:2110b1a609932076ee01676c486bfffd\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:266541a0960abcdb90bbcbeeb6162fde\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:3da3aeeb0ca00949788569580db69297\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:266541a0960abcdb90bbcbeeb6162fde\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:5c86d3d73b8832df88d0f6cd4bbe566c\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:266541a0960abcdb90bbcbeeb6162fde\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a590170366a2daa0da097881bed009cc\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:266541a0960abcdb90bbcbeeb6162fde\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "Several classes implement the ParamType interface, including ParamType itself, and its specific variations such as BoolParamType, FuncParamType, etc., as well as multiple methods providing various functionalities.",
+            "claims": [
+              {
+                "subject": "codex:4f02cc90a6eed61a99943838c0a66e15",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:266541a0960abcdb90bbcbeeb6162fde",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:2110b1a609932076ee01676c486bfffd",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:266541a0960abcdb90bbcbeeb6162fde",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:3da3aeeb0ca00949788569580db69297",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:266541a0960abcdb90bbcbeeb6162fde",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:5c86d3d73b8832df88d0f6cd4bbe566c",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:266541a0960abcdb90bbcbeeb6162fde",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a590170366a2daa0da097881bed009cc",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:266541a0960abcdb90bbcbeeb6162fde",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 29740,
+          "usage_prompt_tokens": 29343,
+          "usage_completion_tokens": 397,
+          "usage_total_tokens": 29740,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "01dfd2bd68447f977eedd7f9ab0c2a0a": {
+          "query_id": "01dfd2bd68447f977eedd7f9ab0c2a0a",
+          "query_identity": "01dfd2bd68447f977eedd7f9ab0c2a0a",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The `UsageError` class in the `click` library is implemented by several distinct classes including `BadParameter`, `NoSuchCommand`, `NoSuchOption`, `NoArgsIsHelpError`, `BadArgumentUsage`, and `BadOptionUsage`. This indicates that `UsageError` is part of a larger hierarchy of exceptions related to user input errors in command line interfaces.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:2eba0b1ace3f8d01af2527f9f80c8ccf\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:3baa22dbba6806d141ee09fd3375d666\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:032e52ffab5e37888ffb8197acaadc77\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:6790085cee8bbd05f4d02e857bff85c8\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:e0853e8b3a3282ddf35754cc6a24984c\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:e94536086e1cea6b8dee152eeabe6de9\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:f149367d018a5b98583fcab504afc2d4\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:f880a731fe71e79dbfb15fb04711e95a\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:a6469b30c72444bc5f4012343805b13c\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The `UsageError` class in the `click` library is implemented by several distinct classes including `BadParameter`, `NoSuchCommand`, `NoSuchOption`, `NoArgsIsHelpError`, `BadArgumentUsage`, and `BadOptionUsage`. This indicates that `UsageError` is part of a larger hierarchy of exceptions related to user input errors in command line interfaces.",
+            "claims": [
+              {
+                "subject": "codex:2eba0b1ace3f8d01af2527f9f80c8ccf",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:3baa22dbba6806d141ee09fd3375d666",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:032e52ffab5e37888ffb8197acaadc77",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:6790085cee8bbd05f4d02e857bff85c8",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:e0853e8b3a3282ddf35754cc6a24984c",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:e94536086e1cea6b8dee152eeabe6de9",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:f149367d018a5b98583fcab504afc2d4",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:f880a731fe71e79dbfb15fb04711e95a",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:a6469b30c72444bc5f4012343805b13c",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 6878,
+          "usage_prompt_tokens": 6278,
+          "usage_completion_tokens": 600,
+          "usage_total_tokens": 6878,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "85a627ede37531e848c9a0aa3ff39d41": {
+          "query_id": "85a627ede37531e848c9a0aa3ff39d41",
+          "query_identity": "85a627ede37531e848c9a0aa3ff39d41",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The query seeks to identify references to the entity 'BadParameter', which is a class in the Click library related to handling bad parameters in command-line interfaces. The result includes several references to the class and its attributes/methods.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:1f8502f52805c520886b125c83f3dc51\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:2eba0b1ace3f8d01af2527f9f80c8ccf\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:1f8502f52805c520886b125c83f3dc51\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:d45378c099a96936611055290c9579e9\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:424056d23597435220fe8d6af4dab9cd\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:2eba0b1ace3f8d01af2527f9f80c8ccf\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:76bef835ce8ff02b9962adda6105b498\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:2eba0b1ace3f8d01af2527f9f80c8ccf\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:2eba0b1ace3f8d01af2527f9f80c8ccf\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:56d344c9c98b683ce358f07ca66c85cf\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:76299304e15a7077d2be3dc8f453318e\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:d45378c099a96936611055290c9579e9\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The query seeks to identify references to the entity 'BadParameter', which is a class in the Click library related to handling bad parameters in command-line interfaces. The result includes several references to the class and its attributes/methods.",
+            "claims": [
+              {
+                "subject": "codex:1f8502f52805c520886b125c83f3dc51",
+                "predicate": "REFERENCES",
+                "object": "codex:2eba0b1ace3f8d01af2527f9f80c8ccf",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:1f8502f52805c520886b125c83f3dc51",
+                "predicate": "REFERENCES",
+                "object": "codex:d45378c099a96936611055290c9579e9",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:424056d23597435220fe8d6af4dab9cd",
+                "predicate": "REFERENCES",
+                "object": "codex:2eba0b1ace3f8d01af2527f9f80c8ccf",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:76bef835ce8ff02b9962adda6105b498",
+                "predicate": "REFERENCES",
+                "object": "codex:2eba0b1ace3f8d01af2527f9f80c8ccf",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc",
+                "predicate": "REFERENCES",
+                "object": "codex:2eba0b1ace3f8d01af2527f9f80c8ccf",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc",
+                "predicate": "REFERENCES",
+                "object": "codex:56d344c9c98b683ce358f07ca66c85cf",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc",
+                "predicate": "REFERENCES",
+                "object": "codex:76299304e15a7077d2be3dc8f453318e",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fb8f9d6f2af63cb6e23bfbb0dd0dc1fc",
+                "predicate": "REFERENCES",
+                "object": "codex:d45378c099a96936611055290c9579e9",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 6075,
+          "usage_prompt_tokens": 5401,
+          "usage_completion_tokens": 674,
+          "usage_total_tokens": 6075,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "76a630d1bc3bf36ee3bf1a26f539c1c6": {
+          "query_id": "76a630d1bc3bf36ee3bf1a26f539c1c6",
+          "query_identity": "76a630d1bc3bf36ee3bf1a26f539c1c6",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"There is no evidence found for the question regarding what implements zzz_nonexistent_click_symbol_xyz.\",\n  \"claims\": [\n    {\n      \"subject\": \"zzz_nonexistent_click_symbol_xyz\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"None\",\n      \"claim_type\": \"UNKNOWN\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "There is no evidence found for the question regarding what implements zzz_nonexistent_click_symbol_xyz.",
+            "claims": [
+              {
+                "subject": "zzz_nonexistent_click_symbol_xyz",
+                "predicate": "IMPLEMENTS",
+                "object": "None",
+                "claim_type": "UNKNOWN"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 951,
+          "usage_prompt_tokens": 878,
+          "usage_completion_tokens": 73,
+          "usage_total_tokens": 951,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    },
+    "flask": {
+      "run_id": "run:163b01a4bb885a059b62ac948808d1e0",
+      "corpus_version": "codex-canonical-v1",
+      "repository_id": "flask",
+      "repository_revision": "d318b683471101618febed18996405ad26462110",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "682a61d8216a6419f32e37e8e4f8d8ff": {
+          "query_id": "682a61d8216a6419f32e37e8e4f8d8ff",
+          "query_identity": "682a61d8216a6419f32e37e8e4f8d8ff",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"Scaffold implements several methods and has relationships with other components indicating how it interacts within its framework.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:Scaffold#add_url_rule()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:Scaffold#_check_setup_finished()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:Scaffold#template_folder.\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:Scaffold#jinja_loader()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:Scaffold#route().\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:Blueprint#add_url_rule()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:Scaffold#before_request().\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:Scaffold#after_request()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:Scaffold#has_static_folder().\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:Scaffold#static_url_path()\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "Scaffold implements several methods and has relationships with other components indicating how it interacts within its framework.",
+            "claims": [
+              {
+                "subject": "codex:Scaffold#add_url_rule()",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:Scaffold#_check_setup_finished()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:Scaffold#template_folder.",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:Scaffold#jinja_loader()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:Scaffold#route().",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:Blueprint#add_url_rule()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:Scaffold#before_request().",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:Scaffold#after_request()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:Scaffold#has_static_folder().",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:Scaffold#static_url_path()",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 13352,
+          "usage_prompt_tokens": 13064,
+          "usage_completion_tokens": 288,
+          "usage_total_tokens": 13352,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "aa213bbf365a3a101b6accf379db11e6": {
+          "query_id": "aa213bbf365a3a101b6accf379db11e6",
+          "query_identity": "aa213bbf365a3a101b6accf379db11e6",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The architecture of Flask consists of several components that interact to provide a lightweight, flexible web framework. Notably, it has a core class called Flask that manages the application context, routing, and basic configuration. Flask leverages modules for structure, allowing for various functionality like request handling, error handling, and templating. Additionally, Flask supports extensions to enhance its capabilities, enabling developers to customize their applications with ease.\",\n  \"claims\": [\n    {\n      \"subject\": \"Flask#\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"FlaskGroup#\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The architecture of Flask consists of several components that interact to provide a lightweight, flexible web framework. Notably, it has a core class called Flask that manages the application context, routing, and basic configuration. Flask leverages modules for structure, allowing for various functionality like request handling, error handling, and templating. Additionally, Flask supports extensions to enhance its capabilities, enabling developers to customize their applications with ease.",
+            "claims": [
+              {
+                "subject": "Flask#",
+                "predicate": "IMPLEMENTS",
+                "object": "FlaskGroup#",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 15988,
+          "usage_prompt_tokens": 15852,
+          "usage_completion_tokens": 136,
+          "usage_total_tokens": 15988,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "c531463cd6f3f764fb2121fad35f5e11": {
+          "query_id": "c531463cd6f3f764fb2121fad35f5e11",
+          "query_identity": "c531463cd6f3f764fb2121fad35f5e11",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The following claims represent entities that reference 'Blueprint'.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:888fb721079235437a7ada61c945d1a8\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:0c53b3ec3f9dcc495fbd8069b5580138\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:888fb721079235437a7ada61c945d1a8\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:6263d990cd6be0d98ec825b0ffa29209\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:888fb721079235437a7ada61c945d1a8\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:7a14852d2784381843b3c2d4bc0b589a\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The following claims represent entities that reference 'Blueprint'.",
+            "claims": [
+              {
+                "subject": "codex:888fb721079235437a7ada61c945d1a8",
+                "predicate": "REFERENCES",
+                "object": "codex:0c53b3ec3f9dcc495fbd8069b5580138",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:888fb721079235437a7ada61c945d1a8",
+                "predicate": "REFERENCES",
+                "object": "codex:6263d990cd6be0d98ec825b0ffa29209",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:888fb721079235437a7ada61c945d1a8",
+                "predicate": "REFERENCES",
+                "object": "codex:7a14852d2784381843b3c2d4bc0b589a",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 73999,
+          "usage_prompt_tokens": 73755,
+          "usage_completion_tokens": 244,
+          "usage_total_tokens": 73999,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "d3d135cb61a606e197053fd42537dcb5": {
+          "query_id": "d3d135cb61a606e197053fd42537dcb5",
+          "query_identity": "d3d135cb61a606e197053fd42537dcb5",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"No evidence found for the query regarding the implementation of 'zzz_nonexistent_flask_symbol_xyz'. This result indicates that there are no recognized relationships or derivatives from the existing data about this symbol.\",\n  \"claims\": [\n    {\n      \"subject\": \"zzz_nonexistent_flask_symbol_xyz\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"None\",\n      \"claim_type\": \"UNKNOWN\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "No evidence found for the query regarding the implementation of 'zzz_nonexistent_flask_symbol_xyz'. This result indicates that there are no recognized relationships or derivatives from the existing data about this symbol.",
+            "claims": [
+              {
+                "subject": "zzz_nonexistent_flask_symbol_xyz",
+                "predicate": "IMPLEMENTS",
+                "object": "None",
+                "claim_type": "UNKNOWN"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 961,
+          "usage_prompt_tokens": 868,
+          "usage_completion_tokens": 93,
+          "usage_total_tokens": 961,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    }
+  },
+  "evaluation_report": {
+    "generated_at": "2026-09-03T00:00:00Z",
+    "dataset_size": 13,
+    "corpus_version": "codex-canonical-v1",
+    "results": [
+      {
+        "metric": "PRECISION_AT_10",
+        "evaluable": true,
+        "value": 0.38461538461538464,
+        "sample_size": 13,
+        "reason": null
+      },
+      {
+        "metric": "RECALL_AT_10",
+        "evaluable": true,
+        "value": 0.5589078014184397,
+        "sample_size": 10,
+        "reason": null
+      },
+      {
+        "metric": "MRR",
+        "evaluable": true,
+        "value": 0.3910256410256411,
+        "sample_size": 13,
+        "reason": null
+      },
+      {
+        "metric": "FACTUAL_ACCURACY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "MISSING_TELEMETRY_DATA"
+      },
+      {
+        "metric": "CLAIM_VERIFICATION_ACCURACY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "INSUFFICIENT_SAMPLE"
+      },
+      {
+        "metric": "UNSUPPORTED_CLAIM_RATE",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      },
+      {
+        "metric": "ABSTENTION_PRECISION",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "INSUFFICIENT_SAMPLE"
+      },
+      {
+        "metric": "TOKEN_EFFICIENCY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      },
+      {
+        "metric": "ASSERTION_TRACEABILITY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      }
+    ]
+  }
+}
