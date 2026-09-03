@@ -1,0 +1,16 @@
+{
+  "041d8bc7ea77305808687ce2a77c7270": "negative:real-entity-no-real-relationship",
+  "17a2e4b8b5e6ee6dec33eba89d1dd73a": "2-hop, low-fan-out (contrast to Flask's high-fan-out 2-hop case)",
+  "1a05050152f2d32edf453ab72a163a4c": "adversarial:truncated-prefix (real substring, triggers a much broader match than intended)",
+  "224bbd1f859cb7bb705b169790d26405": "negative:plausible-but-false (a real class, involved in IMPLEMENTS as subject not object)",
+  "4573925524e0b5313886fbf293a875bc": "inheritance-chain (2-level: BadData<-BadSignature<-{BadHeader,BadTimeSignature})",
+  "59170b42be63b61943a1c667a9281f14": "ambiguity:same-method-name-across-classes (StringParamType/BoolParamType/FloatParamType...); ground truth is genuinely empty -- SCIP never captures an implicit repr()-triggered dunder call as a REFERENCES occurrence, so correct behavior here is abstention despite several real __repr__ methods existing",
+  "6893d703a51a00e114e10b069eb6e86b": "fan-out:high (73 substring-matched targets in a small repo)",
+  "7053c5a774012fc87bf8abe818563587": "negative:relationship-type-unsupported (SCIP-only repo, no DEPENDENCY capability)",
+  "8aa1b092e87546f39ac013185ac00a8d": "ambiguity:qualified (paired with the unqualified case above; qualifier narrows 4->1); ground truth is genuinely empty -- of the unqualified case's 3 real referencers, none happen to target specifically Blueprint's own add_url_rule (they reference sibling Scaffold/App variants instead), so correct behavior is abstention even though the qualifier itself resolved correctly to exactly 1 entity",
+  "8f43bd7e00898618409c0f4daa07cbfe": "fan-out:low",
+  "94a938e100afc594daa9c4414ce13589": "fan-out:medium (fresh reference point, distinct from v1's build_canonical_id/plan_query)",
+  "a21884c72d6a96645f57e109e30e9fc7": "conceptual/high-level (distinct target from v1's own Architecture-of-Flask case)",
+  "ca4331641f5609a1cf5694a96edc88cc": "adversarial:typo (one letter short of a real, high-fan-out real symbol)",
+  "d3f19c43b9af7465da440e27f053051d": "ambiguity:unqualified (4 real distinct methods share this bare name)"
+}

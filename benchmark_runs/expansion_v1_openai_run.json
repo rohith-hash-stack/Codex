@@ -1,0 +1,927 @@
+{
+  "corpus_version": "validation-expansion-v1",
+  "dimensions": {
+    "041d8bc7ea77305808687ce2a77c7270": "negative:real-entity-no-real-relationship",
+    "17a2e4b8b5e6ee6dec33eba89d1dd73a": "2-hop, low-fan-out (contrast to Flask's high-fan-out 2-hop case)",
+    "1a05050152f2d32edf453ab72a163a4c": "adversarial:truncated-prefix (real substring, triggers a much broader match than intended)",
+    "224bbd1f859cb7bb705b169790d26405": "negative:plausible-but-false (a real class, involved in IMPLEMENTS as subject not object)",
+    "4573925524e0b5313886fbf293a875bc": "inheritance-chain (2-level: BadData<-BadSignature<-{BadHeader,BadTimeSignature})",
+    "59170b42be63b61943a1c667a9281f14": "ambiguity:same-method-name-across-classes (StringParamType/BoolParamType/FloatParamType...); ground truth is genuinely empty -- SCIP never captures an implicit repr()-triggered dunder call as a REFERENCES occurrence, so correct behavior here is abstention despite several real __repr__ methods existing",
+    "6893d703a51a00e114e10b069eb6e86b": "fan-out:high (73 substring-matched targets in a small repo)",
+    "7053c5a774012fc87bf8abe818563587": "negative:relationship-type-unsupported (SCIP-only repo, no DEPENDENCY capability)",
+    "8aa1b092e87546f39ac013185ac00a8d": "ambiguity:qualified (paired with the unqualified case above; qualifier narrows 4->1); ground truth is genuinely empty -- of the unqualified case's 3 real referencers, none happen to target specifically Blueprint's own add_url_rule (they reference sibling Scaffold/App variants instead), so correct behavior is abstention even though the qualifier itself resolved correctly to exactly 1 entity",
+    "8f43bd7e00898618409c0f4daa07cbfe": "fan-out:low",
+    "94a938e100afc594daa9c4414ce13589": "fan-out:medium (fresh reference point, distinct from v1's build_canonical_id/plan_query)",
+    "a21884c72d6a96645f57e109e30e9fc7": "conceptual/high-level (distinct target from v1's own Architecture-of-Flask case)",
+    "ca4331641f5609a1cf5694a96edc88cc": "adversarial:typo (one letter short of a real, high-fan-out real symbol)",
+    "d3f19c43b9af7465da440e27f053051d": "ambiguity:unqualified (4 real distinct methods share this bare name)"
+  },
+  "records_by_repository": {
+    "codex": {
+      "run_id": "run:f881584d1a484cc7553f18152124c841",
+      "corpus_version": "validation-expansion-v1",
+      "repository_id": "codex",
+      "repository_revision": "b01755b1f8bb1f8243360414e1bc736301d399be",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "94a938e100afc594daa9c4414ce13589": {
+          "query_id": "94a938e100afc594daa9c4414ce13589",
+          "query_identity": "94a938e100afc594daa9c4414ce13589",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The function `resolve_targets` is called by multiple test functions, indicating its importance in the testing framework. The evidence collected shows a strong confidence in these relationships as each instance has a confidence level very close to 1.0.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:01af3ccf51ae851926fa203b9188fcb0\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:0a8859e6b4b744471469ec5f92a244cc\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:0b59d4570e7f874382633ceab9c31ae2\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:12f58491a72aceef69aa645a454999b5\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:15756b7f8f65f234777df30a34baf34b\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:1b0d7761525e74f003dca620c204d56c\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:1e5ea6b79df4477143bb773a015bff7d\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:2338d0a197530ef22b0491d3b8ff8035\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:27ff6429c848aad839111048328223a1\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:283b1fd24d66e4c548d5a760f8aa529e\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:296aa87a4ea14b65d5b398b6ba906d52\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:2e25e035043e2e102a86ed9a44fe640b\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:31aafd3a0ee09eac09b0d854c6a24a9d\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:3722fcef16517da13e6700eff0357b18\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:3a456a1d2db450b8912677618ff145c6\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:475ada4b5f1e8072f052ccfdece883f3\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:4c86d721fff9c7ea6eb2ee5dd60df7e3\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"codex:1d25dddf682ab206c9a989311cd5dc55\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The function `resolve_targets` is called by multiple test functions, indicating its importance in the testing framework. The evidence collected shows a strong confidence in these relationships as each instance has a confidence level very close to 1.0.",
+            "claims": [
+              {
+                "subject": "codex:01af3ccf51ae851926fa203b9188fcb0",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:0a8859e6b4b744471469ec5f92a244cc",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:0b59d4570e7f874382633ceab9c31ae2",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:12f58491a72aceef69aa645a454999b5",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:15756b7f8f65f234777df30a34baf34b",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:1b0d7761525e74f003dca620c204d56c",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:1e5ea6b79df4477143bb773a015bff7d",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:2338d0a197530ef22b0491d3b8ff8035",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:27ff6429c848aad839111048328223a1",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:283b1fd24d66e4c548d5a760f8aa529e",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:296aa87a4ea14b65d5b398b6ba906d52",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:2e25e035043e2e102a86ed9a44fe640b",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:31aafd3a0ee09eac09b0d854c6a24a9d",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:3722fcef16517da13e6700eff0357b18",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:3a456a1d2db450b8912677618ff145c6",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:475ada4b5f1e8072f052ccfdece883f3",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:4c86d721fff9c7ea6eb2ee5dd60df7e3",
+                "predicate": "CALLS",
+                "object": "codex:1d25dddf682ab206c9a989311cd5dc55",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 35746,
+          "usage_prompt_tokens": 34436,
+          "usage_completion_tokens": 1310,
+          "usage_total_tokens": 35746,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "ca4331641f5609a1cf5694a96edc88cc": {
+          "query_id": "ca4331641f5609a1cf5694a96edc88cc",
+          "query_identity": "ca4331641f5609a1cf5694a96edc88cc",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"No calls to 'buld_canonical_id' were found in the provided evidence.\",\n  \"claims\": [\n    {\n      \"subject\": \"buld_canonical_id\",\n      \"predicate\": \"CALLS\",\n      \"object\": \"None\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "No calls to 'buld_canonical_id' were found in the provided evidence.",
+            "claims": [
+              {
+                "subject": "buld_canonical_id",
+                "predicate": "CALLS",
+                "object": "None",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "codex:b01755b1f8bb1f8243360414e1bc736301d399be:ast_calls=stdlib-ast,pyproject_deps=stdlib-tomllib",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 970,
+          "usage_prompt_tokens": 900,
+          "usage_completion_tokens": 70,
+          "usage_total_tokens": 970,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    },
+    "click": {
+      "run_id": "run:23c9f435061e8dfd169bd54903ae7ceb",
+      "corpus_version": "validation-expansion-v1",
+      "repository_id": "click",
+      "repository_revision": "36baa15ff831b939a22bc527cd76ce653ef6f66d",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "59170b42be63b61943a1c667a9281f14": {
+          "query_id": "59170b42be63b61943a1c667a9281f14",
+          "query_identity": "59170b42be63b61943a1c667a9281f14",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The __repr__ method is referenced by multiple entities in the codebase, including methods from various classes in the click library. There are 19 distinct entities that contain the __repr__ method, indicating different usages across the library.\",\n  \"claims\": [\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"DateTime#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"UnprocessedParamType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Choice#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"StringParamType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"BoolParamType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"FloatParamType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"_NumberRangeBase#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"UUIDParameterType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"IntParamType#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"_KeepOpenFile#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"_LazyFile#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Sentinel#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Result#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Command#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"EchoingStdin#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Parameter#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"ConsoleStream#__repr__()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Repo#__repr__()\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"_AtomicFile#__repr__()\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The __repr__ method is referenced by multiple entities in the codebase, including methods from various classes in the click library. There are 19 distinct entities that contain the __repr__ method, indicating different usages across the library.",
+            "claims": [
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "DateTime#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "UnprocessedParamType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "Choice#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "StringParamType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "BoolParamType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "FloatParamType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "_NumberRangeBase#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "UUIDParameterType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "IntParamType#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "_KeepOpenFile#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "_LazyFile#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "Sentinel#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "Result#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "Command#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "EchoingStdin#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "Parameter#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "ConsoleStream#__repr__()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Repo#__repr__()",
+                "predicate": "REFERENCES",
+                "object": "_AtomicFile#__repr__()",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 5442,
+          "usage_prompt_tokens": 4600,
+          "usage_completion_tokens": 842,
+          "usage_total_tokens": 5442,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "1a05050152f2d32edf453ab72a163a4c": {
+          "query_id": "1a05050152f2d32edf453ab72a163a4c",
+          "query_identity": "1a05050152f2d32edf453ab72a163a4c",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The evidence indicates that various methods within the Parameter class and other classes implement the queried interface related to 'Param'. Specifically, methods that execute within the context of handling parameters and their corresponding types demonstrate the implementation of the desired functionality.\",\n  \"claims\": [\n    {\n      \"subject\": \"Parameter#resolve_envvar_value()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"Param\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Parameter#value_from_envvar()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"Param\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Parameter#process_value()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"Param\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Parameter#get_default()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"Param\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"Parameter#make_metavar()\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"Param\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The evidence indicates that various methods within the Parameter class and other classes implement the queried interface related to 'Param'. Specifically, methods that execute within the context of handling parameters and their corresponding types demonstrate the implementation of the desired functionality.",
+            "claims": [
+              {
+                "subject": "Parameter#resolve_envvar_value()",
+                "predicate": "IMPLEMENTS",
+                "object": "Param",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Parameter#value_from_envvar()",
+                "predicate": "IMPLEMENTS",
+                "object": "Param",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Parameter#process_value()",
+                "predicate": "IMPLEMENTS",
+                "object": "Param",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Parameter#get_default()",
+                "predicate": "IMPLEMENTS",
+                "object": "Param",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "Parameter#make_metavar()",
+                "predicate": "IMPLEMENTS",
+                "object": "Param",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "click:36baa15ff831b939a22bc527cd76ce653ef6f66d:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 33531,
+          "usage_prompt_tokens": 33277,
+          "usage_completion_tokens": 254,
+          "usage_total_tokens": 33531,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    },
+    "flask": {
+      "run_id": "run:a632cc1171d7f1e83b2c912a39df7179",
+      "corpus_version": "validation-expansion-v1",
+      "repository_id": "flask",
+      "repository_revision": "d318b683471101618febed18996405ad26462110",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "d3f19c43b9af7465da440e27f053051d": {
+          "query_id": "d3f19c43b9af7465da440e27f053051d",
+          "query_identity": "d3f19c43b9af7465da440e27f053051d",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The method `add_url_rule` is referenced by several entities in the Flask repository, including the Blueprint, App, and Scaffold classes, indicating its core functionality in routing within Flask applications.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:7ccfbd1bec33f6a4d480ebe0c7fa3976\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:ed2db1bedcba5773155e6957e6a28765\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:888fb721079235437a7ada61c945d1a8\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:5113fb4a563fc105efc9778bd74a9836\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:888fb721079235437a7ada61c945d1a8\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:ed2db1bedcba5773155e6957e6a28765\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a681da6a80a56cb1221d6ccc62bc9f51\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:58cf9a1effcf7c56d612cc6ecd2b1df3\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The method `add_url_rule` is referenced by several entities in the Flask repository, including the Blueprint, App, and Scaffold classes, indicating its core functionality in routing within Flask applications.",
+            "claims": [
+              {
+                "subject": "codex:7ccfbd1bec33f6a4d480ebe0c7fa3976",
+                "predicate": "REFERENCES",
+                "object": "codex:ed2db1bedcba5773155e6957e6a28765",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:888fb721079235437a7ada61c945d1a8",
+                "predicate": "REFERENCES",
+                "object": "codex:5113fb4a563fc105efc9778bd74a9836",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:888fb721079235437a7ada61c945d1a8",
+                "predicate": "REFERENCES",
+                "object": "codex:ed2db1bedcba5773155e6957e6a28765",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a681da6a80a56cb1221d6ccc62bc9f51",
+                "predicate": "REFERENCES",
+                "object": "codex:58cf9a1effcf7c56d612cc6ecd2b1df3",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 3876,
+          "usage_prompt_tokens": 3529,
+          "usage_completion_tokens": 347,
+          "usage_total_tokens": 3876,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "8aa1b092e87546f39ac013185ac00a8d": {
+          "query_id": "8aa1b092e87546f39ac013185ac00a8d",
+          "query_identity": "8aa1b092e87546f39ac013185ac00a8d",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The method `Blueprint.add_url_rule()` is referenced in the Flask repository, specifically in the file `src/flask/sansio/blueprints.py` at line 412.\",\n  \"claims\": [\n    {\n      \"subject\": \"Blueprint.add_url_rule\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"Blueprint#add_url_rule()\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The method `Blueprint.add_url_rule()` is referenced in the Flask repository, specifically in the file `src/flask/sansio/blueprints.py` at line 412.",
+            "claims": [
+              {
+                "subject": "Blueprint.add_url_rule",
+                "predicate": "REFERENCES",
+                "object": "Blueprint#add_url_rule()",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 1170,
+          "usage_prompt_tokens": 1077,
+          "usage_completion_tokens": 93,
+          "usage_total_tokens": 1170,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "224bbd1f859cb7bb705b169790d26405": {
+          "query_id": "224bbd1f859cb7bb705b169790d26405",
+          "query_identity": "224bbd1f859cb7bb705b169790d26405",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"claims\": [\n    {\n      \"subject\": \"ConfigAttribute\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"ConfigAttribute#get_converter.\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"ConfigAttribute\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"ConfigAttribute#__set__().\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"ConfigAttribute\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"ConfigAttribute#__init__().\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"ConfigAttribute\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"ConfigAttribute#__get__().\",\n      \"claim_type\": \"FACT\"\n    }\n  ],\n  \"explanation\": \"The ConfigAttribute class implements several methods including get_converter, __set__, __init__, and __get__.\"\n}",
+          "structured_answer": {
+            "explanation": "The ConfigAttribute class implements several methods including get_converter, __set__, __init__, and __get__.",
+            "claims": [
+              {
+                "subject": "ConfigAttribute",
+                "predicate": "IMPLEMENTS",
+                "object": "ConfigAttribute#get_converter.",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "ConfigAttribute",
+                "predicate": "IMPLEMENTS",
+                "object": "ConfigAttribute#__set__().",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "ConfigAttribute",
+                "predicate": "IMPLEMENTS",
+                "object": "ConfigAttribute#__init__().",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "ConfigAttribute",
+                "predicate": "IMPLEMENTS",
+                "object": "ConfigAttribute#__get__().",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 2163,
+          "usage_prompt_tokens": 1968,
+          "usage_completion_tokens": 195,
+          "usage_total_tokens": 2163,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "a21884c72d6a96645f57e109e30e9fc7": {
+          "query_id": "a21884c72d6a96645f57e109e30e9fc7",
+          "query_identity": "a21884c72d6a96645f57e109e30e9fc7",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The architecture of Blueprint in Flask involves the use of classes and methods to implement application components in a modular fashion. Blueprints allow the application to be divided into smaller, manageable pieces, making development and testing easier.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:85c5789def657461ff385aba3009fb26\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:b53335906fc19fc2da5b59a5fe3616c0\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The architecture of Blueprint in Flask involves the use of classes and methods to implement application components in a modular fashion. Blueprints allow the application to be divided into smaller, manageable pieces, making development and testing easier.",
+            "claims": [
+              {
+                "subject": "codex:85c5789def657461ff385aba3009fb26",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:b53335906fc19fc2da5b59a5fe3616c0",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "flask:d318b683471101618febed18996405ad26462110:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 17072,
+          "usage_prompt_tokens": 16945,
+          "usage_completion_tokens": 127,
+          "usage_total_tokens": 17072,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    },
+    "itsdangerous": {
+      "run_id": "run:f6fc05b3fb21b0c335aead6d8bcdaaab",
+      "corpus_version": "validation-expansion-v1",
+      "repository_id": "itsdangerous",
+      "repository_revision": "672971d66a2ef9f85151e53283113f33d642dabd",
+      "prompt_template_version": "harness-request-v1",
+      "context_construction_version": "harness-context-v1",
+      "model_id": "gpt-4o-mini",
+      "provider": "openai",
+      "generated_at": "2026-09-03T00:00:00Z",
+      "results": {
+        "8f43bd7e00898618409c0f4daa07cbfe": {
+          "query_id": "8f43bd7e00898618409c0f4daa07cbfe",
+          "query_identity": "8f43bd7e00898618409c0f4daa07cbfe",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The classes BadSignature and BadPayload implement the BadData class in the itsdangerous library.\",\n  \"claims\": [\n    {\n      \"subject\": \"BadSignature#\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"BadData#\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"BadPayload#\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"BadData#\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The classes BadSignature and BadPayload implement the BadData class in the itsdangerous library.",
+            "claims": [
+              {
+                "subject": "BadSignature#",
+                "predicate": "IMPLEMENTS",
+                "object": "BadData#",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "BadPayload#",
+                "predicate": "IMPLEMENTS",
+                "object": "BadData#",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 3053,
+          "usage_prompt_tokens": 2943,
+          "usage_completion_tokens": 110,
+          "usage_total_tokens": 3053,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "4573925524e0b5313886fbf293a875bc": {
+          "query_id": "4573925524e0b5313886fbf293a875bc",
+          "query_identity": "4573925524e0b5313886fbf293a875bc",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The class BadSignature is implemented by BadHeader and BadTimeSignature, indicating that it acts as an abstract representation for handling different types of signature errors in the itsdangerous package.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:1ddf8a73d0e3458a0021484cf03becf6\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:18a64bbe64dc1622db32196ffc11e98e\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:fb02dfb0487211681ce837c3644b64f6\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:18a64bbe64dc1622db32196ffc11e98e\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The class BadSignature is implemented by BadHeader and BadTimeSignature, indicating that it acts as an abstract representation for handling different types of signature errors in the itsdangerous package.",
+            "claims": [
+              {
+                "subject": "codex:1ddf8a73d0e3458a0021484cf03becf6",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:18a64bbe64dc1622db32196ffc11e98e",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:fb02dfb0487211681ce837c3644b64f6",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:18a64bbe64dc1622db32196ffc11e98e",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 2978,
+          "usage_prompt_tokens": 2782,
+          "usage_completion_tokens": 196,
+          "usage_total_tokens": 2978,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "6893d703a51a00e114e10b069eb6e86b": {
+          "query_id": "6893d703a51a00e114e10b069eb6e86b",
+          "query_identity": "6893d703a51a00e114e10b069eb6e86b",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The Serializer class is implemented by multiple classes in the itsdangerous library, including TestSerializer, TestURLSafeSerializer, TestTimedSerializer, and others, which create various types of serializers.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:7609683e4ed04091781acdb6e49d75dd\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:de4d7dff5aeebbcfbae6ac6a5217e3a1\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:81b09e415fe3edc40aee9dc158043a00\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:514e08da1ac559943d08d39870ba4581\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:890dbfd9925f5dee6a00a600c403cd67\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:db871b2b4f67ae06f952212a9cc70967\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:8b8da051ffee28b40c41858ff0796a7b\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:45e4d36c38a76b75a5f63b55af23d279\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:94d98f141b24a3678a73589c93cf57d9\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:9ea701b5ecf7342a2916f4c9fd7c5795\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:a15272f0b5099d969535894bc9246332\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:db871b2b4f67ae06f952212a9cc70967\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:aa107b1b428ee0abb16b9e7b304c2f38\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:6c47d9a39b4eff5148486d9b97b9a347\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:b372038b93cf4e9a39768fea907da45d\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:db871b2b4f67ae06f952212a9cc70967\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:d370848cc00aed6f546b725275a09294\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:8dd8fb70682bdec7b146972ed0c4f9fa\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The Serializer class is implemented by multiple classes in the itsdangerous library, including TestSerializer, TestURLSafeSerializer, TestTimedSerializer, and others, which create various types of serializers.",
+            "claims": [
+              {
+                "subject": "codex:7609683e4ed04091781acdb6e49d75dd",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:de4d7dff5aeebbcfbae6ac6a5217e3a1",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:81b09e415fe3edc40aee9dc158043a00",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:514e08da1ac559943d08d39870ba4581",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:890dbfd9925f5dee6a00a600c403cd67",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:db871b2b4f67ae06f952212a9cc70967",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:8b8da051ffee28b40c41858ff0796a7b",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:45e4d36c38a76b75a5f63b55af23d279",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:94d98f141b24a3678a73589c93cf57d9",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:9ea701b5ecf7342a2916f4c9fd7c5795",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:a15272f0b5099d969535894bc9246332",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:db871b2b4f67ae06f952212a9cc70967",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:aa107b1b428ee0abb16b9e7b304c2f38",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:6c47d9a39b4eff5148486d9b97b9a347",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:b372038b93cf4e9a39768fea907da45d",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:db871b2b4f67ae06f952212a9cc70967",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:d370848cc00aed6f546b725275a09294",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:8dd8fb70682bdec7b146972ed0c4f9fa",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 15021,
+          "usage_prompt_tokens": 14298,
+          "usage_completion_tokens": 723,
+          "usage_total_tokens": 15021,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "7053c5a774012fc87bf8abe818563587": {
+          "query_id": "7053c5a774012fc87bf8abe818563587",
+          "query_identity": "7053c5a774012fc87bf8abe818563587",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The question regarding itsdangerous dependencies resulted in ambiguous results due to multiple entities matching the query.\",\n  \"claims\": [\n    {\n      \"subject\": \"itsdangerous\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"test_url_safe.py\",\n      \"claim_type\": \"UNKNOWN\"\n    },\n    {\n      \"subject\": \"itsdangerous\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"test_serializer.py\",\n      \"claim_type\": \"UNKNOWN\"\n    },\n    {\n      \"subject\": \"itsdangerous\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"test_signer.py\",\n      \"claim_type\": \"UNKNOWN\"\n    },\n    {\n      \"subject\": \"itsdangerous\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"test_encoding.py\",\n      \"claim_type\": \"UNKNOWN\"\n    },\n    {\n      \"subject\": \"itsdangerous\",\n      \"predicate\": \"DEPENDS_ON\",\n      \"object\": \"test_timed.py\",\n      \"claim_type\": \"UNKNOWN\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The question regarding itsdangerous dependencies resulted in ambiguous results due to multiple entities matching the query.",
+            "claims": [
+              {
+                "subject": "itsdangerous",
+                "predicate": "DEPENDS_ON",
+                "object": "test_url_safe.py",
+                "claim_type": "UNKNOWN"
+              },
+              {
+                "subject": "itsdangerous",
+                "predicate": "DEPENDS_ON",
+                "object": "test_serializer.py",
+                "claim_type": "UNKNOWN"
+              },
+              {
+                "subject": "itsdangerous",
+                "predicate": "DEPENDS_ON",
+                "object": "test_signer.py",
+                "claim_type": "UNKNOWN"
+              },
+              {
+                "subject": "itsdangerous",
+                "predicate": "DEPENDS_ON",
+                "object": "test_encoding.py",
+                "claim_type": "UNKNOWN"
+              },
+              {
+                "subject": "itsdangerous",
+                "predicate": "DEPENDS_ON",
+                "object": "test_timed.py",
+                "claim_type": "UNKNOWN"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 5776,
+          "usage_prompt_tokens": 5544,
+          "usage_completion_tokens": 232,
+          "usage_total_tokens": 5776,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "041d8bc7ea77305808687ce2a77c7270": {
+          "query_id": "041d8bc7ea77305808687ce2a77c7270",
+          "query_identity": "041d8bc7ea77305808687ce2a77c7270",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The NoneAlgorithm class implements the get_signature method. However, there are two distinct entities that match this query, leading to ambiguity in the answer.\",\n  \"claims\": [\n    {\n      \"subject\": \"NoneAlgorithm#\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"get_signature()\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"SigningAlgorithm#\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"get_signature()\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The NoneAlgorithm class implements the get_signature method. However, there are two distinct entities that match this query, leading to ambiguity in the answer.",
+            "claims": [
+              {
+                "subject": "NoneAlgorithm#",
+                "predicate": "IMPLEMENTS",
+                "object": "get_signature()",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "SigningAlgorithm#",
+                "predicate": "IMPLEMENTS",
+                "object": "get_signature()",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 1792,
+          "usage_prompt_tokens": 1672,
+          "usage_completion_tokens": 120,
+          "usage_total_tokens": 1792,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        },
+        "17a2e4b8b5e6ee6dec33eba89d1dd73a": {
+          "query_id": "17a2e4b8b5e6ee6dec33eba89d1dd73a",
+          "query_identity": "17a2e4b8b5e6ee6dec33eba89d1dd73a",
+          "generation_status": "OK",
+          "raw_model_output": "{\n  \"explanation\": \"The architecture of the SigningAlgorithm involves several classes and methods that implement different signing mechanisms, including HMAC and None algorithms. The methods include get_signature and verify_signature, along with various attributes that pertain to cryptographic operations.\",\n  \"claims\": [\n    {\n      \"subject\": \"codex:3fac5eb72ad28f39b7573fa19273f339\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:f2f79eaae317aed147a1e6fb73a1016e\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:4eab4fa0dfaf64177f44876d28c3a047\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:5e96e71eed9b91193bf6260ebecdebea\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:555ebf75e10dc9e76872652b81ef39d9\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:3fac5eb72ad28f39b7573fa19273f339\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:555ebf75e10dc9e76872652b81ef39d9\",\n      \"predicate\": \"REFERENCES\",\n      \"object\": \"codex:717b3c930365c4f1ab9737ca904a956d\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:717b3c930365c4f1ab9737ca904a956d\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:f2f79eaae317aed147a1e6fb73a1016e\",\n      \"claim_type\": \"FACT\"\n    },\n    {\n      \"subject\": \"codex:c6bd81adb9dec2f65a7cd1334c8e89da\",\n      \"predicate\": \"IMPLEMENTS\",\n      \"object\": \"codex:5e96e71eed9b91193bf6260ebecdebea\",\n      \"claim_type\": \"FACT\"\n    }\n  ]\n}",
+          "structured_answer": {
+            "explanation": "The architecture of the SigningAlgorithm involves several classes and methods that implement different signing mechanisms, including HMAC and None algorithms. The methods include get_signature and verify_signature, along with various attributes that pertain to cryptographic operations.",
+            "claims": [
+              {
+                "subject": "codex:3fac5eb72ad28f39b7573fa19273f339",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:f2f79eaae317aed147a1e6fb73a1016e",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:4eab4fa0dfaf64177f44876d28c3a047",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:5e96e71eed9b91193bf6260ebecdebea",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:555ebf75e10dc9e76872652b81ef39d9",
+                "predicate": "REFERENCES",
+                "object": "codex:3fac5eb72ad28f39b7573fa19273f339",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:555ebf75e10dc9e76872652b81ef39d9",
+                "predicate": "REFERENCES",
+                "object": "codex:717b3c930365c4f1ab9737ca904a956d",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:717b3c930365c4f1ab9737ca904a956d",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:f2f79eaae317aed147a1e6fb73a1016e",
+                "claim_type": "FACT"
+              },
+              {
+                "subject": "codex:c6bd81adb9dec2f65a7cd1334c8e89da",
+                "predicate": "IMPLEMENTS",
+                "object": "codex:5e96e71eed9b91193bf6260ebecdebea",
+                "claim_type": "FACT"
+              }
+            ]
+          },
+          "detail": null,
+          "error": null,
+          "retrieval_context_version": "itsdangerous:672971d66a2ef9f85151e53283113f33d642dabd:scip=scip-python@0.6.6",
+          "token_budget": 4000,
+          "latency_budget_ms": 5000,
+          "served_model": "gpt-4o-mini-2024-07-18",
+          "llm_tokens": 27787,
+          "usage_prompt_tokens": 27285,
+          "usage_completion_tokens": 502,
+          "usage_total_tokens": 27787,
+          "latency_ms": null,
+          "finish_reason": "stop"
+        }
+      }
+    }
+  },
+  "evaluation_report": {
+    "generated_at": "2026-09-03T00:00:00Z",
+    "dataset_size": 14,
+    "corpus_version": "validation-expansion-v1",
+    "results": [
+      {
+        "metric": "PRECISION_AT_10",
+        "evaluable": true,
+        "value": 0.19285714285714284,
+        "sample_size": 14,
+        "reason": null
+      },
+      {
+        "metric": "RECALL_AT_10",
+        "evaluable": true,
+        "value": 0.546532890524968,
+        "sample_size": 8,
+        "reason": null
+      },
+      {
+        "metric": "MRR",
+        "evaluable": true,
+        "value": 0.28809523809523807,
+        "sample_size": 14,
+        "reason": null
+      },
+      {
+        "metric": "FACTUAL_ACCURACY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "MISSING_TELEMETRY_DATA"
+      },
+      {
+        "metric": "CLAIM_VERIFICATION_ACCURACY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "INSUFFICIENT_SAMPLE"
+      },
+      {
+        "metric": "UNSUPPORTED_CLAIM_RATE",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      },
+      {
+        "metric": "ABSTENTION_PRECISION",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "INSUFFICIENT_SAMPLE"
+      },
+      {
+        "metric": "TOKEN_EFFICIENCY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      },
+      {
+        "metric": "ASSERTION_TRACEABILITY",
+        "evaluable": false,
+        "value": null,
+        "sample_size": 0,
+        "reason": "UNDEFINED_FORMULA"
+      }
+    ]
+  }
+}
