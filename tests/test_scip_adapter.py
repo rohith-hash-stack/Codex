@@ -3831,3 +3831,505 @@ def test_fnd2_external_unresolved_symbols_unaffected(tmp_path: Path) -> None:
     assert len(index_matches) == 2
     assert len({e.canonical_id for e in index_matches}) == 2
     assert not any(e.qualified_name.endswith("call().") for e in normalized.entities)
+
+
+# ---------------------------------------------------------------------------
+# FND-3 fix: Definition-occurrence multiplicity (not SymbolInformation
+# multiplicity) gates cross-scope identity disambiguation
+# ---------------------------------------------------------------------------
+#
+# FND-3's root cause, confirmed via direct inspection of scip-python's own
+# indexer source (`packages/pyright-scip/src/treeVisitor.ts`, research
+# only -- see `_nested_symbol_disambiguation`'s own docstring): scip-python
+# does not emit `SymbolInformation` uniformly once-per-declaration. Function
+# (`visitFunction`) and class (`emitDeclaration`'s `ParseNodeType.Class`
+# branch) declarations push `SymbolInformation` unconditionally, once per
+# visited node -- so their `SymbolInformation` count naturally tracks their
+# Definition-occurrence count. But a plain name/attribute declaration
+# (`emitDeclaration`'s generic branch -- which is what handles an instance
+# attribute like `self.title = ...`, since the attribute name is visited as
+# a `NameNode` under a `MemberAccessNode`) instead calls
+# `emitSymbolInformationOnce`, an explicit, document-wide dedup-by-
+# descriptor-string guard ("Only emit symbol info once"). A `.`-suffix
+# instance-attribute descriptor genuinely redefined across 2+ distinct real
+# local scopes can therefore carry exactly **one** `SymbolInformation` entry
+# despite 2+ real, differently-scoped Definition-role Occurrences.
+#
+# `_nested_symbol_disambiguation`'s original gate (`symbol_info_counts >= 2
+# and len(occs) >= 2`) silently skipped every such symbol -- it never even
+# attempted cross-scope resolution, so genuinely distinct real entities
+# collapsed to one canonical entity. The fix drops the `SymbolInformation`
+# clause entirely: only Definition-occurrence multiplicity (`len(occs) >=
+# 2`) triggers an attempt at disambiguation; whether that attempt actually
+# finds 2+ *distinct* real scopes (worth splitting) or exactly 1 shared real
+# scope (must stay merged, the ordinary GAP-13/14 case) is decided
+# afterward, by the SAME unchanged `_build_scope_forest`/
+# `_container_family_for` family-resolution machinery FND-1/FND-2 already
+# validated -- this fix widens what's allowed to *reach* that machinery,
+# it does not change what the machinery itself decides.
+#
+# Every fixture below writes a real, matching Python source file to
+# `tmp_path` (not just synthetic `.scip` occurrences), following the
+# established convention, so the true-indentation/scope-opening read paths
+# are actually exercised.
+
+
+def test_fnd3_symbolinfo_one_definition_occurrences_multiple_distinct_scopes(
+    tmp_path: Path,
+) -> None:
+    """(1) FND-3's own flagship reproduction, mirrored from the real click
+    `tests/test_context.py` `Foo#title.` case: a local class `Foo`,
+    redefined separately inside three different top-level test functions,
+    each assigning `self.title = "default"` in its own `__init__`. Exactly
+    ONE `SymbolInformation` entry is emitted for `Foo#title.` (matching
+    scip-python's own confirmed `emitSymbolInformationOnce` dedup-by-
+    descriptor-string behavior for attribute declarations) despite THREE
+    real, differently-scoped Definition-role Occurrences. Before this fix,
+    `symbol_info_counts.get(symbol, 0) <= 1` was true (1 <= 1), so this
+    symbol never reached scope disambiguation at all and all three real,
+    distinct `title` attributes collapsed into one canonical entity. After
+    the fix: three distinct entities, one per distinct real `Foo` class."""
+    source = (
+        "def test_a():\n"
+        "    class Foo:\n"
+        "        def __init__(self):\n"
+        '            self.title = "default"\n'
+        "\n"
+        "\n"
+        "def test_b():\n"
+        "    class Foo:\n"
+        "        def __init__(self):\n"
+        '            self.title = "default"\n'
+        "\n"
+        "\n"
+        "def test_c():\n"
+        "    class Foo:\n"
+        "        def __init__(self):\n"
+        '            self.title = "default"\n'
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    test_a = "scip-python python testrepo rev1 `pkg.a`/test_a()."
+    test_b = "scip-python python testrepo rev1 `pkg.a`/test_b()."
+    test_c = "scip-python python testrepo rev1 `pkg.a`/test_c()."
+    foo = "scip-python python testrepo rev1 `pkg.a`/Foo#"
+    init = "scip-python python testrepo rev1 `pkg.a`/Foo#__init__()."
+    title = "scip-python python testrepo rev1 `pkg.a`/Foo#title."
+
+    occs = (
+        occurrence(test_a, roles=1, range_=(0, 4, 10)),
+        occurrence(foo, roles=1, range_=(1, 10, 13)),
+        occurrence(init, roles=1, range_=(2, 12, 20)),
+        occurrence(title, roles=1, range_=(3, 17, 22)),
+        occurrence(test_b, roles=1, range_=(6, 4, 10)),
+        occurrence(foo, roles=1, range_=(7, 10, 13)),
+        occurrence(init, roles=1, range_=(8, 12, 20)),
+        occurrence(title, roles=1, range_=(9, 17, 22)),
+        occurrence(test_c, roles=1, range_=(12, 4, 10)),
+        occurrence(foo, roles=1, range_=(13, 10, 13)),
+        occurrence(init, roles=1, range_=(14, 12, 20)),
+        occurrence(title, roles=1, range_=(15, 17, 22)),
+    )
+    sym_infos = (
+        symbol_information(test_a, kind=0),
+        symbol_information(foo, kind=7),
+        symbol_information(init, kind=0),
+        # Exactly ONE SymbolInformation for `title`, despite 3 real
+        # Definition occurrences -- this is FND-3's exact confirmed
+        # real-data shape, not a simplification.
+        symbol_information(title, kind=0),
+        symbol_information(test_b, kind=0),
+        symbol_information(foo, kind=7),
+        symbol_information(init, kind=0),
+        symbol_information(test_c, kind=0),
+        symbol_information(foo, kind=7),
+        symbol_information(init, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    title_matches = [e for e in normalized.entities if e.qualified_name.endswith("title.")]
+    assert len(title_matches) == 3
+    assert len({e.canonical_id for e in title_matches}) == 3
+    assert len({e.qualified_name for e in title_matches}) == 3
+    for e in title_matches:
+        assert "scip:nested-scope-disambiguated" in e.roles
+    start_lines = sorted(
+        e.source_location.start_line for e in title_matches if e.source_location is not None
+    )
+    assert start_lines == [3, 9, 15]
+
+    foo_matches = [e for e in normalized.entities if e.qualified_name.endswith("Foo#")]
+    assert len(foo_matches) == 3
+    assert len({e.canonical_id for e in foo_matches}) == 3
+
+
+def test_fnd3_symbolinfo_one_definition_occurrences_same_scope_converges(
+    tmp_path: Path,
+) -> None:
+    """(2) The critical guard against the fix over-correcting: a symbol
+    with exactly ONE `SymbolInformation` entry and 2+ real Definition-role
+    Occurrences, where every occurrence resolves to the SAME true real
+    scope (two `self.title = ...` assignments inside one shared
+    `__init__`), must still converge to exactly ONE canonical entity, not
+    split into two. Definition-occurrence multiplicity alone must never be
+    read as entity count -- only genuinely distinct resolved scopes may
+    produce distinct entities, and this fixture's own `_build_scope_forest`
+    resolution puts both occurrences in the identical family (the single
+    `Foo#__init__()` scope), so `_nested_symbol_disambiguation`'s own
+    internal `distinct_real_scopes` check declines to split it, exactly as
+    for any other single-scope multi-occurrence symbol."""
+    source = (
+        "def test_a():\n"
+        "    class Foo:\n"
+        "        def __init__(self):\n"
+        '            self.title = "default"\n'
+        '            self.title = "overridden"\n'
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    test_a = "scip-python python testrepo rev1 `pkg.a`/test_a()."
+    foo = "scip-python python testrepo rev1 `pkg.a`/Foo#"
+    init = "scip-python python testrepo rev1 `pkg.a`/Foo#__init__()."
+    title = "scip-python python testrepo rev1 `pkg.a`/Foo#title."
+
+    occs = (
+        occurrence(test_a, roles=1, range_=(0, 4, 10)),
+        occurrence(foo, roles=1, range_=(1, 10, 13)),
+        occurrence(init, roles=1, range_=(2, 12, 20)),
+        occurrence(title, roles=1, range_=(3, 17, 22)),
+        occurrence(title, roles=1, range_=(4, 17, 22)),
+    )
+    sym_infos = (
+        symbol_information(test_a, kind=0),
+        symbol_information(foo, kind=7),
+        symbol_information(init, kind=0),
+        # Exactly ONE SymbolInformation, matching FND-3's real shape --
+        # but here BOTH Definition occurrences genuinely share one scope.
+        symbol_information(title, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    title_matches = [e for e in normalized.entities if e.qualified_name.endswith("title.")]
+    assert len(title_matches) == 1
+    assert title_matches[0].qualified_name == "`pkg.a`/Foo#title."
+
+
+def test_fnd3_class_level_attribute_multiple_distinct_scopes(tmp_path: Path) -> None:
+    """(10) Class-level (not instance) attributes must also disambiguate
+    correctly when genuinely redefined across distinct real scopes and
+    carrying only one `SymbolInformation` entry -- the fix's own docstring
+    claims the mechanism is now suffix-shape-agnostic; this is the direct
+    check for a class attribute rather than an instance attribute."""
+    source = (
+        "def make_a():\n"
+        "    class Config:\n"
+        "        debug = True\n"
+        "\n"
+        "\n"
+        "def make_b():\n"
+        "    class Config:\n"
+        "        debug = True\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    make_a = "scip-python python testrepo rev1 `pkg.a`/make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/make_b()."
+    config = "scip-python python testrepo rev1 `pkg.a`/Config#"
+    debug = "scip-python python testrepo rev1 `pkg.a`/Config#debug."
+
+    occs = (
+        occurrence(make_a, roles=1, range_=(0, 4, 11)),
+        occurrence(config, roles=1, range_=(1, 10, 16)),
+        occurrence(debug, roles=1, range_=(2, 8, 13)),
+        occurrence(make_b, roles=1, range_=(5, 4, 11)),
+        occurrence(config, roles=1, range_=(6, 10, 16)),
+        occurrence(debug, roles=1, range_=(7, 8, 13)),
+    )
+    sym_infos = (
+        symbol_information(make_a, kind=0),
+        symbol_information(config, kind=7),
+        # Exactly one SymbolInformation for `debug`, despite 2 real
+        # Definition occurrences in 2 distinct real `Config` classes.
+        symbol_information(debug, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(config, kind=7),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("debug.")]
+    assert len(matches) == 2
+    assert len({e.canonical_id for e in matches}) == 2
+
+
+def test_fnd3_parameter_descriptor_unaffected(tmp_path: Path) -> None:
+    """(11) Parameter descriptors (trailing `)`) are excluded from
+    `_nested_symbol_disambiguation`'s own candidate collection by an
+    unrelated, pre-existing, unchanged filter
+    (`occ.symbol.endswith(")")`) -- verify the FND-3 gate change doesn't
+    disturb that exclusion. A parameter name reused verbatim across two
+    distinct functions (a real, extremely common shape -- e.g. two
+    unrelated functions each with a `self` or `name` parameter) must never
+    be treated as ambiguous or produce a `nested-scope-disambiguated`
+    entity; parameters never become entities at all, regardless of how
+    many raw Definition-role occurrences of that exact descriptor exist."""
+    source = (
+        "def make_a(name):\n"
+        "    return name\n"
+        "\n"
+        "\n"
+        "def make_b(name):\n"
+        "    return name\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    make_a = "scip-python python testrepo rev1 `pkg.a`/make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/make_b()."
+    # Parameter descriptors carry a `(param)` suffix in real SCIP output;
+    # what matters here is the trailing `)` the existing filter checks.
+    param_a = "scip-python python testrepo rev1 `pkg.a`/make_a().(name)"
+    param_b = "scip-python python testrepo rev1 `pkg.a`/make_b().(name)"
+
+    occs = (
+        occurrence(make_a, roles=1, range_=(0, 4, 10)),
+        occurrence(param_a, roles=1, range_=(0, 11, 15)),
+        occurrence(make_b, roles=1, range_=(4, 4, 10)),
+        occurrence(param_b, roles=1, range_=(4, 11, 15)),
+    )
+    sym_infos = (
+        symbol_information(make_a, kind=0),
+        symbol_information(make_b, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    assert not any(e.qualified_name.endswith("(name)") for e in normalized.entities)
+    assert not any(
+        "nested-scope-disambiguated" in e.roles and "name" in e.name for e in normalized.entities
+    )
+
+
+def test_fnd3_gap13_gap14_family_still_gated_by_own_symbolinfo_signal(tmp_path: Path) -> None:
+    """(4) GAP-13/14 regression: `_redefinition_family_locations` is a
+    completely separate function with its own, untouched
+    `symbol_info_counts` gate (used for a different purpose -- recovering
+    a representative location for a *non*-cross-scope-ambiguous
+    redefinition family, e.g. `@property`/`@x.setter`). This fix touches
+    only `_nested_symbol_disambiguation`'s entry condition; a legitimate
+    property/setter pair must still converge to one entity via the
+    untouched GAP-13/14 path."""
+    source = (
+        "class Widget:\n"
+        "    @property\n"
+        "    def value(self):\n"
+        "        return self._value\n"
+        "\n"
+        "    @value.setter\n"
+        "    def value(self, val):\n"
+        "        self._value = val\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Widget#"
+    value = "scip-python python testrepo rev1 `pkg.a`/Widget#value()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 12)),
+        occurrence(value, roles=1, range_=(2, 8, 13)),
+        occurrence(value, roles=1, range_=(6, 8, 13)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(value, kind=0),
+        symbol_information(value, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("value().")]
+    assert len(matches) == 1
+    assert "scip:redefinition-family" in matches[0].roles
+
+
+def test_fnd3_fnd1_fnd2_cases_unaffected(tmp_path: Path) -> None:
+    """(2, 3, 5, 6, 7) FND-1/FND-2 regression, combined: ordinary
+    function/class declarations (SymbolInformation count already matches
+    Definition-occurrence count for these kinds, per this fix's own
+    docstring) must behave identically before and after the fix --
+    nested closures under different parent methods (FND-1), an ambiguous
+    intermediate container (FND-2), and 3+ levels of nesting, all in one
+    document."""
+    source = (
+        "class Outer:\n"
+        "    def make_a(self):\n"
+        "        def level_b():\n"
+        "            def target():\n"
+        "                pass\n"
+        "            return target\n"
+        "        return level_b\n"
+        "\n"
+        "    def make_b(self):\n"
+        "        def level_b():\n"
+        "            def target():\n"
+        "                pass\n"
+        "            return target\n"
+        "        return level_b\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Outer#"
+    make_a = "scip-python python testrepo rev1 `pkg.a`/Outer#make_a()."
+    make_b = "scip-python python testrepo rev1 `pkg.a`/Outer#make_b()."
+    level_b = "scip-python python testrepo rev1 `pkg.a`/Outer#level_b()."
+    target = "scip-python python testrepo rev1 `pkg.a`/Outer#target()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 11)),
+        occurrence(make_a, roles=1, range_=(1, 8, 14)),
+        occurrence(level_b, roles=1, range_=(2, 12, 19)),
+        occurrence(target, roles=1, range_=(3, 16, 22)),
+        occurrence(make_b, roles=1, range_=(8, 8, 14)),
+        occurrence(level_b, roles=1, range_=(9, 12, 19)),
+        occurrence(target, roles=1, range_=(10, 16, 22)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(make_a, kind=0),
+        symbol_information(level_b, kind=0),
+        symbol_information(target, kind=0),
+        symbol_information(make_b, kind=0),
+        symbol_information(level_b, kind=0),
+        symbol_information(target, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    target_matches = [e for e in normalized.entities if e.qualified_name.endswith("target().")]
+    assert len(target_matches) == 2
+    assert len({e.canonical_id for e in target_matches}) == 2
+
+
+def test_fnd3_readaccess_only_later_redefinition_unaffected(tmp_path: Path) -> None:
+    """(8) A container class redefined in-place where the second instance
+    carries only a ReadAccess-role occurrence (`_is_scope_opening_
+    occurrence`'s verified-ReadAccess path, unchanged by this fix) --
+    combined with an instance attribute nested inside it that ALSO shows
+    FND-3's own 1-SymbolInformation shape. Both must still converge
+    correctly: the container to one family (GAP-13/14-style), and the
+    attribute (now reachable thanks to the FND-3 gate fix) to that same
+    single family, not split."""
+    source = (
+        "def outer():\n"
+        "    class Config:\n"
+        "        def __init__(self):\n"
+        '            self.debug = 1\n'
+        "\n"
+        "    class Config:\n"
+        "        def __init__(self):\n"
+        '            self.debug = 2\n'
+        "    return Config\n"
+    )
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    outer = "scip-python python testrepo rev1 `pkg.a`/outer()."
+    config = "scip-python python testrepo rev1 `pkg.a`/Config#"
+    init = "scip-python python testrepo rev1 `pkg.a`/Config#__init__()."
+    debug = "scip-python python testrepo rev1 `pkg.a`/Config#debug."
+
+    occs = (
+        occurrence(outer, roles=1, range_=(0, 4, 9)),
+        occurrence(config, roles=1, range_=(1, 10, 16)),
+        occurrence(init, roles=1, range_=(2, 12, 20)),
+        occurrence(debug, roles=1, range_=(3, 17, 22)),
+        occurrence(config, roles=8, range_=(5, 10, 16)),
+        occurrence(init, roles=1, range_=(6, 12, 20)),
+        occurrence(debug, roles=1, range_=(7, 17, 22)),
+    )
+    sym_infos = (
+        symbol_information(outer, kind=0),
+        symbol_information(config, kind=7),
+        symbol_information(init, kind=0),
+        # Exactly one SymbolInformation for `debug` -- FND-3's shape --
+        # even though BOTH occurrences genuinely belong to the SAME
+        # shared real `Config` family (redefined in place, GAP-13/14
+        # pattern for the container itself).
+        symbol_information(debug, kind=0),
+        symbol_information(init, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("debug.")]
+    assert len(matches) == 1
+    assert matches[0].qualified_name == "`pkg.a`/Config#debug."
+
+
+def test_fnd3_ast_scip_cross_provider_convergence_unaffected(tmp_path: Path) -> None:
+    """(9) A plain, unambiguous, top-level method with only ONE real
+    scope must still converge correctly with `AstCallsAdapter`'s own
+    independently-derived entity via `_symbol_location_identity_key`
+    (GAP-13's cross-provider mechanism, untouched by this fix) -- the
+    FND-3 gate change must not perturb a symbol that was never ambiguous
+    in the first place, regardless of its own SymbolInformation count."""
+    source = "class Widget:\n    def compute(self):\n        return 1\n"
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "a.py").write_text(source, encoding="utf-8")
+
+    cls = "scip-python python testrepo rev1 `pkg.a`/Widget#"
+    compute = "scip-python python testrepo rev1 `pkg.a`/Widget#compute()."
+
+    occs = (
+        occurrence(cls, roles=1, range_=(0, 6, 12)),
+        occurrence(compute, roles=1, range_=(1, 8, 15)),
+    )
+    sym_infos = (
+        symbol_information(cls, kind=7),
+        symbol_information(compute, kind=0),
+    )
+    doc = document("pkg/a.py", occurrences=occs, symbols=sym_infos)
+    (tmp_path / DEFAULT_INDEX_FILENAME).write_bytes(scip_index(documents=(doc,)))
+
+    adapter = SCIPAdapter()
+    result = adapter.extract(make_repository(tmp_path), adapter.supported_capabilities)
+    normalized = adapter.normalize(result)
+
+    matches = [e for e in normalized.entities if e.qualified_name.endswith("compute().")]
+    assert len(matches) == 1
+    assert "scip:nested-scope-disambiguated" not in matches[0].roles
