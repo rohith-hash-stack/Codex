@@ -135,7 +135,8 @@ export type AskStatus =
   | "UNDERSTANDING_INCOMPLETE"
   | "MALFORMED_OUTPUT"
   | "LLM_TIMEOUT"
-  | "LLM_BUDGET_EXCEEDED";
+  | "LLM_BUDGET_EXCEEDED"
+  | "CLAIMS_NOT_GROUNDED";
 
 export interface AskResponse {
   repository_id: string;

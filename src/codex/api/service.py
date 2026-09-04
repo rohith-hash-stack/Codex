@@ -11,6 +11,20 @@ identity decision of its own (`docs/vscode-nervous-system-architecture.md`
 query_understanding,planner,ingestion,ontology,evidence,graph}` is
 imported for its *implementation* here, only for its already-published
 public interface.
+
+**Grounding-Integrity fix** (OpenAI Claim Grounding Integrity directive):
+`ask()` now also calls the real, unmodified D10.4/D10.6 Verification
+Engine (`codex.verification.verify_claim`/`classify_claim`) on every
+claim the LLM returns (all `claim_type`s -- see `_ungrounded_relationship_
+claims`'s own docstring for why this is not narrowed to `FACT`/`DERIVED`),
+exactly one read-only pass over `EvidencePackage` -- never a second LLM
+call, never a re-synthesis retry, never a fresh graph/evidence-store
+query. A claim whose canonical `(source, predicate, target)` triple the
+Entailment Engine cannot verify (wrong direction included -- entailment
+is never treated as undirected) downgrades the response from
+`AskStatus.OK` to `AskStatus.CLAIMS_NOT_GROUNDED`;
+the LLM's own claims are still returned verbatim in `AskResponse.claims`
+either way, never rewritten or silently dropped.
 """
 
 from __future__ import annotations
@@ -42,7 +56,7 @@ from codex.graph.store import GraphReader
 from codex.ingestion.models import IngestionResult
 from codex.ingestion.pipeline import IngestionPipeline
 from codex.llm.gateway import GenerationStatus, LLMGateway, LLMRequest
-from codex.llm.schema import StructuredAnswer
+from codex.llm.schema import Claim, StructuredAnswer
 from codex.ontology.entities import RepositorySymbol
 from codex.ontology.relationships import RelationshipType
 from codex.planner.cache import compute_query_identity
@@ -58,6 +72,7 @@ from codex.query_understanding.engine import (
 from codex.registry.registry import CapabilityRegistry
 from codex.repository.manager import RepositoryManager
 from codex.repository.models import RepositoryMetadata
+from codex.verification import VerificationStatus, classify_claim, verify_claim
 
 DEFAULT_MAX_NODES = 50
 DEFAULT_MAX_EDGES = 100
@@ -88,6 +103,47 @@ def _compute_ask_run_id(
     nothing from `codex.graph`)."""
     payload = "\x1f".join([repository_revision, query_identity, provider, model_id])
     return "ask-run:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _ungrounded_relationship_claims(claims: list[Claim], package: EvidencePackage) -> list[Claim]:
+    """The claims among `claims` whose canonical `(source, predicate,
+    target)` triple is **not** deterministically entailed by `package`
+    -- via the real, existing D10.4 Entailment Engine
+    (`codex.verification.verify_claim`) and D10.6 classification
+    (`codex.verification.classify_claim`), never a new grounding rule
+    invented here. A single, read-only pass over what the LLM already
+    returned -- never a second LLM call, never asks the model to
+    self-correct (directive: "Do NOT ask the LLM to self-correct as the
+    primary fix").
+
+    Deliberately **not** filtered by `claim.claim_type`: every `Claim`,
+    regardless of the model's own self-assigned type, is schema-required
+    to use a real, closed-ontology `RelationshipType`/derived predicate
+    (`codex.llm.schema.Claim._validate_predicate`) -- there is no claim
+    shape a `claim_type` label could exempt from being checkable, and
+    the existing D10.6 classification this reuses (`classify_claim`/
+    `classify_answer`) was already claim-type-blind before this fix
+    (TAD §47: "The LLM's own claim_type label never overrides the
+    deterministic check"). A live E2E check (see the Grounding-Integrity
+    fix's own report) found the real model mislabeling a fabricated
+    relationship claim (`subject CALLS "Unknown Caller"`, an object with
+    no corresponding entity in evidence at all) as `claim_type=UNKNOWN`
+    -- a `FACT`/`DERIVED`-only filter would have let exactly this kind
+    of ungrounded relationship claim through as `AskStatus.OK`."""
+    return [
+        claim
+        for claim in claims
+        if classify_claim(verify_claim(claim, package)) is not VerificationStatus.VERIFIED
+    ]
+
+
+def _grounding_failure_detail(ungrounded: list[Claim]) -> str:
+    described = ", ".join(f"'{c.subject} {c.predicate} {c.object}'" for c in ungrounded)
+    return (
+        f"{len(ungrounded)} relationship claim(s) did not match canonical graph evidence "
+        f"(wrong direction, wrong entity, wrong predicate, or no such relationship exists): "
+        f"{described}"
+    )
 
 
 class RepositoryNotFoundError(KeyError):
@@ -599,19 +655,35 @@ class CodexAPI:
             generation = self._gateway.generate(request)
             metadata = getattr(self._gateway, "last_response_metadata", None)
 
+        status = _ASK_STATUS_BY_GENERATION_STATUS[generation.status]
+        claims = list(generation.answer.claims) if generation.answer else []
+        detail = generation.detail
+        if status is AskStatus.OK and claims:
+            # Grounding-Integrity fix: a schema-valid answer is not the
+            # same thing as a grounded one -- verify every relationship
+            # claim against canonical graph evidence before this response
+            # is allowed to report AskStatus.OK. `claims` itself is left
+            # exactly as the LLM produced it either way (never rewritten,
+            # never silently dropped) so the caller can see precisely
+            # which claim(s) failed.
+            ungrounded = _ungrounded_relationship_claims(claims, package)
+            if ungrounded:
+                status = AskStatus.CLAIMS_NOT_GROUNDED
+                detail = _grounding_failure_detail(ungrounded)
+
         return AskResponse(
             repository_id=repository_id,
             query_text=query_text,
             query_id=query_identity,
             run_id=run_id,
-            status=_ASK_STATUS_BY_GENERATION_STATUS[generation.status],
+            status=status,
             intent=contract.intent,
             plan_status=plan.status,
             answer=generation.answer.explanation if generation.answer else None,
-            claims=list(generation.answer.claims) if generation.answer else [],
+            claims=claims,
             evidence_context=self._evidence_context(package),
             model=self._model_metadata(metadata),
-            detail=generation.detail,
+            detail=detail,
         )
 
     def _evidence_context(self, package: EvidencePackage) -> EvidenceContextSummary:

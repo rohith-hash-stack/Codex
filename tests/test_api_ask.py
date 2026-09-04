@@ -216,6 +216,248 @@ class TestAmbiguousHighFanOutQuery:
         )
 
 
+class TestGroundingIntegrity:
+    """OpenAI Claim Grounding Integrity fix -- reproduces and locks in
+    the fix for the confirmed defect on
+    60e605b2fadd302f4a3a2cd884067dbc66d665f7: deterministic graph
+    evidence contained "caller -> CALLS -> plan_query", the model's
+    claim reversed it ("plan_query -> CALLS -> caller"), and the system
+    still reported `status = OK`. `ask()` now runs the real,
+    unmodified D10.4/D10.6 Verification Engine
+    (`codex.verification.verify_claim`/`classify_claim`) against every
+    `FACT`/`DERIVED` claim before it is allowed to report `AskStatus.OK`.
+    """
+
+    def test_2_reversed_claim_is_never_reported_as_grounded_ok(self, tmp_path: Path) -> None:
+        """The exact reproduction: real evidence is
+        caller -> CALLS -> plan_query; the (scripted, representative of
+        the real model's actual observed failure mode) LLM response
+        reverses it. `status` must not be OK."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="plan_query calls caller",
+                        claims=[
+                            Claim(
+                                subject="plan_query",
+                                predicate=RelationshipType.CALLS,
+                                object="caller",
+                                claim_type=ClaimType.FACT,
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("caller", "plan_query"),
+            relationship_pairs=(("caller", "plan_query"),),
+        )
+        response = api.ask("repo1", "What calls plan_query?")
+
+        assert response.status is AskStatus.CLAIMS_NOT_GROUNDED
+        assert response.status is not AskStatus.OK
+        # Transparency: the offending claim is still visible, verbatim,
+        # never silently dropped or rewritten.
+        assert len(response.claims) == 1
+        assert response.claims[0].subject == "plan_query"
+        assert response.claims[0].object == "caller"
+        assert response.detail is not None
+        assert "plan_query" in response.detail and "caller" in response.detail
+        # The real, correctly-oriented edge is still visible in evidence
+        # -- proving the defect was in claim validation, not in
+        # retrieval/evidence construction.
+        assert len(response.evidence_context.relationships) == 1
+        edge = response.evidence_context.relationships[0]
+        assert edge.relationship_type is RelationshipType.CALLS
+
+    def test_correctly_oriented_claim_over_the_same_evidence_passes(self, tmp_path: Path) -> None:
+        """The positive control for the test above: identical evidence,
+        correctly-oriented claim -> still a real, grounded OK."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="caller calls plan_query",
+                        claims=[
+                            Claim(
+                                subject="caller",
+                                predicate=RelationshipType.CALLS,
+                                object="plan_query",
+                                claim_type=ClaimType.FACT,
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("caller", "plan_query"),
+            relationship_pairs=(("caller", "plan_query"),),
+        )
+        response = api.ask("repo1", "What calls plan_query?")
+
+        assert response.status is AskStatus.OK
+        assert len(response.claims) == 1
+
+    def test_8_mixed_valid_and_invalid_claims_is_not_grounded(self, tmp_path: Path) -> None:
+        """One real, correctly-oriented claim plus one reversed claim in
+        the same answer -- the whole response must not be OK. A single
+        bad relationship claim voids the answer's grounded status, it is
+        not averaged away by the good one."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="caller calls plan_query; plan_query calls caller",
+                        claims=[
+                            Claim(
+                                subject="caller",
+                                predicate=RelationshipType.CALLS,
+                                object="plan_query",
+                                claim_type=ClaimType.FACT,
+                            ),
+                            Claim(
+                                subject="plan_query",
+                                predicate=RelationshipType.CALLS,
+                                object="caller",
+                                claim_type=ClaimType.FACT,
+                            ),
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("caller", "plan_query"),
+            relationship_pairs=(("caller", "plan_query"),),
+        )
+        response = api.ask("repo1", "What calls plan_query?")
+
+        assert response.status is AskStatus.CLAIMS_NOT_GROUNDED
+        assert len(response.claims) == 2  # both still visible, unmodified
+
+    def test_nonexistent_relationship_claim_is_not_grounded(self, tmp_path: Path) -> None:
+        """Both entities are real, but the LLM asserts a relationship
+        that does not exist in evidence at all (not even reversed)."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="foo depends on bar",
+                        claims=[
+                            Claim(
+                                subject="foo",
+                                predicate=RelationshipType.DEPENDS_ON,
+                                object="bar",
+                                claim_type=ClaimType.FACT,
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("foo", "bar"),
+            relationship_pairs=(("foo", "bar"),),  # real edge is CALLS, not DEPENDS_ON
+        )
+        response = api.ask("repo1", "What calls bar?")
+
+        assert response.status is AskStatus.CLAIMS_NOT_GROUNDED
+
+    def test_grounding_check_is_not_fooled_by_claim_type_it_checks_every_claim(
+        self, tmp_path: Path
+    ) -> None:
+        """The grounding check is deliberately blind to the model's own
+        `claim_type` label -- matching the pre-existing D10.6
+        `classify_claim`/`classify_answer`, which never inspected
+        `claim_type` either (TAD §47: "The LLM's own claim_type label
+        never overrides the deterministic check"). A live E2E check
+        (see the fix's own report) found the real model mislabeling a
+        fabricated relationship claim as `claim_type=UNKNOWN` rather
+        than `FACT` -- a claim_type-based exemption would have let
+        exactly that kind of claim through as `AskStatus.OK`. Here, an
+        INFERENCE-labeled claim with no matching evidence at all must
+        gate the response the same way an unlabeled/FACT one would."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="foo calls bar, and appears to implement its interface",
+                        claims=[
+                            Claim(
+                                subject="foo",
+                                predicate=RelationshipType.CALLS,
+                                object="bar",
+                                claim_type=ClaimType.FACT,
+                            ),
+                            Claim(
+                                subject="foo",
+                                predicate=RelationshipType.IMPLEMENTS,
+                                object="bar",
+                                claim_type=ClaimType.INFERENCE,
+                            ),
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("foo", "bar"),
+            relationship_pairs=(("foo", "bar"),),  # only CALLS is real; IMPLEMENTS is not
+        )
+        response = api.ask("repo1", "What calls bar?")
+
+        assert response.status is AskStatus.CLAIMS_NOT_GROUNDED
+        assert len(response.claims) == 2  # both still visible, unmodified
+
+    def test_a_grounded_non_fact_claim_still_passes(self, tmp_path: Path) -> None:
+        """The flip side of the test above: claim_type-blindness cuts
+        both ways -- a real, correctly-oriented, correctly-predicated
+        claim is VERIFIED regardless of what `claim_type` the model
+        happened to label it with (here, `DERIVED` on a plain direct
+        `CALLS` edge -- `predicate` and `claim_type` are independent
+        fields; entailment has always been blind to `claim_type`, TAD
+        §47), never penalized merely for an unconventional label."""
+        gateway = FakeLLMGateway(
+            [
+                ok_result(
+                    StructuredAnswer(
+                        explanation="foo calls bar",
+                        claims=[
+                            Claim(
+                                subject="foo",
+                                predicate=RelationshipType.CALLS,
+                                object="bar",
+                                claim_type=ClaimType.DERIVED,
+                            )
+                        ],
+                    )
+                )
+            ]
+        )
+        api = _make_ready_api(
+            tmp_path,
+            gateway=gateway,
+            entity_paths=("foo", "bar"),
+            relationship_pairs=(("foo", "bar"),),
+        )
+        response = api.ask("repo1", "What calls bar?")
+
+        assert response.status is AskStatus.OK
+
+
 class TestRepositoryReadiness:
     def test_unknown_repository_raises_not_found(self) -> None:
         registry = CapabilityRegistry()

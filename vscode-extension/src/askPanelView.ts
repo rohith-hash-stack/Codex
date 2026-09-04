@@ -208,6 +208,7 @@ export const CLIENT_SCRIPT = `
       case "MALFORMED_OUTPUT": return "The model's response could not be parsed as valid structured output.";
       case "LLM_TIMEOUT": return "The model did not respond within the time budget.";
       case "LLM_BUDGET_EXCEEDED": return "The request would have exceeded the configured token budget.";
+      case "CLAIMS_NOT_GROUNDED": return "The model's answer includes at least one relationship claim that does not match canonical graph evidence (wrong direction, wrong entity, or no such relationship) — see the claim below and the note in the answer's detail.";
       default: return "";
     }
   }

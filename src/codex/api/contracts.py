@@ -180,6 +180,22 @@ class AskStatus(StrEnum):
     LLM_BUDGET_EXCEEDED = "LLM_BUDGET_EXCEEDED"
     """Mirrors `GenerationStatus.BUDGET_EXCEEDED` exactly."""
 
+    CLAIMS_NOT_GROUNDED = "CLAIMS_NOT_GROUNDED"
+    """Grounding-Integrity fix (OpenAI Claim Grounding Integrity
+    directive): the LLM produced schema-valid output
+    (`GenerationStatus.OK`), but at least one relationship claim (any
+    `claim_type` -- the deterministic check is blind to it, exactly like
+    the pre-existing D10.4/D10.6 Verification Engine it reuses) did not
+    deterministically entail against `EvidencePackage` canonical graph
+    evidence -- wrong direction, wrong entity, wrong predicate, or simply
+    no matching edge at all (`codex.verification.entail_claim`,
+    `codex.verification.classify_claim`). `claims` still carries every
+    claim the LLM produced, verbatim, so the caller can inspect exactly
+    which one failed; `detail` names it. Never conflated with `OK` -- a
+    caller checking `status == AskStatus.OK` alone (the existing,
+    documented "is this grounded" contract) correctly treats this as not
+    grounded."""
+
 
 class AskRequest(BaseModel):
     """Wire contract for `POST /query` (API Integration Milestone).

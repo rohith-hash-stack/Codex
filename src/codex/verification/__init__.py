@@ -24,6 +24,7 @@ from codex.verification.entailment import (
     direct_edge_match,
     entail_claim,
     find_path,
+    resolve_claim_endpoint,
 )
 from codex.verification.resynthesis import (
     MAX_ATTEMPTS,
@@ -70,6 +71,7 @@ __all__ = [
     "find_path",
     "handle_contradictions",
     "is_significantly_contradicted",
+    "resolve_claim_endpoint",
     "run_verification_loop",
     "to_hlrd_label",
     "to_routing_bucket",
