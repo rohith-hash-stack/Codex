@@ -4,16 +4,25 @@ change, `docs/vscode-nervous-system-architecture.md` §9).
 ``python -m codex.api`` starts the local HTTP JSON server on
 ``127.0.0.1`` and prints the bound port so a launching process (the VS
 Code extension included) can connect without needing a fixed,
-possibly-already-taken port. Registers the two providers that need no
+possibly-already-taken port. Registers the three providers that need no
 external tool or pre-generated index to run against an arbitrary local
-Python repository -- `GitAdapter` (history/co-change) and
-`AstCallsAdapter` (Python AST-derived symbols/calls) -- so this CLI is
+Python repository -- `GitAdapter` (history/co-change), `AstCallsAdapter`
+(Python AST-derived symbols/calls), and `PyprojectDependencyAdapter`
+(`pyproject.toml`-declared package dependencies) -- so this CLI is
 immediately usable end-to-end, not only a demo skeleton. `SCIPAdapter`/
 `CodeQLAdapter` are not wired here: both require a provider-specific
 pre-generated index this CLI has no way to produce itself, and adding
 them is a caller/deployment concern, not something `codex.api` should
 assume (`docs/vscode-nervous-system-architecture.md` §2: the API layer
-never owns provider registration).
+never owns provider registration). `PyprojectDependencyAdapter` needs
+neither -- exactly like `GitAdapter`'s `.git` directory, it only reads a
+manifest already present in the repository it is pointed at (Codex
+validation continuation, "PyprojectDependencyAdapter integration gap":
+this provider was fully implemented and validated against real
+repositories in the D7 milestone, `docs/architecture-conformance-audit.md`
+§HH, but was never added to this specific registration site -- an
+implementation oversight the criterion above already covered, not a
+deliberate exclusion).
 
 **`POST /query`** (API Integration Milestone): wires a real
 `OpenAIGateway` in unconditionally -- constructing one does not itself
@@ -39,6 +48,7 @@ from codex.evidence.store import InMemoryEvidenceStore
 from codex.llm.openai_gateway import OpenAIGateway
 from codex.provider.ast_calls_adapter import AstCallsAdapter
 from codex.provider.git_adapter import GitAdapter
+from codex.provider.pyproject_dependency_adapter import PyprojectDependencyAdapter
 from codex.registry.registry import CapabilityRegistry
 from codex.registry.scoring import ProviderScoreProfile
 
@@ -49,6 +59,13 @@ def _build_api() -> CodexAPI:
     registry = CapabilityRegistry()
     registry.register(GitAdapter(), DEFAULT_PROFILE)
     registry.register(AstCallsAdapter(), DEFAULT_PROFILE)
+    # Codex validation continuation ("PyprojectDependencyAdapter
+    # integration gap"): registered last, after the two pre-existing
+    # providers, preserving their exact relative order -- this adapter is
+    # the sole producer of `Capability.DEPENDENCY` (no other registered
+    # provider supports it), so appending it changes no existing
+    # provider's ordering, priority, or capability resolution.
+    registry.register(PyprojectDependencyAdapter(), DEFAULT_PROFILE)
     return CodexAPI(registry, InMemoryEvidenceStore(), gateway=OpenAIGateway())
 
 
