@@ -15,6 +15,7 @@
 
 import * as cp from "child_process";
 import * as vscode from "vscode";
+import { AskPanel } from "./askPanel";
 import { CodexClient, IngestionJobStatus } from "./codexClient";
 import { NeighborhoodPanel } from "./neighborhoodPanel";
 
@@ -108,6 +109,21 @@ function currentRepository(): { repositoryId: string; localPath: string } | unde
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
+    vscode.commands.registerCommand("codex.askQuestion", async () => {
+      const repo = currentRepository();
+      if (!repo) {
+        void vscode.window.showErrorMessage("Codex: open a folder first.");
+        return;
+      }
+      try {
+        const c = await ensureServer();
+        await AskPanel.show(c, repo);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        void vscode.window.showErrorMessage(`Codex: could not start the Codex API server: ${message}`);
+      }
+    }),
+
     vscode.commands.registerCommand("codex.indexWorkspace", async () => {
       const repo = currentRepository();
       if (!repo) {

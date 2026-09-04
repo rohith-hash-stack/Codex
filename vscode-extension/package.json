@@ -15,6 +15,10 @@
   "contributes": {
     "commands": [
       {
+        "command": "codex.askQuestion",
+        "title": "Codex: Ask a Question"
+      },
+      {
         "command": "codex.indexWorkspace",
         "title": "Codex: Index Repository"
       },
@@ -26,7 +30,9 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "watch": "tsc -w -p ./"
+    "watch": "tsc -w -p ./",
+    "pretest": "tsc -p ./",
+    "test": "node --test out/*.test.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

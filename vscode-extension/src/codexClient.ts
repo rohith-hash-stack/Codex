@@ -86,11 +86,96 @@ export interface IngestionJobStatus {
   result: RepositoryStatus | null;
 }
 
+/**
+ * `POST /query` wire contracts (API Integration Milestone,
+ * `docs/api-query-integration.md`). Field-for-field projections of
+ * `codex.api.contracts` -- no field is renamed, dropped, or given
+ * different semantics here; this file only adds TypeScript types over
+ * the same JSON shape the server already returns.
+ */
+
+/** Mirrors `codex.llm.schema.Claim` exactly -- `predicate` is either a
+ * real `RelationshipType` or one of the three query-time DERIVED
+ * predicates (`REACHES`/`TRANSITIVE_CALLS`/`INDIRECTLY_DEPENDS_ON`);
+ * left as `string` here rather than a duplicated enum, matching this
+ * client's existing convention for `VisualizationEdge.relationship_type`. */
+export interface Claim {
+  subject: string;
+  predicate: string;
+  object: string;
+  claim_type: "FACT" | "DERIVED" | "INFERENCE" | "UNKNOWN";
+}
+
+export interface EvidenceContextSummary {
+  graph_version: GraphVersionRef | null;
+  entities: VisualizationNode[];
+  relationships: VisualizationEdge[];
+  evidence_count: number;
+  coverage: Record<string, string>;
+  limitations: string[];
+  partial: boolean;
+}
+
+export interface ModelMetadata {
+  provider: string;
+  requested_model: string;
+  served_model: string | null;
+  usage_prompt_tokens: number | null;
+  usage_completion_tokens: number | null;
+  usage_total_tokens: number | null;
+  finish_reason: string | null;
+}
+
+/** Mirrors `codex.api.contracts.AskStatus` exactly -- see that enum's
+ * own docstring for what each value means and why (legitimate LLM
+ * outcomes only; repository/config/upstream failures are raised as
+ * distinct HTTP statuses instead, never folded into this one). */
+export type AskStatus =
+  | "OK"
+  | "UNDERSTANDING_INCOMPLETE"
+  | "MALFORMED_OUTPUT"
+  | "LLM_TIMEOUT"
+  | "LLM_BUDGET_EXCEEDED";
+
+export interface AskResponse {
+  repository_id: string;
+  query_text: string;
+  query_id: string;
+  run_id: string;
+  status: AskStatus;
+  intent: string | null;
+  plan_status: string | null;
+  answer: string | null;
+  claims: Claim[];
+  evidence_context: EvidenceContextSummary;
+  model: ModelMetadata;
+  detail: string | null;
+}
+
+export interface AskOptions {
+  tokenBudget?: number;
+  latencyBudgetMs?: number;
+}
+
 interface ApiError {
   error?: string;
 }
 
-export class CodexApiError extends Error {}
+/** Carries the real HTTP status alongside the server's own `{"error":
+ * "..."}` message, so a caller can distinguish e.g. a `409` (repository
+ * not ready -- worth a "still indexing, try again" message) from a
+ * `502` (upstream LLM failure -- worth a different one) without
+ * re-parsing the message text. `status` is `0` for a transport-level
+ * failure that never reached the server at all (connection refused,
+ * DNS, etc.). */
+export class CodexApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number = 0
+  ) {
+    super(message);
+  }
+}
 
 export class CodexClient {
   constructor(private readonly baseUrl: string) {}
@@ -121,11 +206,11 @@ export class CodexClient {
             resolve(parsed as T);
           } else {
             const message = (parsed as ApiError).error ?? `HTTP ${status}`;
-            reject(new CodexApiError(message));
+            reject(new CodexApiError(message, status));
           }
         });
       });
-      req.on("error", (err) => reject(new CodexApiError(err.message)));
+      req.on("error", (err) => reject(new CodexApiError(err.message, 0)));
       if (payload) {
         req.write(payload);
       }
@@ -186,5 +271,31 @@ export class CodexClient {
       depth: String(depth),
     }).toString();
     return this.request<VisualizationGraph>("GET", `/neighborhood?${qs}`);
+  }
+
+  /** `POST /query`: repository -> query -> intent/evidence requirements
+   * -> targeted graph retrieval -> minimal sufficient grounded context
+   * -> LLM -> grounded answer. Every field on the resolved
+   * `AskResponse` comes straight from the server; this method performs
+   * no interpretation of its own. */
+  ask(repositoryId: string, queryText: string, options: AskOptions = {}): Promise<AskResponse> {
+    const body: Record<string, unknown> = {
+      repository_id: repositoryId,
+      query_text: queryText,
+    };
+    if (options.tokenBudget !== undefined) {
+      body.token_budget = options.tokenBudget;
+    }
+    if (options.latencyBudgetMs !== undefined) {
+      body.latency_budget_ms = options.latencyBudgetMs;
+    }
+    return this.request<AskResponse>("POST", "/query", body);
+  }
+
+  /** `GET /healthz`: process-level liveness only, independent of any
+   * repository or Gateway state (`codex.api.server`'s own documented
+   * distinction from `/repositories/{id}/status`). */
+  healthz(): Promise<{ status: string }> {
+    return this.request<{ status: string }>("GET", "/healthz");
   }
 }
