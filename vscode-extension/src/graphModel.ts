@@ -161,3 +161,42 @@ export function groundClaims(response: AskResponse): ClaimGrounding[] {
     };
   });
 }
+
+/**
+ * Coarse visual grouping for spatial layout (3D Repository Intelligence
+ * Graph milestone) -- a direct, lossless mapping from the server's own
+ * `BaseEntityType` values (`codex.ontology.entities.BaseEntityType`,
+ * verbatim on `GraphModelNode.nodeType`), never an invented category.
+ * Every `BaseEntityType` member has an explicit home here (see the
+ * `default` branch's own exhaustiveness comment) so this can never
+ * silently misclassify a real type as "other" by omission.
+ */
+export type NodeKind = "module" | "class" | "function" | "external" | "test" | "other";
+
+const _MODULE_TYPES = new Set(["REPOSITORY", "DIRECTORY", "FILE", "MODULE", "NAMESPACE"]);
+const _CLASS_TYPES = new Set(["CLASS", "INTERFACE"]);
+const _FUNCTION_TYPES = new Set(["FUNCTION", "METHOD"]);
+/** `VARIABLE`/`CONFIGURATION`/`API`/`DATABASE`/`RUNTIME_COMPONENT`, and
+ * any `nodeType` this module does not (yet) recognize, are both
+ * honestly "other" -- classified by exact value only, no partial/fuzzy
+ * matching, and never guessed into one of the more specific groups. */
+
+export function classifyNodeKind(node: GraphModelNode): NodeKind {
+  const nodeType = node.nodeType;
+  if (nodeType === "TEST") {
+    return "test";
+  }
+  if (nodeType === "EXTERNAL_LIBRARY") {
+    return "external";
+  }
+  if (_MODULE_TYPES.has(nodeType)) {
+    return "module";
+  }
+  if (_CLASS_TYPES.has(nodeType)) {
+    return "class";
+  }
+  if (_FUNCTION_TYPES.has(nodeType)) {
+    return "function";
+  }
+  return "other";
+}

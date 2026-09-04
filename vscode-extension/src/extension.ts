@@ -117,7 +117,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
       try {
         const c = await ensureServer();
-        await AskPanel.show(c, repo);
+        await AskPanel.show(c, repo, context.extensionUri);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         void vscode.window.showErrorMessage(`Codex: could not start the Codex API server: ${message}`);

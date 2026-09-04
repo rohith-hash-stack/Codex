@@ -11,7 +11,19 @@
 
 import { escapeHtml, GRAPH_RENDERER_SCRIPT, SHARED_STYLES } from "./webviewAssets";
 
-export function renderShellHtml(repositoryId: string): string {
+/** Webview-resource URIs for the 3D renderer's dependencies, computed
+ * host-side (`askPanel.ts`, `webview.asWebviewUri`) since only the
+ * extension host can resolve them -- all local, vendored files under
+ * this extension's own `node_modules/three` and `media/`, never a
+ * network CDN. */
+export interface Graph3DUris {
+  three: string;
+  orbitControls: string;
+  css2dRenderer: string;
+  graph3d: string;
+}
+
+export function renderShellHtml(repositoryId: string, uris: Graph3DUris): string {
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -25,8 +37,11 @@ export function renderShellHtml(repositoryId: string): string {
   #layout { display: flex; height: calc(100vh - 96px); }
   #left { flex: 1; min-width: 320px; overflow-y: auto; border-right: 1px solid var(--vscode-panel-border, #444); }
   #right { flex: 1; min-width: 320px; overflow-y: auto; display: flex; flex-direction: column; }
-  #graphToolbar { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--vscode-panel-border, #444); align-items: center; }
-  #graphContainer { flex: 1; overflow: auto; }
+  #graphToolbar { display: flex; gap: 6px; padding: 8px 14px; border-bottom: 1px solid var(--vscode-panel-border, #444); align-items: center; flex-wrap: wrap; }
+  #relFilter { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 14px; font-size: 11px; opacity: 0.85; }
+  #relFilter label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
+  #largeGraphNotice { padding: 8px 14px; font-size: 12px; background: #d2992226; display: none; }
+  #graphContainer { flex: 1; overflow: auto; position: relative; }
   #answerText { white-space: pre-wrap; line-height: 1.5; }
   .hint { font-size: 11px; opacity: 0.7; }
   .empty { padding: 24px 14px; opacity: 0.6; text-align: center; }
@@ -53,12 +68,30 @@ export function renderShellHtml(repositoryId: string): string {
       <div id="graphToolbar">
         <input id="graphSearch" type="text" placeholder="Search a symbol or file…" style="flex:1;" />
         <button id="graphSearchBtn" class="secondary">Search</button>
+        <button id="renderModeBtn" class="secondary" title="Toggle 2D / 3D">3D</button>
+        <button id="resetViewBtn" class="secondary" title="Reset camera">Reset view</button>
         <span id="graphHint" class="hint"></span>
       </div>
+      <div id="relFilter"></div>
+      <div id="largeGraphNotice"></div>
       <div id="graphSearchResults"></div>
       <div id="graphContainer"><div class="empty">Evidence and explored neighborhoods appear here.</div></div>
     </div>
   </div>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "${uris.three}",
+      "three/addons/renderers/CSS2DRenderer.js": "${uris.css2dRenderer}",
+      "three/addons/controls/OrbitControls.js": "${uris.orbitControls}"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as CodexGraph3D from "${uris.graph3d}";
+    window.CodexGraph3D = CodexGraph3D;
+    window.dispatchEvent(new Event("codex-graph3d-ready"));
+  </script>
   <script>${GRAPH_RENDERER_SCRIPT}</script>
   <script>${CLIENT_SCRIPT}</script>
 </body>
@@ -84,6 +117,22 @@ export const CLIENT_SCRIPT = `
   let graphMode = "evidence"; // "evidence" | "explorer"
   let selectedNodeId = null;
 
+  // -- 3D renderer state (3D Repository Intelligence Graph Milestone) --
+  // "3D" is the default preference, but this is only ever *used* once
+  // window.CodexGraph3D has actually finished loading (a real,
+  // independently-loaded ES module -- see askPanelView.ts's own
+  // Graph3DUris docstring) *and* reports real WebGL support in this
+  // Webview. Either being false/missing falls back to the existing 2D
+  // SVG renderer (CodexGraph.render2D) automatically -- never a blocker.
+  let renderPreference = "3d"; // "3d" | "2d"
+  let graph3dMount = null; // the mounted Three.js scene state, once created
+  let relationshipTypeFilter = null; // Set<string> | null (null = show all)
+  let largeGraphChoice = null; // null | "all" | number (maxNodes)
+
+  function graph3dAvailable() {
+    return typeof window.CodexGraph3D !== "undefined" && window.CodexGraph3D.isSupported();
+  }
+
   const el = (id) => document.getElementById(id);
 
   el("indexBtn").addEventListener("click", () => {
@@ -96,6 +145,24 @@ export const CLIENT_SCRIPT = `
   el("queryInput").addEventListener("keydown", (e) => { if (e.key === "Enter") submitAsk(); });
   el("graphSearchBtn").addEventListener("click", submitGraphSearch);
   el("graphSearch").addEventListener("keydown", (e) => { if (e.key === "Enter") submitGraphSearch(); });
+  el("renderModeBtn").addEventListener("click", () => {
+    renderPreference = renderPreference === "3d" ? "2d" : "3d";
+    el("renderModeBtn").textContent = renderPreference.toUpperCase();
+    largeGraphChoice = null;
+    renderGraph();
+  });
+  el("resetViewBtn").addEventListener("click", () => {
+    if (graph3dMount) window.CodexGraph3D.resetView(graph3dMount);
+  });
+  // The 3D module loads asynchronously (a real ES module); by the time
+  // any graph actually needs rendering (after a real /query or
+  // /neighborhood round trip), it will normally already be ready, but
+  // re-render once more if it finishes after the first attempt so a
+  // fast page-load-to-graph sequence still gets 3D rather than being
+  // stuck on the 2D fallback it had to use in the meantime.
+  window.addEventListener("codex-graph3d-ready", () => {
+    if ((lastEvidenceModel || explorerModel) && renderPreference === "3d") renderGraph();
+  });
 
   function submitAsk() {
     const queryText = el("queryInput").value;
@@ -402,31 +469,158 @@ export const CLIENT_SCRIPT = `
   }
 
   // -- Graph panel (evidence snapshot or /neighborhood explorer) -----
+  //
+  // Renderer selection: 3D (window.CodexGraph3D, a real Three.js-backed
+  // ES module loaded independently -- see askPanelView.ts's own
+  // Graph3DUris docstring) when available and preferred, 2D SVG
+  // (CodexGraph.render2D, unmodified from the UI Integration Milestone)
+  // otherwise -- automatic, silent fallback whenever 3D genuinely isn't
+  // usable (module failed to load, or no WebGL context in this
+  // environment), and always user-togglable via #renderModeBtn besides.
+
+  function disposeGraph3DMount() {
+    if (graph3dMount) {
+      window.CodexGraph3D.dispose(graph3dMount);
+      graph3dMount = null;
+    }
+  }
+
+  function hideLargeGraphNotice() {
+    el("largeGraphNotice").style.display = "none";
+    el("largeGraphNotice").innerHTML = "";
+  }
+
+  function showLargeGraphNotice(totalNodes) {
+    const notice = el("largeGraphNotice");
+    notice.style.display = "block";
+    notice.innerHTML =
+      "This neighborhood has " + totalNodes + " nodes -- rendering all of them may be slow. " +
+      '<button id="renderAllBtn" class="secondary">Render all ' + totalNodes + "</button> " +
+      '<button id="renderClosestBtn" class="secondary">Show closest 150 (by hop distance)</button>';
+    el("renderAllBtn").addEventListener("click", () => { largeGraphChoice = "all"; renderGraph(); });
+    el("renderClosestBtn").addEventListener("click", () => { largeGraphChoice = 150; renderGraph(); });
+  }
+
+  function renderRelationshipFilter(model) {
+    const types = Array.from(new Set(model.edges.map((e) => e.relationshipType))).sort();
+    const container = el("relFilter");
+    if (types.length === 0) {
+      container.innerHTML = "";
+      return;
+    }
+    container.innerHTML = types
+      .map((t) => {
+        const checked = !relationshipTypeFilter || relationshipTypeFilter.has(t);
+        return (
+          '<label><input type="checkbox" data-rel="' + escapeHtml(t) + '"' + (checked ? " checked" : "") + " /> " +
+          escapeHtml(t) + "</label>"
+        );
+      })
+      .join("");
+    container.querySelectorAll("[data-rel]").forEach((checkbox) => {
+      checkbox.addEventListener("change", () => {
+        const checkedTypes = Array.from(container.querySelectorAll("[data-rel]:checked")).map((c) =>
+          c.getAttribute("data-rel")
+        );
+        relationshipTypeFilter = checkedTypes.length === types.length ? null : new Set(checkedTypes);
+        renderGraph();
+      });
+    });
+  }
+
+  /** Both renderers share this: select the node, describe it (kind +
+   * source location, when the server reported one -- "readable
+   * labels/tooltips" and "navigation... back to source"), and either
+   * jump back to the evidence view (if this node is also part of the
+   * original evidence -- "navigation from graph node back to ...
+   * evidence") or explore further from it via a real /neighborhood
+   * call (never a client-side expansion of data the server didn't
+   * send). */
+  function makeNodeClickHandler(model) {
+    return (id) => {
+      selectedNodeId = id;
+      const node = model.nodes.find((n) => n.id === id);
+      if (!node) return;
+      const loc = node.sourceLocation;
+      const locText = loc ? " · " + loc.file_path + ":" + (loc.start_line + 1) : "";
+      if (
+        graphMode === "explorer" &&
+        lastEvidenceModel &&
+        lastEvidenceModel.nodes.some((n) => n.id === id)
+      ) {
+        graphMode = "evidence";
+        el("graphHint").textContent = node.qualifiedName + " (" + node.nodeType + ")" + locText + " · back in evidence";
+        renderGraph();
+        return;
+      }
+      el("graphHint").textContent = 'exploring "' + node.qualifiedName + '" (' + node.nodeType + ")" + locText;
+      vscode.postMessage({ type: "expand", symbol: node.qualifiedName, depth: 1 });
+    };
+  }
+
+  /** Hover information (3D only -- the 2D SVG renderer already carries
+   * native \`<title>\` tooltips per node/edge). */
+  function makeNodeHoverHandler(model) {
+    return (id) => {
+      if (!id) return;
+      const node = model.nodes.find((n) => n.id === id);
+      if (node) el("graphHint").textContent = node.qualifiedName + " (" + node.nodeType + ")";
+    };
+  }
+
   function renderGraph() {
     const model = graphMode === "evidence" ? lastEvidenceModel : explorerModel;
     const container = el("graphContainer");
     if (!model || model.nodes.length === 0) {
+      disposeGraph3DMount();
+      hideLargeGraphNotice();
+      el("relFilter").innerHTML = "";
       container.innerHTML = '<div class="empty">' + (graphMode === "evidence" ? "No evidence entities to show yet." : "No neighborhood loaded yet.") + "</div>";
       return;
     }
+
+    const supports3D = graph3dAvailable();
+    el("renderModeBtn").disabled = !supports3D;
+    el("renderModeBtn").title = supports3D
+      ? "Toggle 2D / 3D"
+      : "3D unavailable in this environment (no WebGL, or the renderer failed to load) -- using 2D";
+    if (!supports3D) renderPreference = "2d";
+    el("renderModeBtn").textContent = renderPreference.toUpperCase();
+    el("resetViewBtn").style.display = renderPreference === "3d" && supports3D ? "" : "none";
+
+    renderRelationshipFilter(model);
     const highlightIds = graphMode === "evidence" ? model.nodes.filter((n) => n.distance === 0).map((n) => n.id) : [];
-    CodexGraph.render2D(container, model, {
-      height: container.clientHeight || 480,
-      selectedId: selectedNodeId,
-      highlightIds: highlightIds,
-      onNodeClick: (id) => {
-        // Both modes behave the same way: select the node, then
-        // explore further from it via a real /neighborhood call
-        // (never a client-side expansion of data the server didn't
-        // send).
-        selectedNodeId = id;
-        const node = model.nodes.find((n) => n.id === id);
-        if (node) {
-          el("graphHint").textContent = 'exploring "' + node.qualifiedName + '"…';
-          vscode.postMessage({ type: "expand", symbol: node.qualifiedName, depth: 1 });
-        }
-      },
-    });
+    const onNodeClick = makeNodeClickHandler(model);
+
+    if (renderPreference === "3d" && supports3D) {
+      if (!graph3dMount) {
+        container.innerHTML = "";
+        graph3dMount = window.CodexGraph3D.mount(container);
+      }
+      const result = window.CodexGraph3D.render(graph3dMount, model, {
+        selectedId: selectedNodeId,
+        highlightIds: highlightIds,
+        relationshipTypeFilter: relationshipTypeFilter,
+        onNodeClick: onNodeClick,
+        onNodeHover: makeNodeHoverHandler(model),
+        forceRenderAll: largeGraphChoice === "all",
+        maxNodes: typeof largeGraphChoice === "number" ? largeGraphChoice : null,
+      });
+      if (!result.rendered) {
+        showLargeGraphNotice(result.totalNodes);
+      } else {
+        hideLargeGraphNotice();
+      }
+    } else {
+      disposeGraph3DMount();
+      hideLargeGraphNotice();
+      CodexGraph.render2D(container, model, {
+        height: container.clientHeight || 480,
+        selectedId: selectedNodeId,
+        highlightIds: highlightIds,
+        onNodeClick: onNodeClick,
+      });
+    }
   }
 
   vscode.postMessage({ type: "ready" });

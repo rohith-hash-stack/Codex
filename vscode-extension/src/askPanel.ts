@@ -1,5 +1,6 @@
 /**
- * "Ask Codex" Webview panel (UI Integration Milestone).
+ * "Ask Codex" Webview panel (UI Integration Milestone; 3D renderer
+ * added in the 3D Repository Intelligence Graph Milestone).
  *
  * The primary Codex experience: repository -> ingestion status -> ask
  * question -> grounded answer -> inspect evidence -> explore graph, in
@@ -10,11 +11,20 @@
  * `/repositories/{id}/status`/`/healthz` returned, never recomputed or
  * reinterpreted beyond simple client-side cross-referencing (see
  * `graphModel.ts`).
+ *
+ * **3D renderer isolation**: the only new dependency this milestone
+ * adds (`three`, see `media/graph3d.mjs`'s own docstring for why) never
+ * touches the extension host or any Node-side code path -- it is
+ * loaded *exclusively* inside the Webview's own sandboxed browser
+ * context, as local, vendored ES modules served from this extension's
+ * own `node_modules/three` via `webview.asWebviewUri`, never fetched
+ * from a network CDN. `localResourceRoots` is scoped to this
+ * extension's own directory only.
  */
 
 import * as vscode from "vscode";
 import { AskResponse, CodexApiError, CodexClient, IngestionJobStatus } from "./codexClient";
-import { renderShellHtml } from "./askPanelView";
+import { Graph3DUris, renderShellHtml } from "./askPanelView";
 
 interface RepoRef {
   repositoryId: string;
@@ -37,15 +47,53 @@ export class AskPanel {
 
   private constructor(
     private readonly client: CodexClient,
-    private readonly repo: RepoRef
+    private readonly repo: RepoRef,
+    extensionUri: vscode.Uri
   ) {
     this.panel = vscode.window.createWebviewPanel(
       "codexAsk",
       `Codex: Ask — ${repo.repositoryId}`,
       vscode.ViewColumn.Active,
-      { enableScripts: true, retainContextWhenHidden: true }
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [extensionUri],
+      }
     );
-    this.panel.webview.html = renderShellHtml(repo.repositoryId);
+    const webview = this.panel.webview;
+    const uris: Graph3DUris = {
+      three: webview
+        .asWebviewUri(vscode.Uri.joinPath(extensionUri, "node_modules", "three", "build", "three.module.min.js"))
+        .toString(),
+      orbitControls: webview
+        .asWebviewUri(
+          vscode.Uri.joinPath(
+            extensionUri,
+            "node_modules",
+            "three",
+            "examples",
+            "jsm",
+            "controls",
+            "OrbitControls.js"
+          )
+        )
+        .toString(),
+      css2dRenderer: webview
+        .asWebviewUri(
+          vscode.Uri.joinPath(
+            extensionUri,
+            "node_modules",
+            "three",
+            "examples",
+            "jsm",
+            "renderers",
+            "CSS2DRenderer.js"
+          )
+        )
+        .toString(),
+      graph3d: webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, "media", "graph3d.mjs")).toString(),
+    };
+    this.panel.webview.html = renderShellHtml(repo.repositoryId, uris);
     this.panel.webview.onDidReceiveMessage((message: unknown) => {
       void this.handleMessage(message as InboundMessage);
     });
@@ -57,11 +105,11 @@ export class AskPanel {
     });
   }
 
-  static async show(client: CodexClient, repo: RepoRef): Promise<void> {
+  static async show(client: CodexClient, repo: RepoRef, extensionUri: vscode.Uri): Promise<void> {
     if (AskPanel.current) {
       AskPanel.current.panel.reveal(vscode.ViewColumn.Active);
     } else {
-      AskPanel.current = new AskPanel(client, repo);
+      AskPanel.current = new AskPanel(client, repo, extensionUri);
     }
   }
 

@@ -8,7 +8,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AskResponse, VisualizationGraph } from "./codexClient";
-import { buildGraphModel, buildGraphModelFromEvidence, edgeExistsBetween, groundClaims, resolveClaimEndpoint } from "./graphModel";
+import {
+  buildGraphModel,
+  buildGraphModelFromEvidence,
+  classifyNodeKind,
+  edgeExistsBetween,
+  GraphModelNode,
+  groundClaims,
+  resolveClaimEndpoint,
+} from "./graphModel";
 
 function makeGraph(): VisualizationGraph {
   return {
@@ -182,4 +190,47 @@ test("buildGraphModelFromEvidence projects EvidencePackage-shaped data the same 
   assert.equal(model.edges.length, 1);
   assert.equal(model.requestedDepth, 0);
   assert.equal(model.truncated, false);
+});
+
+// -- classifyNodeKind (3D Repository Intelligence Graph Milestone) --------
+
+function nodeOfType(nodeType: string): GraphModelNode {
+  return {
+    id: "n",
+    name: "n",
+    qualifiedName: "n",
+    nodeType,
+    roles: [],
+    language: null,
+    distance: 0,
+    sourceLocation: null,
+  };
+}
+
+test("classifyNodeKind maps every real codex.ontology.entities.BaseEntityType value", () => {
+  const expected: Record<string, string> = {
+    REPOSITORY: "module",
+    DIRECTORY: "module",
+    FILE: "module",
+    MODULE: "module",
+    NAMESPACE: "module",
+    CLASS: "class",
+    INTERFACE: "class",
+    FUNCTION: "function",
+    METHOD: "function",
+    VARIABLE: "other",
+    TEST: "test",
+    CONFIGURATION: "other",
+    EXTERNAL_LIBRARY: "external",
+    API: "other",
+    DATABASE: "other",
+    RUNTIME_COMPONENT: "other",
+  };
+  for (const [nodeType, kind] of Object.entries(expected)) {
+    assert.equal(classifyNodeKind(nodeOfType(nodeType)), kind, `nodeType=${nodeType}`);
+  }
+});
+
+test("classifyNodeKind never invents a kind for an unrecognized nodeType -- falls through to 'other'", () => {
+  assert.equal(classifyNodeKind(nodeOfType("SOME_FUTURE_TYPE_NOT_YET_KNOWN")), "other");
 });
