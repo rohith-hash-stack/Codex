@@ -387,7 +387,26 @@ class TestRequestBodyHardening:
             ).encode() + partial_body
             sock.sendall(request_bytes)
             sock.settimeout(5)
-            response = sock.recv(65536).decode(errors="replace")
+            # Codex validation continuation (test-contract fix, not a
+            # production defect): a single `recv()` call is not guaranteed
+            # by TCP semantics to return the whole response in one read --
+            # under CPU/scheduling load (reproduced directly: this test
+            # failed once in a full-suite run, passed reliably five times
+            # in isolation and once more in a full clean re-run), the
+            # headers and body can arrive in separate reads, truncating
+            # this test's own single-`recv()` snapshot before "exceeds the"
+            # ever appears. The server already sets `close_connection =
+            # True` on this exact path (`_read_json_object_body`) before
+            # writing the response, so looping until the peer closes the
+            # connection reliably collects the complete response without
+            # guessing a byte count or racing a fixed sleep.
+            chunks = bytearray()
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+            response = chunks.decode(errors="replace")
             assert response.startswith("HTTP/1.1 413")
             assert "exceeds the" in response
         finally:

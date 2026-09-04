@@ -79,6 +79,24 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
         re.compile(r"\blist\s+(?:the\s+)?callers\s+of\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
+    # Codex validation continuation (Query Understanding / Intent Coverage
+    # audit): "what/who are the callers of X" -- distinct from "find
+    # callers of X"/"list callers of X" above, which both require a
+    # leading imperative verb and therefore miss a bare "What are the
+    # callers of X?" question. Deliberately anchored on a `what`/`who`
+    # prefix (never a bare, verb-less "callers of X") so this cannot also
+    # match "find callers of X"/"list callers of X" and produce a
+    # duplicate same-intent candidate -- confirmed by direct testing that
+    # an unanchored version *would* double-match those two existing
+    # phrasings, which would have inflated `_ambiguity_from_candidates`
+    # (`codex.query_understanding.engine`) purely from a redundant
+    # candidate, not genuine ambiguity. Same intent, same score, same
+    # already-validated CALLS retrieval path -- no new evidence mapping.
+    _Rule(
+        Intent.FIND_CALLERS,
+        re.compile(r"\b(?:what|who)\s+(?:are\s+)?(?:the\s+)?callers\s+of\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
     _Rule(
         Intent.FIND_TESTS,
         re.compile(r"\bwhich\s+tests?\s+(?:call|cover|test|exercise)\s+([\w.]+)", re.I),
@@ -87,6 +105,15 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
     _Rule(
         Intent.FIND_TESTS,
         re.compile(r"\bfind\s+tests?\s+(?:for|covering|that\s+call)\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    # Codex validation continuation: "what tests exist for X" -- a real
+    # phrasing gap distinct from the "find tests for X"/"which tests
+    # call X" forms above (neither matches a bare "What tests exist for
+    # X?" question). Same FIND_TESTS intent/evidence, unchanged.
+    _Rule(
+        Intent.FIND_TESTS,
+        re.compile(r"\bwhat\s+tests?\s+exist\s+for\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
     _Rule(
@@ -129,9 +156,46 @@ _STRUCTURAL_RULES: tuple[_Rule, ...] = (
         re.compile(r"\bimpact\s+of\s+(?:changing\s+)?([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
+    # Codex validation continuation: "if I change X, what breaks"/"if I
+    # change X what will break" -- a real phrasing gap distinct from the
+    # "impact of X" and "if X changes... affected" forms (neither matches
+    # this shape: "I change", not "X changes"; "breaks", not "affected").
+    # Same FIND_IMPACT intent/evidence/depth, unchanged.
+    _Rule(
+        Intent.FIND_IMPACT,
+        re.compile(r"\bif\s+i\s+change\s+([\w.]+)\b.*?\bwhat\s+(?:breaks|will\s+break)\b", re.I),
+        _STRUCTURAL_SCORE,
+    ),
     _Rule(
         Intent.FIND_DEPENDENCIES,
         re.compile(r"\bwhat\s+does\s+([\w.]+)\s+depend\s+on\b", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    # Codex validation continuation (Query Understanding / Intent Coverage
+    # audit): the reverse-direction phrasing -- "what depends on X"/"who
+    # depends on X" -- had zero Tier-0 coverage at all (not just a
+    # phrasing variant of the forward rule above: an entire query
+    # direction was unroutable, falling through to
+    # UNDERSTANDING_INCOMPLETE even though DEPENDS_ON has real provider
+    # backing, `PyprojectDependencyAdapter`). Verified safe before adding:
+    # `bounded_traversal` already collects `DEPENDS_ON` edges from a seed
+    # in both directions regardless of which one asked the question
+    # (`DEPENDS_ON` is not in `_DIRECTIONAL_PREDICATES`, so both the
+    # `subject=seed`/forward and `object_id=seed`/reverse collection
+    # branches in `codex.planner.retrieval.bounded_traversal` already run
+    # unconditionally -- confirmed by direct reproduction, not assumed:
+    # a seed on either end of a real `DEPENDS_ON` edge already retrieves
+    # that edge today, with or without this rule). This rule only makes
+    # the reverse question *reachable* by Tier-0 at all; it changes no
+    # retrieval/traversal/ontology code and adds no new capability.
+    _Rule(
+        Intent.FIND_DEPENDENCIES,
+        re.compile(r"\b(?:what|who)\s+depends?\s+on\s+([\w.]+)", re.I),
+        _STRUCTURAL_SCORE,
+    ),
+    _Rule(
+        Intent.FIND_DEPENDENCIES,
+        re.compile(r"\bdependen(?:cies|ts?)\s+of\s+([\w.]+)", re.I),
         _STRUCTURAL_SCORE,
     ),
     _Rule(

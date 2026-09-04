@@ -286,3 +286,105 @@ def test_new_trace_execution_and_find_impact_patterns_are_deterministic() -> Non
     c = detect("If Session.send changes, what components could be affected?")
     d = detect("If Session.send changes, what components could be affected?")
     assert c == d
+
+
+# -- Codex validation continuation: Query Understanding / Intent Coverage ---
+# audit (real, reproduced NL-phrasing gaps -- see the fix's own PROGRESS.md
+# entry for the exact reproduction battery this was found with).
+
+
+def test_what_are_the_callers_of_x_routes_to_find_callers() -> None:
+    candidates = detect("What are the callers of process_payment?")
+    assert candidates[0].intent is Intent.FIND_CALLERS
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("process_payment",)
+
+
+def test_bare_callers_of_x_form_does_not_double_match_find_or_list_callers_of() -> None:
+    """The new `what/who ... callers of X` rule must not also fire (as a
+    second, redundant same-intent candidate) on the pre-existing `find
+    callers of X`/`list callers of X` phrasings -- a duplicate same-intent
+    candidate would inflate `_ambiguity_from_candidates`
+    (`codex.query_understanding.engine`) with no genuine ambiguity."""
+    for text in ("Find callers of foo", "Find the callers of foo", "List callers of foo"):
+        candidates = detect(text)
+        find_callers = [c for c in candidates if c.intent is Intent.FIND_CALLERS]
+        assert len(find_callers) == 1, f"{text!r} produced {len(find_callers)} FIND_CALLERS"
+
+
+def test_what_tests_exist_for_x_routes_to_find_tests() -> None:
+    candidates = detect("What tests exist for parse_query?")
+    assert candidates[0].intent is Intent.FIND_TESTS
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("parse_query",)
+
+
+def test_if_i_change_x_what_breaks_routes_to_find_impact() -> None:
+    candidates = detect("If I change validate(), what breaks?")
+    assert candidates[0].intent is Intent.FIND_IMPACT
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("validate",)
+
+
+def test_if_i_change_x_what_will_break_variant() -> None:
+    candidates = detect("If I change User.save, what will break?")
+    assert candidates[0].intent is Intent.FIND_IMPACT
+    assert candidates[0].targets == ("User.save",)
+
+
+def test_what_depends_on_x_routes_to_find_dependencies() -> None:
+    """The reverse-direction phrasing the forward-only `what does X
+    depend on` rule never covered -- confirmed safe to add because
+    `codex.planner.retrieval.bounded_traversal` already collects
+    `DEPENDS_ON` edges touching a seed in both directions regardless of
+    which one asked (real, reproduced before this rule was added)."""
+    candidates = detect("What depends on requests?")
+    assert candidates[0].intent is Intent.FIND_DEPENDENCIES
+    assert candidates[0].score > DETERMINISTIC_THRESHOLD
+    assert candidates[0].targets == ("requests",)
+
+
+def test_who_depends_on_x_variant() -> None:
+    candidates = detect("Who depends on click?")
+    assert candidates[0].intent is Intent.FIND_DEPENDENCIES
+    assert candidates[0].targets == ("click",)
+
+
+def test_dependencies_of_x_noun_phrase_routes_to_find_dependencies() -> None:
+    candidates = detect("What are the dependencies of this package?")
+    assert candidates[0].intent is Intent.FIND_DEPENDENCIES
+    # "this package" isn't a real identifier -- honestly captured as-is.
+    assert candidates[0].targets == ("this",)
+
+
+def test_dependents_of_x_noun_phrase_routes_to_find_dependencies() -> None:
+    candidates = detect("What are the dependents of core_utils?")
+    assert candidates[0].intent is Intent.FIND_DEPENDENCIES
+    assert candidates[0].targets == ("core_utils",)
+
+
+def test_reverse_dependency_phrasing_does_not_double_match_forward_rule() -> None:
+    """`what depends on X`/`dependencies of X` must not also collide with
+    the pre-existing `what does X depend on` rule for either phrasing --
+    both directions map to the same intent, but each query text should
+    produce exactly one FIND_DEPENDENCIES candidate, not two."""
+    texts = (
+        "What does requests depend on?",
+        "What depends on requests?",
+        "Dependencies of requests",
+    )
+    for text in texts:
+        candidates = detect(text)
+        find_deps = [c for c in candidates if c.intent is Intent.FIND_DEPENDENCIES]
+        assert len(find_deps) == 1, f"{text!r} produced {len(find_deps)} FIND_DEPENDENCIES"
+
+
+def test_new_query_understanding_continuation_patterns_are_deterministic() -> None:
+    for text in (
+        "What are the callers of foo?",
+        "What tests exist for foo?",
+        "If I change foo, what breaks?",
+        "What depends on foo?",
+        "Dependencies of foo",
+    ):
+        assert detect(text) == detect(text)
