@@ -415,18 +415,35 @@ def _resolve_one_target(graph: GraphReader, target: str) -> list[RepositorySymbo
     """
     raw_by_qualified_name = graph.find_entities(qualified_name=target)
     target_lower = target.lower()
-    by_qualified_name = {
+    # Canonical Identity Resolution fix: the exact-match check must run
+    # against `raw_by_qualified_name` (the raw store lookup) directly, not
+    # against `by_qualified_name` below -- exactly as this function's own
+    # docstring already documents ("if any of its results has a
+    # qualified_name case-insensitively equal to target... only those
+    # exact matches are kept"), where "its results" means the raw lookup.
+    # The GAP-1/GAP-6 symbol-path narrowing a few lines down is a
+    # *different*, later-added axis-narrowing (its own docstring section
+    # above calls it "a distinct axis-narrowing from the exact-match one")
+    # meant to filter *substring* matches, never to gate the exact-match
+    # check itself. Computing exact-match from the already-symbol-path-
+    # narrowed set (the previous ordering) silently dropped an entity
+    # whose *own full* `qualified_name` was the query target whenever that
+    # full string -- necessarily including its file/module-path prefix --
+    # was not itself contained in `_symbol_path`'s stripped-down slice
+    # (e.g. `AstCallsAdapter`'s `"app.py::helper"` is not "in" `"helper"`)
+    # -- a real, independently-reproduced defect (`docs/ui-integration-
+    # milestone.md` §4), not a design choice: an entity's own exact,
+    # complete identifier must always resolve to itself.
+    exact_qualified_name = {
+        e.canonical_id: e for e in raw_by_qualified_name if e.qualified_name.lower() == target_lower
+    }
+    by_qualified_name = exact_qualified_name or {
         e.canonical_id: e
         for e in raw_by_qualified_name
         if target_lower in _symbol_path(e.qualified_name).lower()
     }
-    exact_qualified_name = {
-        canonical_id: entity
-        for canonical_id, entity in by_qualified_name.items()
-        if entity.qualified_name.lower() == target.lower()
-    }
     by_name = {e.canonical_id: e for e in graph.find_entities(name=target)}
-    combined = {**(exact_qualified_name or by_qualified_name), **by_name}
+    combined = {**by_qualified_name, **by_name}
 
     # D9 candidate-prioritization refinement (post-Finding-3 external
     # audit's "candidate-generation ambiguity" finding): once *any*

@@ -147,8 +147,8 @@ test("register -> ingest -> status -> symbols -> neighborhood, end to end agains
 });
 
 test(
-  "a real discovered gap: /neighborhood on an entity's own full qualified_name can resolve zero " +
-    "nodes (AskPanel.runExpand's documented fallback-to-name retry exists because of this)",
+  "an entity's own full qualified_name now resolves directly via /neighborhood " +
+    "(Canonical Identity Resolution fix -- AskPanel.runExpand no longer needs a bare-name fallback)",
   async (t) => {
     if (!backendAvailable) {
       t.skip("codex.api not importable in this environment");
@@ -159,25 +159,25 @@ test(
     );
     assert.ok(helperNode, "setup: expected a real 'helper' entity from the previous test's repository");
 
-    // The bug: searching for the entity's own full qualified_name
-    // (AstCallsAdapter's "<file>::<symbol>" shape) resolves nothing --
-    // codex.planner.retrieval._resolve_one_target narrows the
+    // Previously (UI Integration Milestone) this resolved zero nodes:
+    // codex.planner.retrieval._resolve_one_target narrowed the
     // qualified_name axis to occurrences within just the *symbol*
-    // portion (_symbol_path), which the full, file-path-prefixed
-    // string is never "in". Reproduced here at the real backend, no
-    // UI code involved, to lock in that the workaround (not a backend
-    // fix, per this milestone's explicit boundary) remains necessary.
-    const byFullQualifiedName = await client.getNeighborhood("ui-it-repo", helperNode!.qualified_name, 1);
-    assert.equal(
-      byFullQualifiedName.nodes.length,
-      0,
-      "if this now finds nodes, the underlying retrieval gap was fixed elsewhere -- " +
-        "AskPanel.runExpand's fallback retry is then merely redundant, not wrong"
+    // portion (_symbol_path) before ever checking for an exact match,
+    // so an entity's own full, file-path-prefixed qualified_name was
+    // never "in" its own stripped-down slice. Fixed at the source
+    // (docs/canonical-identity-resolution-fix.md) by computing the
+    // exact-match check against the raw, unnarrowed lookup first.
+    const byFullQualifiedName = await client.getNeighborhood(
+      "ui-it-repo",
+      helperNode!.qualified_name,
+      1
     );
-
-    // The workaround: the same entity's bare name resolves correctly.
-    const byBareName = await client.getNeighborhood("ui-it-repo", helperNode!.name, 1);
-    assert.ok(byBareName.nodes.some((n) => n.qualified_name.endsWith("helper")));
+    assert.ok(
+      byFullQualifiedName.nodes.some((n) => n.qualified_name.endsWith("helper")),
+      "an entity's own full qualified_name must resolve to that entity directly, with no fallback"
+    );
+    assert.ok(byFullQualifiedName.nodes.some((n) => n.qualified_name.endsWith("main")));
+    assert.ok(byFullQualifiedName.edges.some((e) => e.relationship_type === "CALLS"));
   }
 );
 

@@ -111,14 +111,10 @@ export const CLIENT_SCRIPT = `
     vscode.postMessage({ type: "search", query });
   }
 
-  // \`fallback\` (the bare name alongside the full qualified_name) lets
-  // the host retry a /neighborhood lookup that resolves zero candidates
-  // for a self-referential full qualified_name -- see AskPanel.runExpand's
-  // own docstring in askPanel.ts for the full explanation.
-  function exploreSymbol(qualifiedName, name) {
+  function exploreSymbol(qualifiedName) {
     el("graphHint").textContent = 'loading "' + qualifiedName + '"…';
     el("graphSearchResults").innerHTML = "";
-    vscode.postMessage({ type: "expand", symbol: qualifiedName, fallback: name, depth: 1 });
+    vscode.postMessage({ type: "expand", symbol: qualifiedName, depth: 1 });
   }
 
   function escapeHtml(value) {
@@ -232,7 +228,7 @@ export const CLIENT_SCRIPT = `
       return;
     }
     if (graph.nodes.length === 1) {
-      exploreSymbol(graph.nodes[0].qualified_name, graph.nodes[0].name);
+      exploreSymbol(graph.nodes[0].qualified_name);
       return;
     }
     el("graphHint").textContent = graph.nodes.length + " matches — pick one:";
@@ -240,13 +236,13 @@ export const CLIENT_SCRIPT = `
       .slice(0, 30)
       .map(
         (n) =>
-          '<span class="node-chip" data-qn="' + escapeHtml(n.qualified_name) + '" data-name="' + escapeHtml(n.name) + '" title="' + escapeHtml(n.qualified_name) + '">' +
+          '<span class="node-chip" data-qn="' + escapeHtml(n.qualified_name) + '" title="' + escapeHtml(n.qualified_name) + '">' +
           escapeHtml(n.name) + ' <span class="muted">' + escapeHtml(n.node_type) + "</span></span>"
       )
       .join("");
     el("graphSearchResults").innerHTML = chips;
     el("graphSearchResults").querySelectorAll("[data-qn]").forEach((chip) => {
-      chip.addEventListener("click", () => exploreSymbol(chip.getAttribute("data-qn"), chip.getAttribute("data-name")));
+      chip.addEventListener("click", () => exploreSymbol(chip.getAttribute("data-qn")));
     });
   }
 
@@ -427,7 +423,7 @@ export const CLIENT_SCRIPT = `
         const node = model.nodes.find((n) => n.id === id);
         if (node) {
           el("graphHint").textContent = 'exploring "' + node.qualifiedName + '"…';
-          vscode.postMessage({ type: "expand", symbol: node.qualifiedName, fallback: node.name, depth: 1 });
+          vscode.postMessage({ type: "expand", symbol: node.qualifiedName, depth: 1 });
         }
       },
     });

@@ -1886,3 +1886,194 @@ def test_gap8_fix_deterministic_across_repeated_calls() -> None:
     runs = [resolve_targets(store, ["Storage"]) for _ in range(3)]
     ids = [[e.canonical_id for e in r] for r in runs]
     assert ids[0] == ids[1] == ids[2]
+
+
+# --- Canonical Identity Resolution fix: an entity's own *full*
+# `qualified_name` (file/module-path prefix included) must resolve to
+# itself. Before this fix, `_resolve_one_target` computed its exact-match
+# check against `by_qualified_name` (already narrowed by the GAP-1/GAP-6
+# `_symbol_path` filter), instead of against the raw substring-matched
+# set the function's own docstring describes -- so a target equal to an
+# entity's full, file-path-prefixed `qualified_name` (e.g.
+# `AstCallsAdapter`'s `"app.py::helper"` shape) was silently excluded,
+# because that full string is never "in" `_symbol_path`'s stripped-down
+# slice (`"helper"`). Independently reproduced through the UI (evidence
+# entity -> `/neighborhood` navigation, `docs/ui-integration-milestone.md`
+# §4) with no UI code involved -- reproduced here directly at
+# `resolve_targets`. ---------------------------------------------------
+
+
+def test_exact_full_qualified_name_resolves_to_its_own_entity() -> None:
+    """Requirement 1: an entity's own full, file-path-prefixed
+    `qualified_name` -- not just its bare `name` or symbol-path slice --
+    must resolve to that entity. This is the exact defect: before the
+    fix, this returned `[]`."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="helper", name="helper", qualified_name="app.py::helper")
+    )
+    resolved = resolve_targets(store, ["app.py::helper"])
+    assert [e.canonical_id for e in resolved] == ["helper"]
+
+
+def test_exact_full_qualified_name_unaffected_by_unrelated_file_path_decoys() -> None:
+    """The fix must not reintroduce the GAP-1 file-path-substring
+    explosion: querying one entity's full `qualified_name` still excludes
+    unrelated decoys that merely live in a similarly-named file."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="helper", name="helper", qualified_name="app.py::helper")
+    )
+    store.upsert_entity(
+        _entity(canonical_id="other", name="other_func", qualified_name="app.py::other_func")
+    )
+    resolved = resolve_targets(store, ["app.py::helper"])
+    assert [e.canonical_id for e in resolved] == ["helper"]
+
+
+def test_exact_full_qualified_name_scip_shape_resolves_to_its_own_entity() -> None:
+    """Requirement 2 (SCIP shape): the identical defect for SCIP's own
+    `` `module`/Class#method(). `` qualified_name shape -- querying an
+    entity's own full descriptor path (module prefix included) must
+    resolve to that entity, not just its bare symbol-path slice."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="storage",
+            name="Storage#",
+            qualified_name="`django.core.files.storage.base`/Storage#",
+        )
+    )
+    resolved = resolve_targets(store, ["`django.core.files.storage.base`/Storage#"])
+    assert [e.canonical_id for e in resolved] == ["storage"]
+
+
+def test_exact_full_qualified_name_ast_shape_still_matches_case_insensitively() -> None:
+    """Requirement 2 continued: the pre-existing case-insensitivity
+    convention (`_resolve_one_target`'s own `target.lower()` comparisons)
+    is preserved for the full-qualified_name axis too."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="helper", name="helper", qualified_name="app.py::Helper")
+    )
+    resolved = resolve_targets(store, ["APP.PY::HELPER"])
+    assert [e.canonical_id for e in resolved] == ["helper"]
+
+
+def test_full_qualified_name_disambiguates_high_fan_out_bare_symbol() -> None:
+    """Requirement 3: when many entities across different files share the
+    same bare symbol name (a real high-fan-out case), querying by any one
+    of their *full* qualified_names now resolves to exactly that entity
+    -- disambiguation the fix restores -- while the bare, unqualified
+    symbol name is, correctly, still ambiguous across all of them
+    (`test_ambiguous_target_returns_every_distinct_real_candidate`'s own
+    behavior, unaffected by this fix)."""
+    store = _store()
+    for i in range(5):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"exec{i}",
+                name="execute",
+                qualified_name=f"pkg/mod{i}.py::execute",
+            )
+        )
+
+    resolved_by_full_qn = resolve_targets(store, ["pkg/mod2.py::execute"])
+    assert [e.canonical_id for e in resolved_by_full_qn] == ["exec2"]
+
+    resolved_by_bare_name = resolve_targets(store, ["execute"])
+    assert [e.canonical_id for e in resolved_by_bare_name] == sorted(f"exec{i}" for i in range(5))
+
+
+def test_bare_name_target_behavior_unchanged_by_full_qualified_name_fix() -> None:
+    """Requirement 4: a bare-name-only target (no `::`/`/` in the query at
+    all) goes through the unmodified `by_name`/symbol-path-substring path
+    exactly as before -- the fix only changes how a target matching an
+    entity's *own full* `qualified_name` is treated."""
+    store = _store()
+    store.upsert_entity(
+        _entity(
+            canonical_id="real-approx",
+            name="approx",
+            qualified_name="src/_pytest/approx.py::approx",
+        )
+    )
+    store.upsert_entity(
+        _entity(
+            canonical_id="unrelated",
+            name="_is_bool",
+            qualified_name="src/_pytest/approx.py::_is_bool",
+        )
+    )
+    resolved = resolve_targets(store, ["approx"])
+    assert {e.canonical_id for e in resolved} == {"real-approx"}
+
+
+def test_ambiguous_target_still_explicitly_ambiguous_after_fix() -> None:
+    """Requirement 5: genuine ambiguity (no exact `qualified_name` match
+    for the query at all, several entities plausibly matching by
+    substring) is still surfaced as every distinct real candidate, never
+    silently collapsed to one -- the fix only ever *adds* a recognized
+    exact-match case, it never removes one that produced real ambiguity
+    before."""
+    store = _store()
+    for i in range(4):
+        store.upsert_entity(
+            _entity(
+                canonical_id=f"widget{i}",
+                name=f"widget{i}",
+                qualified_name=f"pkg/widget_variant_{i}.py",
+            )
+        )
+    resolved = resolve_targets(store, ["widget_variant"])
+    assert {e.canonical_id for e in resolved} == {f"widget{i}" for i in range(4)}
+
+
+def test_full_qualified_name_fix_deterministic_across_repeated_calls() -> None:
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="helper", name="helper", qualified_name="app.py::helper")
+    )
+    runs = [resolve_targets(store, ["app.py::helper"]) for _ in range(3)]
+    ids = [[e.canonical_id for e in r] for r in runs]
+    assert ids[0] == ids[1] == ids[2] == ["helper"]
+
+
+def test_full_qualified_name_negative_query_still_returns_empty() -> None:
+    """A full-qualified_name-shaped target that matches no real entity at
+    all (neither the exact axis nor any substring axis) still resolves to
+    nothing -- the fix promotes a real exact match, it never invents one
+    where no entity exists."""
+    store = _store()
+    store.upsert_entity(
+        _entity(canonical_id="helper", name="helper", qualified_name="app.py::helper")
+    )
+    resolved = resolve_targets(store, ["nonexistent_file.py::totally_missing_symbol"])
+    assert resolved == []
+
+
+def test_full_qualified_name_through_full_plan_query_execute_query_pipeline() -> None:
+    """End-to-end confirmation through the real pipeline
+    (`plan_query`/`execute_query`, not just `resolve_targets` in
+    isolation): a query whose target is a real entity's own full
+    `qualified_name` now produces a real, non-empty `EvidencePackage`
+    with that entity's own relationships -- this is the exact shape of
+    query the UI's evidence-to-graph navigation issues."""
+    result, registry, evidence_store, repository = build_graph(
+        entity_paths=("app.py::helper", "app.py::main"),
+        relationship_pairs=(("app.py::main", "app.py::helper"),),
+    )
+    plan = plan_query(
+        query_contract=make_contract(targets=["app.py::helper"]),
+        graph=result.graph_store,
+        ingestion_result=result,
+        registry=registry,
+        repository=repository,
+    )
+    assert plan.status is not PlanStatus.PLAN_UNSUPPORTED
+    assert len(plan.target_entity_ids) == 1
+    package = execute_query(
+        plan, graph=result.graph_store, evidence_store=evidence_store, ingestion_result=result
+    )
+    assert not any("ambiguous target" in limitation for limitation in package.limitations)
+    assert {e.qualified_name for e in package.entities} >= {"app.py::helper", "app.py::main"}

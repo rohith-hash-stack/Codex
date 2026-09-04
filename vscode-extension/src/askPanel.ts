@@ -26,7 +26,7 @@ type InboundMessage =
   | { type: "index" }
   | { type: "refreshStatus" }
   | { type: "ask"; queryText: string }
-  | { type: "expand"; symbol: string; fallback?: string; depth?: number }
+  | { type: "expand"; symbol: string; depth?: number }
   | { type: "search"; query: string };
 
 export class AskPanel {
@@ -87,7 +87,7 @@ export class AskPanel {
           await this.runAsk(message.queryText);
           break;
         case "expand":
-          await this.runExpand(message.symbol, message.depth ?? 1, message.fallback);
+          await this.runExpand(message.symbol, message.depth ?? 1);
           break;
         case "search":
           await this.runSearch(message.query);
@@ -145,30 +145,19 @@ export class AskPanel {
   }
 
   /**
-   * `fallback` (typically a node's bare `name`, alongside its full
-   * `qualified_name` as `symbol`) is a client-side-only retry, not a
-   * new resolution algorithm: `resolve_targets`'s `qualified_name` axis
-   * narrows candidates to occurrences within just the *symbol* portion
-   * of `qualified_name` (`_symbol_path`, `codex.planner.retrieval`) --
-   * a real, independently-reproduced gap (outside this UI entirely; it
-   * also occurs calling `CodexAPI.get_neighborhood` directly) means
-   * searching for an entity's own *full*, file-path-prefixed
-   * `qualified_name` (e.g. `AstCallsAdapter`'s `"app.py::helper"`
-   * shape) can resolve zero candidates, even though that entity is
-   * real and the server itself just returned it. Retrying once with
-   * the bare `name` is a plain fallback to data already in hand, never
-   * a change to how the server searches -- deliberately not fixed in
-   * `codex.planner.retrieval` here, per this milestone's explicit
-   * "do not modify validated backend layers" boundary; see this
-   * milestone's own report for the full writeup.
+   * A node's full `qualified_name` (or a user-typed search string) is
+   * passed straight through to `GET /neighborhood`. Earlier in the UI
+   * Integration Milestone this needed a client-side retry against a
+   * node's bare `name`, because `codex.planner.retrieval.
+   * _resolve_one_target` could fail to resolve an entity's own full
+   * `qualified_name` -- fixed at the source (Canonical Identity
+   * Resolution fix, `docs/canonical-identity-resolution-fix.md`), so
+   * this method no longer needs a fallback.
    */
-  private async runExpand(symbol: string, depth: number, fallback?: string): Promise<void> {
+  private async runExpand(symbol: string, depth: number): Promise<void> {
     this.post({ type: "graphLoading", symbol });
     try {
-      let graph = await this.client.getNeighborhood(this.repo.repositoryId, symbol, depth);
-      if (graph.nodes.length === 0 && fallback && fallback !== symbol) {
-        graph = await this.client.getNeighborhood(this.repo.repositoryId, fallback, depth);
-      }
+      const graph = await this.client.getNeighborhood(this.repo.repositoryId, symbol, depth);
       this.post({ type: "graphResult", graph });
     } catch (err) {
       this.post({ type: "graphError", ...errorPayload(err) });
