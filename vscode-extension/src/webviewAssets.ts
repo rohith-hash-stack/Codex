@@ -84,7 +84,14 @@ window.CodexGraph = (function () {
     }
     const positions = new Map();
     for (const [distance, bucket] of byDistance) {
-      const radius = distance === 0 ? 0 : 90 * distance;
+      // distance 0 normally means "the single seed/lookup node" (radius 0
+      // is correct there), but an ask()-evidence-context graph reports
+      // every entity at distance 0 (EvidenceContextSummary does not track
+      // per-entity hop distance -- see api/contracts.py's own docstring)
+      // -- collapsing all of them onto one point made every node overlap
+      // and every edge render as a zero-length, invisible line. Multiple
+      // nodes sharing distance 0 still need to spread out.
+      const radius = distance === 0 ? (bucket.length > 1 ? 70 : 0) : 90 * distance;
       bucket.forEach((node, index) => {
         const angle = (2 * Math.PI * index) / Math.max(bucket.length, 1);
         positions.set(node.id, {

@@ -65,7 +65,13 @@ function layout(model) {
     byDistance.set(node.distance, bucket);
   }
   for (const [distance, bucket] of byDistance) {
-    const radius = distance === 0 ? 0 : RING_RADIUS_STEP * distance;
+    // Kept in sync with layout3D.ts's identical fix (Codex V1 Windows +
+    // UI Runtime Compatibility Validation phase): an ask()-evidence-
+    // context graph reports every entity at distance 0
+    // (EvidenceContextSummary does not track per-entity hop distance),
+    // so multiple nodes sharing distance 0 must still spread onto their
+    // own ring instead of collapsing onto the origin.
+    const radius = distance === 0 ? (bucket.length > 1 ? RING_RADIUS_STEP / 2 : 0) : RING_RADIUS_STEP * distance;
     const kindOrder = ["module", "class", "function", "test", "external", "other"];
     const grouped = [];
     for (const kind of kindOrder) {

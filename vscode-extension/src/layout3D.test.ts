@@ -136,6 +136,32 @@ test("a single node at distance 0 does not throw and lands at the origin ring", 
   assert.equal(p.z, 0);
 });
 
+/**
+ * Windows + UI Runtime Compatibility Validation phase: real headless-
+ * Chromium evidence showed an ask()-evidence-context graph (every
+ * entity at distance 0) rendered only 2 of 4 spheres visible -- the
+ * other two were exactly stacked behind them, because `layout3D`
+ * collapsed every distance-0 node onto the same origin point (x=0,
+ * z=0), differing only by `y` (node-kind band). Same root cause and
+ * fix as `layout2D`'s identical regression test in askPanelView.test.ts.
+ */
+test("multiple nodes sharing distance 0 spread onto their own ring instead of collapsing at the origin", () => {
+  const m = model([
+    node({ id: "a", distance: 0 }),
+    node({ id: "b", distance: 0 }),
+    node({ id: "c", distance: 0 }),
+    node({ id: "d", distance: 0 }),
+  ]);
+  const positions = layout3D(m);
+  const seen = new Set<string>();
+  for (const n of m.nodes) {
+    const p = positions.get(n.id)!;
+    const key = `${p.x.toFixed(3)},${p.z.toFixed(3)}`;
+    assert.ok(!seen.has(key), `duplicate x/z position for ${n.id}`);
+    seen.add(key);
+  }
+});
+
 // -- selectGraphForRender (3D Repository Intelligence Graph Milestone) ----
 
 function manyNodes(count: number): GraphModelNode[] {

@@ -135,7 +135,17 @@ export function layout3D(model: GraphModel): Map<string, Position3D> {
   }
 
   for (const [distance, bucket] of byDistance) {
-    const radius = distance === 0 ? 0 : RING_RADIUS_STEP * distance;
+    // distance 0 normally means "the single query center" (radius 0 is
+    // correct there), but an ask()-evidence-context graph reports every
+    // entity at distance 0 (EvidenceContextSummary does not track
+    // per-entity hop distance -- see api/contracts.py's own docstring)
+    // -- collapsing all of them onto the origin made every node overlap
+    // in projection. Multiple nodes sharing distance 0 still need to
+    // spread onto their own ring (see the identical fix in webviewAssets
+    // .ts's `layout2D`, found and fixed together via real-browser
+    // evidence -- Codex V1 Windows + UI Runtime Compatibility
+    // Validation phase).
+    const radius = distance === 0 ? (bucket.length > 1 ? RING_RADIUS_STEP / 2 : 0) : RING_RADIUS_STEP * distance;
     const ordered = _groupByKindPreservingOrder(bucket);
     ordered.forEach((node, index) => {
       const angle = GOLDEN_ANGLE * index;
