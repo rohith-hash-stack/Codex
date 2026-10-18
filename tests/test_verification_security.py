@@ -277,24 +277,11 @@ def test_planner_package_still_forbids_llm_and_verification_imports() -> None:
 
 
 def test_no_real_model_dependency_imported_anywhere_in_llm_or_verification() -> None:
-    """A first-party module is allowed to be *named* after the vendor
-    it talks to (e.g. `codex.llm.openai_gateway`, which depends on
-    nothing but stdlib `urllib`/`json` plus `pydantic` -- no real SDK)
-    -- this guard is only about an actual third-party vendor-SDK
-    import (bare `openai`, `anthropic`, ...), so `codex.`-prefixed
-    module names are excluded from the substring check. Without this
-    exclusion, `codex.llm.__init__` re-exporting `OpenAIGateway` (the
-    same re-export pattern every other concrete adapter already uses,
-    e.g. `codex.provider.__init__`'s `GitAdapter`) would trip this
-    test on its own first-party module path containing "openai" as a
-    substring -- a false positive, not a real model dependency."""
     suspicious = ("openai", "anthropic", "transformers", "torch", "tensorflow")
     for package_dir in (LLM_PACKAGE_DIR, VERIFICATION_PACKAGE_DIR):
         for py_file in package_dir.glob("*.py"):
             modules = _imported_modules(py_file.read_text())
             for module in modules:
-                if module.startswith("codex."):
-                    continue
                 lowered = module.lower()
                 assert not any(s in lowered for s in suspicious), (
                     f"{py_file.name} imports a real model dependency: {module}"
